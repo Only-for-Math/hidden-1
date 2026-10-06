@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+visitor_count.txt
+visitor_count.txt.tmp
+visitor_count.txt.broken

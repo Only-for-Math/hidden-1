@@ -1,6 +1,9 @@
+import os
 import random
+import threading
 import time
 from html import escape as html_escape
+from pathlib import Path
 import streamlit as st
 
 # 타임머신 카운트업 애니메이션 재생 시간(ms)
@@ -8,6 +11,68 @@ TIMEMACHINE_ANIM_DURATION_MS = 4500
 
 # 앱 전체에서 공통으로 사용할 폰트 (굴림체)
 APP_FONT_FAMILY = "'굴림', Gulim, sans-serif"
+
+# ==========================================
+# 방문자 수 기록 (외부 TXT 파일에 저장)
+#  - 누군가 앱에 접속할 때마다(새 세션이 열릴 때마다) 방문자 수를 1 늘려서 TXT 파일에 저장한다.
+#  - 같은 사람이 버튼을 눌러 스크립트가 다시 실행돼도 늘지 않는다. (세션당 딱 한 번)
+#    페이지를 새로고침하거나 새 탭으로 열면 새 세션이라 1 늘어난다.
+#  - 저장 파일은 이 파일 옆의 visitor_count.txt 이고, 안에는 방문자 수 숫자 하나만 들어 있다.
+#    메모장으로 열어 숫자를 확인하거나 고칠 수 있다. (예: 0 으로 바꾸면 처음부터 다시 센다)
+#    서버를 껐다 켜도 이어서 센다. 파일 위치는 환경변수 VISITOR_COUNT_FILE 로 바꿀 수 있다.
+#  - 인트로 화면 아래에 'N번째 방문자'로 보여 준다. 숨기려면 SHOW_VISITOR_COUNT 를 False 로 바꾼다.
+#  - 접속이 동시에 몰려도 숫자가 꼬이지 않게 잠금(lock)을 걸고, 쓰는 도중 꺼져도 파일이 깨지지 않게
+#    임시 파일에 쓴 뒤 바꿔치기(os.replace)한다. 저장에 실패해도(읽기 전용 폴더 등) 앱은 그대로 동작한다.
+#  - 주의: Streamlit Community Cloud 처럼 재배포·재시작 때 파일이 초기화되는 곳에서는 기록도 초기화된다.
+# ==========================================
+SHOW_VISITOR_COUNT = True
+VISITOR_COUNT_FILE = Path(
+    os.environ.get("VISITOR_COUNT_FILE") or Path(__file__).resolve().parent / "visitor_count.txt"
+)
+_visitor_lock = threading.Lock()
+
+
+def _load_visitor_total():
+    """TXT 파일에 적힌 방문자 수를 읽는다. 파일이 없거나 비어 있으면 0 에서 시작한다.
+
+    숫자가 아닌 내용이 들어 있으면(잘못 고쳤을 때 등) 기록을 덮어써서 날리지 않도록
+    옆에 .broken 으로 보관해 두고 0 에서 새로 시작한다.
+    """
+    try:
+        # utf-8-sig: 메모장이 파일 맨 앞에 붙이는 BOM 이 있어도 읽을 수 있다.
+        with open(VISITOR_COUNT_FILE, encoding="utf-8-sig") as f:
+            text = f.read().strip()
+        if not text:
+            return 0
+        total = int(text)
+        if total < 0:
+            raise ValueError("방문자 수는 0 이상이어야 합니다")
+        return total
+    except FileNotFoundError:
+        return 0
+    except (ValueError, OSError):
+        try:
+            os.replace(VISITOR_COUNT_FILE, f"{VISITOR_COUNT_FILE}.broken")
+        except OSError:
+            pass
+        return 0
+
+
+def record_visit():
+    """방문자 수를 1 늘려 TXT 파일에 저장하고, 이번 방문이 몇 번째인지 돌려준다. 저장에 실패하면 None."""
+    with _visitor_lock:
+        total = _load_visitor_total() + 1
+        tmp_path = f"{VISITOR_COUNT_FILE}.tmp"
+        try:
+            VISITOR_COUNT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(f"{total}\n")
+            os.replace(tmp_path, VISITOR_COUNT_FILE)
+        except OSError as e:
+            print(f"[방문자 수] 저장하지 못했습니다: {e}")
+            return None
+        return total
+
 
 # ==========================================
 # 비밀의 방
@@ -36,9 +101,24 @@ def lucky_button(label, *args, dg=None, **kwargs):
     """
     target = dg if dg is not None else st
     clicked = target.button(label, *args, **kwargs)
-    if clicked and _secret_rng.randrange(SECRET_ROOM_ODDS) == 0:
-        go_secret_room()
+    if clicked:
+        blue_watch_turn = count_click_and_check_blue_watch_clue()
+        if _secret_rng.randrange(SECRET_ROOM_ODDS) == 0:
+            go_secret_room()
+        if blue_watch_turn:
+            go_blue_watch_clue()
     return clicked
+
+
+# 인트로·도착 화면의 오른쪽 아래 '다음으로' 버튼을 왼쪽으로 조금 옮긴다.
+# 폰처럼 좁은 화면(640px 이하)에서는 칼럼이 세로로 쌓여 버튼이 전체 너비를 쓰므로 옮기지 않는다.
+NEXT_BUTTON_SHIFT_CSS = """
+@media (min-width: 641px) {
+    div[data-testid="stButton"] {
+        transform: translateX(-1.5rem);
+    }
+}
+"""
 
 
 # ==========================================
@@ -224,11 +304,50 @@ def is_stalker_clue_button(idx):
     )
 
 
+def go_clue(text, return_step):
+    """검은 단서 화면으로 넘어가 text 를 보여 주고, 끝나면 return_step 화면으로 돌아온다."""
+    st.session_state.clue_text = text
+    st.session_state.clue_return_step = return_step
+    st.session_state.step = "stalker_clue"
+    st.rerun()
+
+
 def go_stalker_clue():
     """검은 단서 화면으로 넘어간다. 한 판에 한 번만 보여 준다."""
     st.session_state.stalker_clue_shown = True
-    st.session_state.step = "stalker_clue"
-    st.rerun()
+    go_clue(STALKER_CLUE_TEXT, "select_problem")
+
+
+# ==========================================
+# 파란색 시계 단서 (앱 전체에서 딱 한 번, 무작위 버튼에 숨겨 둔 이벤트)
+#  - 파이썬 화면의 버튼(lucky_button)을 누를 때마다 클릭 횟수를 센다.
+#  - 세션을 시작할 때 1 ~ BLUE_WATCH_CLUE_MAX_CLICK 사이에서 '몇 번째 클릭'일지 미리 뽑아 두고,
+#    그 번째 버튼을 누르는 순간 검은 화면에 단서 문장을 보여 준다.
+#    (이때 버튼의 원래 동작은 실행되지 않는다. 단서가 끝나면 누르던 화면으로 돌아온다.)
+#  - 한 번 보여 주면 다시는 나오지 않는다. 새 문제 세트를 시작해도 초기화하지 않는다.
+#  - 감옥 열쇠 퍼즐까지 가려면 파이썬 버튼을 최소 15번은 눌러야 하므로,
+#    최대 클릭 수를 그보다 작게 두면 단서는 반드시 한 번 나온다.
+#  - 비밀의 방이 그 클릭을 먼저 가져가도 단서를 놓치지 않도록, '정확히 N번째'가 아니라
+#    'N번째 이후 첫 클릭'에 보여 준다.
+# ==========================================
+BLUE_WATCH_CLUE_TEXT = "스토커는 파란색 계열의 시계를 차고 있었다"
+BLUE_WATCH_CLUE_MAX_CLICK = 12
+
+
+def count_click_and_check_blue_watch_clue():
+    """버튼 클릭을 한 번 세고, 이번 클릭이 파란색 시계 단서를 보여 줄 차례면 True."""
+    st.session_state.button_click_count += 1
+    return (
+        not st.session_state.blue_watch_clue_shown
+        and st.session_state.button_click_count
+        >= st.session_state.blue_watch_clue_target
+    )
+
+
+def go_blue_watch_clue():
+    """파란색 시계 단서 화면으로 넘어간다. 앱 전체에서 한 번만 보여 준다."""
+    st.session_state.blue_watch_clue_shown = True
+    go_clue(BLUE_WATCH_CLUE_TEXT, st.session_state.step)
 
 
 # ==========================================
@@ -238,7 +357,7 @@ def go_stalker_clue():
 #  - 오답/정답 알림(st.error · st.success)과 체크박스는 위젯이라 CSS 로 흰 바탕을 깐다.
 #  - 상자 모양을 바꾸고 싶으면 아래 READABLE_TEXT_CSS 의 .readable-box 만 고치면 된다.
 #  - 이 CSS 는 배경 그림이 있는 화면(문제 선택·풀이·정답, 타임머신 입력)의 <style> 안에 넣어 쓴다.
-#    검은 배경 화면(인트로·감옥 열쇠·비밀의 방·단서 화면)에는 넣지 않는다.
+#    검은 배경 화면(인트로·도착·감옥 열쇠·비밀의 방·단서 화면)에는 넣지 않는다.
 # ==========================================
 READABLE_TEXT_CSS = """
 /* 글씨 뒤에 까는 흰색 상자 */
@@ -262,6 +381,11 @@ READABLE_TEXT_CSS = """
 }
 .readable-box:empty {
     display: none !important;
+}
+/* 상자 바로 아래 버튼과 간격을 띄운다. (Streamlit 마크다운 컨테이너의 margin-bottom: -1rem 이
+   요소 사이 기본 간격을 없애 버려서, 따로 여백을 줘야 한다.) */
+.readable-box.gap-below {
+    margin-bottom: 1rem !important;
 }
 .readable-box > * {
     margin: 0 !important;
@@ -321,14 +445,16 @@ div[data-testid="stCheckbox"] {
 """
 
 
-def readable_box(inner_html):
+def readable_box(inner_html, gap_below=False):
     """짧은 글(제목·안내문 등)을 흰색 상자 안에 보여 준다. inner_html 은 HTML 이다.
 
     HTML 안에 빈 줄이 끼면 상자가 끊기므로, 공백·줄바꿈은 한 칸으로 합쳐서 넘긴다.
+    gap_below=True 면 상자 아래에 여백을 두어, 바로 밑의 버튼과 붙지 않게 한다.
     """
     one_line = " ".join(str(inner_html).split())
+    css_class = "readable-box gap-below" if gap_below else "readable-box"
     st.markdown(
-        f'<div class="readable-box">{one_line}</div>',
+        f'<div class="{css_class}">{one_line}</div>',
         unsafe_allow_html=True,
     )
 
@@ -539,31 +665,74 @@ PRISON_KEY_PUZZLE_HTML = """
     font-weight:800; margin-bottom:12px; text-transform:uppercase;
   }
   .clue-list{ display:flex; flex-direction:column; gap:11px; }
+  /* 한 줄 = [단서 번호] [아이콘] [문장]. 줄바꿈(wrap)을 막아서 좁은 화면에서도 문장이 아래 줄로 떨어지지 않고,
+     문장 칸(마지막 span)만 남은 폭 안에서 단어 단위로 줄바꿈된다. 번호·아이콘은 첫 줄에 맞춰 위쪽 정렬. */
   .clue-item{
-    display:flex; align-items:center; flex-wrap:wrap; gap:8px;
+    display:flex; align-items:flex-start; gap:8px;
     font-size:.94rem; line-height:1.5; color:var(--parchment);
   }
+  .clue-item > span:last-child{ flex:1; min-width:0; word-break:keep-all; overflow-wrap:break-word; text-wrap:balance; }
+  .clue-item > span[aria-hidden="true"]{ flex:none; }
   .clue-num{
     flex:none; display:inline-flex; align-items:center; justify-content:center;
-    min-width:46px; padding:2px 8px; border-radius:8px;
+    min-width:46px; padding:2px 8px; margin-top:1px; border-radius:8px;
     background:rgba(212,175,55,.18); border:1px solid rgba(212,175,55,.5);
     font-size:.72rem; font-weight:800; letter-spacing:.02em; color:var(--gold-bright); white-space:nowrap;
   }
   .clue-item b{
-    color:#1a0d08; font-weight:800; padding:1px 8px; border-radius:6px;
+    color:#1a0d08; font-weight:800; padding:1px 8px; border-radius:6px; white-space:nowrap;
     background:linear-gradient(180deg,#fce080 0%,#d4af37 100%);
     box-shadow:0 1px 3px rgba(0,0,0,.4);
   }
+  /* 폰처럼 좁은 화면: 상자 안쪽 여백과 번호 크기를 줄여서 문장 칸을 넓힌다. */
+  @media (max-width:400px){
+    .clue-box{ padding:14px 12px; }
+    .clue-item{ gap:6px; font-size:.88rem; }
+    .clue-num{ min-width:40px; padding:2px 6px; font-size:.68rem; }
+  }
   .suspect-row{ display:flex; justify-content:center; gap:16px; width:100%; }
+  /* min-width:0 + 그림 폭을 칸 폭에 맞춰 줄이기: 이게 없으면 그림(82px)보다 좁게 줄어들지 못해서
+     좁은 화면에서 카드가 화면 밖으로 잘린다. */
   .suspect-btn{
-    flex:1; max-width:150px; display:flex; flex-direction:column; align-items:center; gap:8px;
+    flex:1; min-width:0; max-width:150px; display:flex; flex-direction:column; align-items:center; gap:8px;
     background:rgba(20,12,8,.55); border:1px solid rgba(140,90,60,.45); border-radius:16px;
     padding:22px 10px 16px; cursor:pointer; transition:transform .15s ease, border-color .15s ease, background .15s ease;
   }
   .suspect-btn:hover, .suspect-btn:focus-visible{ transform:translateY(-4px); border-color:var(--gold); background:rgba(30,18,10,.72); outline:none; }
   .suspect-btn:active{ transform:translateY(-1px) scale(.98); }
-  .suspect-svg{ width:82px; height:auto; filter:drop-shadow(0 4px 8px rgba(0,0,0,.6)); margin-bottom:4px; }
+  .suspect-svg{ width:min(82px, 100%); height:auto; filter:drop-shadow(0 4px 8px rgba(0,0,0,.6)); margin-bottom:4px; }
   .suspect-id{ font-size:.98rem; color:#e7cfa8; letter-spacing:.03em; font-weight:800; }
+  /* 버튼 하단 중앙: 그림에서 어디가 왼쪽이고 오른쪽인지 알려 주는 표시 (보는 사람 기준) */
+  .suspect-side{
+    display:flex; align-items:center; justify-content:center; gap:7px; white-space:nowrap;
+    font-size:.8rem; font-weight:700; color:#cdb283; letter-spacing:.02em;
+  }
+  .suspect-side i{ width:1px; height:12px; background:rgba(205,178,131,.6); }
+  /* 폰처럼 좁은 화면: 양옆 여백과 카드 사이 간격을 줄여서 카드 3장이 한 줄에 다 들어오게 한다. */
+  @media (max-width:400px){
+    .suspects-content{ padding-left:10px; padding-right:10px; }
+    .suspect-row{ gap:8px; }
+    .suspect-btn{ padding:20px 4px 14px; }
+  }
+  @media (max-width:340px){
+    .suspect-id{ font-size:.9rem; }
+    .suspect-side{ font-size:.7rem; gap:5px; }
+  }
+
+  /* ---------- 스토커를 찾은 뒤 화면 (용의자 화면과 같은 나무 벽 배경) ---------- */
+  #foundView{ position:fixed; inset:0; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  .found-text{
+    position:relative; z-index:2; max-width:680px; margin:0; padding:0 24px;
+    font-size:clamp(1.05rem, 4.6vw, 1.5rem); line-height:1.8; letter-spacing:.02em;
+    color:var(--gold-bright); text-shadow:0 3px 10px rgba(0,0,0,.7);
+    text-align:center; word-break:keep-all; text-wrap:balance;
+  }
+  /* 우측 하단 '다음으로' 버튼: 오른쪽 벽(화면 끝)에서 여백을 둔다. */
+  .found-actions{
+    position:absolute; z-index:3;
+    right:max(24px, env(safe-area-inset-right)); bottom:max(24px, env(safe-area-inset-bottom));
+  }
+  .found-next{ padding:11px 24px; border-radius:12px; font-size:.9rem; font-weight:800; cursor:pointer; }
 
   /* ---------- 자물쇠 해제 연출 ---------- */
   .unlock-scene{ position:relative; height:150px; display:flex; align-items:center; justify-content:center; margin-bottom:16px; }
@@ -672,6 +841,18 @@ PRISON_KEY_PUZZLE_HTML = """
       </div>
     </div>
     <div class="suspect-row" id="suspectRow"></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 스토커를 찾은 뒤 화면 (용의자 B 를 지목하면 등장)                    -->
+<!-- ============================================================ -->
+<div id="foundView" hidden>
+  <div class="prison-bg"></div>
+  <div class="prison-vignette"></div>
+  <p class="found-text">당신은 우주대스타를 납치한 스토커를 찾았습니다!<br>자, 이제 현상금을 받으러 가볼까요?</p>
+  <div class="found-actions">
+    <button id="btnFoundNext" class="btn-gold found-next">다음으로</button>
   </div>
 </div>
 
@@ -1096,12 +1277,16 @@ PRISON_KEY_PUZZLE_HTML = """
       const btn = document.createElement('button');
       btn.className = 'suspect-btn';
       btn.setAttribute('aria-label', `용의자 ${s.id}: 장갑 ${s.gloveName}, ${s.handName}으로 문을 열었음, 시계 ${s.watchName}. 지목하기`);
-      btn.innerHTML = `${buildSuspectSVG(s)}<span class="suspect-id">용의자 ${s.id}</span>`;
+      // 그림은 보는 사람 기준으로 그려져 있어서(화면 왼쪽 = 왼손), 표시도 화면 기준 왼쪽/오른쪽이다.
+      btn.innerHTML = `${buildSuspectSVG(s)}<span class="suspect-id">용의자 ${s.id}</span>`
+        + `<span class="suspect-side" aria-hidden="true"><span>왼쪽</span><i></i><span>오른쪽</span></span>`;
       btn.addEventListener('click', ()=>{
         audio.init();
         if(s.id === STALKER_ID){
-          showToast('스토커를 찾아냈다!', 'success');
           audio.playRotate();
+          // 방금 누른 오답 토스트가 아직 떠 있으면 새 화면 위에 남지 않도록 치운다.
+          clearTimeout(toastTimer); toastEl.classList.remove('show');
+          applyView('found'); // 스토커를 찾았다는 안내 화면으로 넘어간다
         }else{
           showToast('아니다... 다른 사람이다', 'fail');
           audio.playBuzz();
@@ -1123,9 +1308,27 @@ PRISON_KEY_PUZZLE_HTML = """
       const parentDoc = window.parent && window.parent.document;
       if(!parentDoc) return;
       const introEl = parentDoc.getElementById('prisonIntroBlock');
-      if(introEl) introEl.style.display = (name === 'suspects') ? 'none' : '';
+      if(introEl) introEl.style.display = (name === 'suspects' || name === 'found') ? 'none' : '';
     }catch(e){ /* 크로스 오리진 등으로 접근이 막히면 무시 */ }
   }
+
+  // 스토커를 찾은 화면은 '우측 하단' 버튼이 실제로 보이는 화면 아래쪽에 오도록,
+  // 이 iframe 의 높이를 바깥 페이지에서 보이는 높이에 맞춘다. (그대로 두면 820px 고정이라
+  // 낮은 폰 화면에서는 버튼이 화면 아래로 밀려 스크롤해야 보인다.)
+  function fitFrameToParentViewport(){
+    try{
+      const fr = window.frameElement, pw = window.parent;
+      if(!fr || !pw) return;
+      // 앞 화면에서 스크롤해 둔 상태라면 iframe 윗부분이 화면 밖에 있으므로, 바깥 페이지를 맨 위로 올린 뒤 잰다.
+      const main = pw.document.querySelector('[data-testid="stMain"]');
+      if(main) main.scrollTop = 0;
+      pw.scrollTo(0, 0);
+      const top = Math.max(0, fr.getBoundingClientRect().top);
+      const h = Math.round(pw.innerHeight - top - 8);
+      fr.style.height = Math.max(420, Math.min(820, h)) + 'px';
+    }catch(e){ /* 접근이 막히면 기본 높이(820px) 그대로 둔다 */ }
+  }
+  window.addEventListener('resize', ()=>{ if(currentView === 'found') fitFrameToParentViewport(); });
 
   let currentView = 'prison';
   function applyView(name, opts){
@@ -1133,8 +1336,10 @@ PRISON_KEY_PUZZLE_HTML = """
     currentView = name;
     document.getElementById('prisonView').hidden = name !== 'prison';
     document.getElementById('suspectsView').hidden = name !== 'suspects';
+    document.getElementById('foundView').hidden = name !== 'found';
     document.getElementById('gameView').hidden = name !== 'game';
     syncParentIntroVisibility(name);
+    if(name === 'found') fitFrameToParentViewport(); // 안내문을 숨긴 뒤(위치가 바뀐 뒤)에 맞춘다
     if(name === 'game' && !opts.skipRegen){
       GAME_LEVELS[0] = generateLevelSafe(1, 8);
       loadLevel();
@@ -2034,6 +2239,10 @@ def generate_grade_problems(grade):
 # ==========================================
 st.set_page_config(page_title="중생대 문제", layout="centered")
 
+# 새로 접속한 세션이면 방문자 수를 1 올린다. (버튼을 눌러 스크립트가 다시 실행돼도 한 번만 센다.)
+if "visit_number" not in st.session_state:
+    st.session_state.visit_number = record_visit()
+
 # 모든 화면에서 Streamlit 자체 버튼(상단 툴바·메뉴, Manage app 등)을 숨긴다.
 hide_streamlit_chrome()
 
@@ -2053,6 +2262,11 @@ if "step" not in st.session_state:
 # 이미 열려 있던 세션에도 단서 화면용 상태가 항상 있도록 보장한다.
 st.session_state.setdefault("stalker_clue_shown", False)
 st.session_state.setdefault("stalker_clue_button_idx", None)
+st.session_state.setdefault("button_click_count", 0)
+st.session_state.setdefault("blue_watch_clue_shown", False)
+st.session_state.setdefault(
+    "blue_watch_clue_target", random.randint(1, BLUE_WATCH_CLUE_MAX_CLICK)
+)
 
 # --- 화면 0: 인트로 ---
 if st.session_state.step == "intro":
@@ -2087,6 +2301,13 @@ if st.session_state.step == "intro":
             padding: 30px;
             box-sizing: border-box;
         }}
+        .visitor-count {{
+            margin-top: 28px;
+            text-align: center;
+            color: #7b8190;
+            font-size: 12px !important;
+            letter-spacing: 1px;
+        }}
         .intro-text {{
             color: #1a1a1a !important;
             font-size: 24px !important;
@@ -2111,6 +2332,7 @@ if st.session_state.step == "intro":
             color: #000000 !important;
             border-color: #999999 !important;
         }}
+        {NEXT_BUTTON_SHIFT_CSS}
         </style>
         """,
         unsafe_allow_html=True,
@@ -2139,9 +2361,16 @@ if st.session_state.step == "intro":
     st.write("")
     col1, col2, col3 = st.columns([6, 2, 2])
     with col3:
-        if lucky_button("다음으로 이동", use_container_width=True):
+        if lucky_button("다음으로", use_container_width=True):
             st.session_state.step = "select_grade"
             st.rerun()
+
+    # 이번 접속이 몇 번째 방문인지 작게 보여 준다. (저장에 실패해 번호가 없으면 숨긴다.)
+    if SHOW_VISITOR_COUNT and st.session_state.visit_number:
+        st.markdown(
+            f"<div class='visitor-count'>{st.session_state.visit_number:,}번째 방문자</div>",
+            unsafe_allow_html=True,
+        )
 
 # --- 화면 5: 타임머신 화면 ---
 elif st.session_state.step == "timemachine":
@@ -2276,11 +2505,11 @@ elif st.session_state.step == "arrival":
     st.markdown(
         f"""
         <style>
+        /* 텍스트 창과 버튼은 조선시대 그림 위가 아니라 검은 배경 위에 둔다.
+           (조선시대 그림은 타임머신 도착 애니메이션에서만 보인다.) */
         .stApp {{
-            background-image: url("https://i.postimg.cc/J04WRcYy/Agent-Image-A-lively-traditional-Korean-market-street-in-1592-during-the-Joseon-dynasty-lined-wi.png");
-            background-size: cover;
-            background-position: center;
-            background-repeat: no-repeat;
+            background-color: #000000 !important;
+            background-image: none !important;
         }}
         .stApp, .stApp * {{
             font-family: {APP_FONT_FAMILY} !important;
@@ -2329,6 +2558,7 @@ elif st.session_state.step == "arrival":
             color: #000000 !important;
             border-color: #999999 !important;
         }}
+        {NEXT_BUTTON_SHIFT_CSS}
         </style>
         """,
         unsafe_allow_html=True,
@@ -2357,7 +2587,7 @@ elif st.session_state.step == "arrival":
         st.write("")
         col1, col2, col3 = st.columns([6, 2, 2])
         with col3:
-            if lucky_button("다음으로 이동", use_container_width=True):
+            if lucky_button("다음으로", use_container_width=True):
                 st.session_state.step = "prison_key"
                 st.rerun()
 
@@ -2463,7 +2693,7 @@ elif st.session_state.step == "secret_room":
             )
             st.rerun()
 
-# --- 스토커 단서 화면: 검은 화면에 단서를 보여 준 뒤 문제 선택 화면으로 자동 복귀 ---
+# --- 단서 화면(녹색 장갑·파란색 시계 공용): 검은 화면에 단서를 보여 준 뒤 원래 화면으로 자동 복귀 ---
 elif st.session_state.step == "stalker_clue":
     st.markdown(
         f"""
@@ -2497,14 +2727,14 @@ elif st.session_state.step == "stalker_clue":
             text-wrap: balance;
         }}
         </style>
-        <div class="stalker-clue"><span class="stalker-clue-text">{STALKER_CLUE_TEXT}</span></div>
+        <div class="stalker-clue"><span class="stalker-clue-text">{html_escape(st.session_state.get("clue_text", STALKER_CLUE_TEXT))}</span></div>
         """,
         unsafe_allow_html=True,
     )
 
-    # 정해진 시간 동안 검은 화면을 보여 준 뒤, 문제 선택 화면으로 돌아간다.
+    # 정해진 시간 동안 검은 화면을 보여 준 뒤, 단서를 띄우기 직전의 화면으로 돌아간다.
     time.sleep(STALKER_CLUE_SECONDS)
-    st.session_state.step = "select_problem"
+    st.session_state.step = st.session_state.get("clue_return_step", "select_problem")
     st.rerun()
 
 # --- 그 외 모든 화면 (중생대 문제 선택 및 풀이 등) ---
@@ -2582,7 +2812,10 @@ else:
 
     # --- 화면 1: 학년 선택 ---
     if st.session_state.step == "select_grade":
-        readable_box("<h2>중생대 문제</h2><p>문제를 풀 학년을 선택하세요.</p>")
+        readable_box(
+            "<h2>중생대 문제</h2><p>문제를 풀 학년을 선택하세요.</p>",
+            gap_below=True,
+        )
 
         col1, col2, col3 = st.columns(3)
         if lucky_button("중1 문제 선택", use_container_width=True, dg=col1):

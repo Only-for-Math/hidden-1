@@ -3032,7 +3032,8 @@ def f_prop(target, level):
     if level == 1:
         while True:
             p, c = random.randint(1, 6), random.randint(2, 12)
-            if (target * p) % c == 0 and target * p // c != p:
+            # 지나는 점의 x 좌표(p)를 그대로 묻지 않도록 c != p 로 한다.
+            if (target * p) % c == 0 and target * p // c != p and c != p:
                 q_ = target * p // c
                 break
         q = (
@@ -3343,7 +3344,8 @@ def f_pour(target, level):
     w = target - h0                     # 새로 부은 물이 더해 주는 높이
     r = random.randint(2, 5)
     if level == 2:
-        k = random.choice([k for k in range(1, 5) if (3 * w) % (k * k) == 0])
+        # 높이가 반지름의 절반보다 낮은 납작한 원뿔은 그릇으로 어색하므로 제외한다.
+        k = random.choice([k for k in range(1, 5) if (3 * w) % (k * k) == 0 and 2 * (3 * w // (k * k)) >= r * k])
         R, H = r * k, 3 * w // (k * k)
         q = (
             f"밑면의 반지름의 길이가 ${R}$ cm, 높이가 ${H}$ cm인 원뿔 모양의 그릇에 물을 가득 채웠다. "
@@ -3364,7 +3366,8 @@ def f_pour(target, level):
         if rest <= 0 or rest % (R2 * R2):
             return None
         H2 = rest // (R2 * R2)
-        return (r_, R1, H1, R2, H2) if 2 <= H2 <= 20 else None
+        # 납작한 원뿔(높이가 반지름의 절반 미만)은 그릇으로 어색하므로 제외한다.
+        return (r_, R1, H1, R2, H2) if 2 <= H2 <= 20 and 2 * H1 >= R1 and 2 * H2 >= R2 else None
 
     r, R1, H1, R2, H2 = _roll(
         make,
@@ -3711,11 +3714,20 @@ def f_ineq_cond(target, level):
     return q, exp, str(target)
 
 
+def _round_budget(lo, span):
+    """lo 보다 크고 lo+span 보다 작은 금액 중, 5000원·1000원 같은 '떨어지는' 값을 되도록 고른다."""
+    for step in (500, 100, 50, 10):
+        cands = [v for v in range(lo + 1, lo + span) if v % step == 0]
+        if cands:
+            return random.choice(cands)
+    return lo + random.randint(0, span - 1)
+
+
 def f_ineq_word(target, level):
     """일차부등식의 활용 (하: 포장비 포함, 중: 이미 산 물건 제외, 상: 할인 + 포장비 + 배송비)."""
     if level == 1:
         p, w = random.randint(3, 15) * 100, random.randint(1, 5) * 500
-        B = w + p * target + random.randint(0, p - 1)
+        B = _round_budget(w + p * target, p)
         q = (
             f"한 개에 ${p}$원인 사탕을 포장비 ${w}$원을 내고 포장하여 ${B}$원 이하로 사려고 한다. "
             "사탕을 최대 몇 개까지 살 수 있는지 구하시오."
@@ -3728,7 +3740,7 @@ def f_ineq_word(target, level):
     if level == 2:
         p, q_ = random.randint(3, 15) * 100, random.randint(2, 12) * 100
         m = random.randint(2, 6)
-        B = p * m + q_ * target + random.randint(0, q_ - 1)
+        B = _round_budget(p * m + q_ * target, q_)
         q = (
             f"한 개에 ${p}$원인 연필을 이미 ${m}$자루 샀고, 남은 돈으로 한 개에 ${q_}$원인 지우개를 사려고 한다. "
             f"가진 돈이 ${B}$원일 때, 지우개를 최대 몇 개까지 살 수 있는지 구하시오."
@@ -3744,7 +3756,7 @@ def f_ineq_word(target, level):
         price = p * (100 - d) // 100
         break
     w, s = random.randint(1, 5) * 500, random.randint(1, 4) * 500
-    B = w + s + price * target + random.randint(0, price - 1)
+    B = _round_budget(w + s + price * target, price)
     q = (
         f"정가가 ${p}$원인 물건을 ${d}\\%$ 할인하여 판매한다. 포장비 ${w}$원과 배송비 ${s}$원을 따로 내고 "
         f"${B}$원 이하로 이 물건을 사려고 할 때, 최대 몇 개까지 살 수 있는지 구하시오."
@@ -3817,7 +3829,7 @@ def f_func_intercept(target, level):
         if random.random() < 0.5:
             p, a = -p, -a
         q = (
-            f"일차함수 $y={_coef(a)}+b$의 그래프의 $x$절편이 ${p}$일 때, $y$절편을 구하시오."
+            f"일차함수 $y={_coef(a)} + b$의 그래프의 $x$절편이 ${p}$일 때, $y$절편을 구하시오."
         )
         exp = (
             f"$x$절편이 ${p}$이므로 $y=0$일 때 $x={p}$입니다.\n\n"
@@ -3831,12 +3843,12 @@ def f_func_intercept(target, level):
         if random.random() < 0.5:
             n, c = -n, -c
         q = (
-            f"일차함수 $y={_lin(m, c)}$의 그래프의 $y$절편과 일차함수 $y={_coef(n)}+a$의 그래프의 "
+            f"일차함수 $y={_lin(m, c)}$의 그래프의 $y$절편과 일차함수 $y={_coef(n)} + a$의 그래프의 "
             "$x$절편이 서로 같을 때, 상수 $a$의 값을 구하시오."
         )
         exp = (
             f"$y={_lin(m, c)}$의 $y$절편은 ${c}$입니다.\n\n"
-            f"$y={_coef(n)}+a$의 $x$절편은 $-\\frac{{a}}{{{n}}}$이므로 $-\\frac{{a}}{{{n}}}={c}$, 즉 $a={target}$"
+            f"$y={_coef(n)} + a$의 $x$절편은 $-\\frac{{a}}{{{n}}}$이므로 $-\\frac{{a}}{{{n}}}={c}$, 즉 $a={target}$"
         )
         return q, exp, str(target)
     k = random.choice([d for d in range(2, 9) if target % d == 0] or [1])
@@ -3904,7 +3916,7 @@ def f_func_cross(target, level):
         if b1 != 0 and b2 != 0:
             break
     q = (
-        f"세 일차함수 $y={_lin(m1, b1)}$, $y={_lin(m2, b2)}$, $y={_coef(m3)}+k$의 그래프가 "
+        f"세 일차함수 $y={_lin(m1, b1)}$, $y={_lin(m2, b2)}$, $y={_coef(m3)} + k$의 그래프가 "
         "한 점에서 만날 때, 상수 $k$의 값을 구하시오."
     )
     exp = (
@@ -4219,6 +4231,21 @@ def f_prob_unknown(target, level):
 
 def f_count_ways(target, level):
     """경우의 수에서 모르는 수 x 구하기 (하: 대표 2명, 중: 회장·부회장, 상: 합과 곱의 법칙)."""
+    if level == 1 and target == 2:
+        # x=2 이면 '2명 중 2명 뽑기'(1가지)처럼 뜻이 없어지므로 곱의 법칙 문제로 바꾼다.
+        if random.random() < 0.5:
+            q = (
+                "서로 다른 동전 $x$개를 동시에 던질 때, 나올 수 있는 모든 경우의 수가 $4$가지일 때, "
+                "$x$의 값을 구하시오."
+            )
+            exp = "동전 한 개를 던질 때 나오는 경우는 2가지이므로 $x$개를 던지면 $2^x$가지입니다.\n\n$$2^x=4$$\n\n따라서 $x=2$"
+        else:
+            q = "서로 다른 $x$명을 한 줄로 세우는 방법이 모두 $2$가지일 때, $x$의 값을 구하시오."
+            exp = (
+                "$x$명을 한 줄로 세우는 방법은 $x\\times(x-1)\\times\\cdots\\times2\\times1$가지이므로\n\n"
+                "$$x\\times(x-1)\\times\\cdots\\times2\\times1=2$$\n\n따라서 $x=2$"
+            )
+        return q, exp, str(target)
     if level == 1:
         N = target * (target - 1) // 2
         q = random.choice(
@@ -4236,15 +4263,16 @@ def f_count_ways(target, level):
         return q, exp, str(target)
     if level == 2:
         N = target * (target - 1)
-        q = random.choice(
-            [
-                f"학생 $x$명 중에서 회장 1명, 부회장 1명을 뽑는 경우의 수가 ${N}$가지일 때, $x$의 값을 구하시오.",
-                f"서로 다른 $x$권의 책 중에서 2권을 골라 책꽂이에 한 줄로 꽂는 방법이 모두 ${N}$가지일 때, "
-                "$x$의 값을 구하시오.",
-                f"$x$개의 팀이 있다. 각 팀이 다른 모든 팀과 홈 경기와 원정 경기를 한 번씩 치렀더니 경기가 "
-                f"모두 ${N}$번 열렸다. $x$의 값을 구하시오.",
-            ]
-        )
+        variants = [
+            f"학생 $x$명 중에서 회장 1명, 부회장 1명을 뽑는 경우의 수가 ${N}$가지일 때, $x$의 값을 구하시오.",
+            f"서로 다른 $x$권의 책 중에서 2권을 골라 책꽂이에 한 줄로 꽂는 방법이 모두 ${N}$가지일 때, "
+            "$x$의 값을 구하시오.",
+            f"$x$개의 팀이 있다. 각 팀이 다른 모든 팀과 홈 경기와 원정 경기를 한 번씩 치렀더니 경기가 "
+            f"모두 ${N}$번 열렸다. $x$의 값을 구하시오.",
+        ]
+        if target == 2:
+            del variants[1]  # 2권 중에서 2권을 고른다는 말이 되어 어색하다.
+        q = random.choice(variants)
         exp = (
             "첫 번째로 고르는 경우가 $x$가지, 그 각각에 대하여 두 번째로 고르는 경우가 $(x-1)$가지이므로\n\n"
             f"$$x(x-1)={N}$$\n\n따라서 $x={target}$"
@@ -4542,7 +4570,8 @@ def f_quad_word(target, level):
         )
         return q, exp, str(target)
     if level == 2:
-        W, H = target + random.randint(3, 16), target + random.randint(2, 12)
+        # 길의 폭이 정원의 가로·세로에 비해 지나치게 넓어지지 않도록 3배 이상으로 잡는다.
+        W, H = 3 * target + random.randint(2, 20), 3 * target + random.randint(1, 14)
         A = (W - target) * (H - target)
         q = (
             f"가로의 길이가 ${W}$ m, 세로의 길이가 ${H}$ m인 직사각형 모양의 정원에 폭이 일정한 십자 모양의 길을 "

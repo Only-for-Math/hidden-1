@@ -746,6 +746,15 @@ PRISON_KEY_PUZZLE_HTML = """
   }
   .found-next{ padding:11px 24px; border-radius:12px; font-size:.9rem; font-weight:800; cursor:pointer; }
 
+  /* ---------- 마지막 화면: 걸린 시간 안내 (스토커를 찾은 화면과 같은 배경) ---------- */
+  #finishView{ position:fixed; inset:0; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  .finish-box{ position:relative; z-index:2; max-width:680px; padding:0 24px; text-align:center; }
+  .finish-time{
+    margin:0 0 18px; font-size:clamp(1.15rem, 5vw, 1.7rem); line-height:1.7; letter-spacing:.02em;
+    color:var(--gold-bright); text-shadow:0 3px 10px rgba(0,0,0,.7); word-break:keep-all; text-wrap:balance;
+  }
+  .finish-note{ margin:0; font-size:clamp(.95rem, 3.8vw, 1.15rem); color:#c9a877; text-shadow:0 2px 8px rgba(0,0,0,.7); }
+
   /* ---------- 자물쇠 해제 연출 ---------- */
   .unlock-scene{ position:relative; height:150px; display:flex; align-items:center; justify-content:center; margin-bottom:16px; }
   .lock-svg{ width:92px; height:115px; filter:drop-shadow(0 6px 14px rgba(0,0,0,.6)); position:relative; z-index:2; }
@@ -865,6 +874,18 @@ PRISON_KEY_PUZZLE_HTML = """
   <p class="found-text">당신은 우주대스타를 납치한 스토커를 찾았습니다!<br>자, 이제 현상금을 받으러 가볼까요?</p>
   <div class="found-actions">
     <button id="btnFoundNext" class="btn-gold found-next">다음으로</button>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 마지막 화면 ("다음으로"를 누르면 등장): 처음부터 지금까지 걸린 시간                  -->
+<!-- ============================================================ -->
+<div id="finishView" hidden>
+  <div class="prison-bg"></div>
+  <div class="prison-vignette"></div>
+  <div class="finish-box">
+    <p class="finish-time" id="finishTime"></p>
+    <p class="finish-note">본 창은 닫으셔도 됩니다!</p>
   </div>
 </div>
 
@@ -1320,7 +1341,7 @@ PRISON_KEY_PUZZLE_HTML = """
       const parentDoc = window.parent && window.parent.document;
       if(!parentDoc) return;
       const introEl = parentDoc.getElementById('prisonIntroBlock');
-      if(introEl) introEl.style.display = (name === 'suspects' || name === 'found') ? 'none' : '';
+      if(introEl) introEl.style.display = (name === 'suspects' || name === 'found' || name === 'finish') ? 'none' : '';
     }catch(e){ /* 크로스 오리진 등으로 접근이 막히면 무시 */ }
   }
 
@@ -1340,7 +1361,21 @@ PRISON_KEY_PUZZLE_HTML = """
       fr.style.height = Math.max(420, Math.min(820, h)) + 'px';
     }catch(e){ /* 접근이 막히면 기본 높이(820px) 그대로 둔다 */ }
   }
-  window.addEventListener('resize', ()=>{ if(currentView === 'found') fitFrameToParentViewport(); });
+  window.addEventListener('resize', ()=>{ if(currentView === 'found' || currentView === 'finish') fitFrameToParentViewport(); });
+
+  /* ========================================================
+     스톱워치 (화면에는 보이지 않는다)
+     처음 "다음으로"를 누른 때부터 마지막 "다음으로"를 누를 때까지 걸린 시간을 잰다.
+     시작은 서버(파이썬)가 기록하고, 이 화면을 만들 때까지 흐른 시간(ELAPSED_BEFORE_MS)을 넘겨 준다.
+     (서버 시계와 접속한 기기의 시계를 직접 비교하지 않고 '흐른 시간'만 더하므로 시계가 달라도 맞다.)
+  ======================================================== */
+  const ELAPSED_BEFORE_MS = Math.max(0, Number("__ELAPSED_BEFORE_MS__") || 0);
+  const FRAME_OPENED_AT = Date.now();
+  function elapsedMs(){ return ELAPSED_BEFORE_MS + (Date.now() - FRAME_OPENED_AT); }
+  function formatElapsed(ms){
+    const total = Math.round(ms / 1000);
+    return `${Math.floor(total / 60)}분 ${total % 60}초`;
+  }
 
   let currentView = 'prison';
   function applyView(name, opts){
@@ -1349,9 +1384,10 @@ PRISON_KEY_PUZZLE_HTML = """
     document.getElementById('prisonView').hidden = name !== 'prison';
     document.getElementById('suspectsView').hidden = name !== 'suspects';
     document.getElementById('foundView').hidden = name !== 'found';
+    document.getElementById('finishView').hidden = name !== 'finish';
     document.getElementById('gameView').hidden = name !== 'game';
     syncParentIntroVisibility(name);
-    if(name === 'found') fitFrameToParentViewport(); // 안내문을 숨긴 뒤(위치가 바뀐 뒤)에 맞춘다
+    if(name === 'found' || name === 'finish') fitFrameToParentViewport(); // 안내문을 숨긴 뒤(위치가 바뀐 뒤)에 맞춘다
     if(name === 'game' && !opts.skipRegen){
       GAME_LEVELS[0] = generateLevelSafe(1, 8);
       loadLevel();
@@ -1920,6 +1956,11 @@ PRISON_KEY_PUZZLE_HTML = """
       applyView('prison');
     });
     document.getElementById('btnGoGame').addEventListener('click', ()=> applyView('game'));
+    document.getElementById('btnFoundNext').addEventListener('click', ()=>{
+      // 마지막 "다음으로": 처음부터 지금까지 걸린 시간을 알려 주고 끝낸다.
+      document.getElementById('finishTime').textContent = `축하합니다. 당신은 ${formatElapsed(elapsedMs())} 걸렸습니다.`;
+      applyView('finish');
+    });
     document.getElementById('btnUnlockClose').addEventListener('click', ()=>{
       closeUnlockModal();
       applyView('suspects'); // 6번 열쇠로 잠금을 풀고 "계속하기"를 누르면 용의자 화면으로 이동
@@ -5216,6 +5257,8 @@ if st.session_state.step == "intro":
     col1, col2, col3 = st.columns([6, 2, 2])
     with col3:
         if lucky_button("다음으로", use_container_width=True):
+            # 화면에는 보이지 않는 스톱워치를 여기서 시작한다. (끝은 마지막 화면의 "다음으로")
+            st.session_state.stopwatch_start = time.monotonic()
             st.session_state.step = "select_difficulty"
             st.rerun()
 
@@ -5556,7 +5599,13 @@ elif st.session_state.step == "prison_key":
         unsafe_allow_html=True,
     )
 
-    st.iframe(PRISON_KEY_PUZZLE_HTML, height=820)
+    # 스톱워치: 처음 "다음으로"를 누른 뒤 지금까지 흐른 시간을 게임 화면에 넘겨 준다.
+    # 화면 내용(srcdoc)이 다시 실행될 때마다 바뀌면 게임이 처음부터 다시 로드되므로, 한 번만 만들어 둔다.
+    if "prison_key_html" not in st.session_state:
+        started = st.session_state.get("stopwatch_start", time.monotonic())
+        elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
+        st.session_state.prison_key_html = PRISON_KEY_PUZZLE_HTML.replace("__ELAPSED_BEFORE_MS__", str(elapsed_ms))
+    st.iframe(st.session_state.prison_key_html, height=820)
 
 # --- 비밀의 방: 어떤 버튼이든 25만분의 1 확률로 누르면 도착하는 화면 ---
 elif st.session_state.step == "secret_room":
@@ -5612,6 +5661,9 @@ elif st.session_state.step == "secret_room":
         unsafe_allow_html=True,
     )
     st.balloons()
+
+    # 감옥 퍼즐 화면에서 이곳으로 왔다면 돌아갈 때 게임이 새로 로드되므로, 그때의 스톱워치 값을 다시 만든다.
+    st.session_state.pop("prison_key_html", None)
 
     # 비밀의 방 안의 버튼은 다시 주사위를 굴리지 않는 일반 버튼이다.
     _, mid_col, _ = st.columns([1, 1, 1])

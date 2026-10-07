@@ -2,10 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "hidden-1",
+      "name": "hidden-1-copy",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "streamlit", "run", "hidden-1.py", "--server.port", "8501", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
-      "port": 8501
+      "runtimeArgs": ["-m", "streamlit", "run", "hidden-1-copy.py", "--server.port", "8502", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
+      "port": 8502
     }
   ]
 }

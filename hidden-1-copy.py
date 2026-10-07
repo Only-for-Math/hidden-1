@@ -2372,16 +2372,17 @@ def g1_linear_high(target):
         d = random.choice([2, 3])
         if a + c - h - d >= 2:  # 정리한 x 의 계수가 1 이하가 되어 쉬워지지 않게
             break
-    b = random.randint(1, 5)
-    f = random.randint(1, 4)
-    k = random.randint(1, 4)
-    g = random.randint(1, 4)
-    e = a * (target - b) + c * (target + f) - h * (target - k) - d * (target - g)
+    while True:
+        b = random.randint(1, 5)
+        f = random.randint(1, 4)
+        k = random.randint(1, 4)
+        g = random.randint(1, 4)
+        e = a * (target - b) + c * (target + f) - h * (target - k) - d * (target - g)
+        expr = f"{a}(x - {b}) + {c}(x + {f}) - {h}(x - {k}) = {d}(x - {g}) {_sgn(e)}".strip()
+        if _vis_len(expr) <= EXPR_MAX_LEN:   # 식이 너무 길어지지 않게
+            break
 
-    q = (
-        "다음 방정식의 해 $x$를 구하시오.\n\n"
-        f"$${a}(x - {b}) + {c}(x + {f}) - {h}(x - {k}) = {d}(x - {g}) {_sgn(e)}$$"
-    )
+    q = f"다음 방정식의 해 $x$를 구하시오.\n\n$${expr}$$"
     exp = (
         "괄호를 풀고 식을 정리하면:\n\n"
         f"$${a}x - {a*b} + {c}x + {c*f} - {h}x + {h*k} = {d}x - {d*g} {_sgn(e)}$$\n\n"
@@ -2391,31 +2392,27 @@ def g1_linear_high(target):
 
 
 def g1_expr_high(target):
-    x_val = random.choice([-3, -2, 2, 3])
-    a = random.choice([2, 3])
-    b = random.randint(1, 4)
-    c = random.choice([2, 4])
-    m = random.choice([2, 3])
-    f = random.randint(1, 4)
-    n = random.choice([2, 3])
-    g = random.randint(1, 4)
-    h = random.choice([2, 3])
-    j = random.randint(1, 4)
-    k = target - (
-        a * (x_val + b) - c * (x_val - 1) + m * (x_val + f)
-        - n * (x_val - g) + h * (x_val + j)
-    )
+    # 식이 길어지지 않게 묶음 4개만 쓰고(따로 더하는 상수항 없음), 대신 분수 x 를 대입하게 해서 어렵게 한다.
+    # 곱하는 수가 모두 짝수라 식의 값은 정수이고, 마지막 묶음의 상수 g 로 값을 target 에 맞춘다.
+    while True:
+        x_val = random.choice([Fraction(-1, 2), Fraction(1, 2), Fraction(-3, 2), Fraction(3, 2)])
+        a, c, m, n = (random.choice([2, 4]) for _ in range(4))
+        b, f = random.randint(1, 4), random.randint(1, 4)
+        head = a * (x_val + b) - c * (x_val - 1) + m * (x_val + f)
+        gs = [g for g in range(-6, 7) if g != 0 and head - n * (x_val - g) == target]
+        if gs:
+            g = random.choice(gs)
+            break
 
-    q = (
-        f"$x={x_val}$ 일 때, 다음 식의 값을 구하시오.\n\n"
-        f"$${a}(x + {b}) - {c}(x - 1) + {m}(x + {f}) - {n}(x - {g}) + {h}(x + {j}) {_sgn(k)}$$"
-    )
+    expr = f"{a}(x + {b}) - {c}(x - 1) + {m}(x + {f}) - {n}(x {_sgn(-g)})"
+    xs = _frac(x_val)
+    q = f"$x={xs}$ 일 때, 다음 식의 값을 구하시오.\n\n$${expr}$$"
     exp = (
-        f"식의 $x$ 자리에 ${x_val}$를 대입하면:\n\n"
-        f"$${a}\\times({x_val} + {b}) - {c}\\times({x_val} - 1) + {m}\\times({x_val} + {f})"
-        f" - {n}\\times({x_val} - {g}) + {h}\\times({x_val} + {j}) {_sgn(k)}$$\n\n"
-        f"$$= {a}\\times({x_val + b}) - {c}\\times({x_val - 1}) + {m}\\times({x_val + f})"
-        f" - {n}\\times({x_val - g}) + {h}\\times({x_val + j}) {_sgn(k)} = {target}$$"
+        f"식의 $x$ 자리에 ${xs}$를 대입하면:\n\n"
+        f"$${a}\\times({xs} + {b}) - {c}\\times({xs} - 1) + {m}\\times({xs} + {f})"
+        f" - {n}\\times({xs} {_sgn(-g)})$$\n\n"
+        f"$$= {a}\\times({_frac(x_val + b)}) - {c}\\times({_frac(x_val - 1)}) + {m}\\times({_frac(x_val + f)})"
+        f" - {n}\\times({_frac(x_val - g)}) = {target}$$"
     )
     return q, exp, str(target)
 
@@ -2798,6 +2795,27 @@ def _roll(make, solve, target, tries=60000):
     raise RuntimeError(f"조건을 만족하는 문제를 만들지 못했습니다 (target={target})")
 
 
+EXPR_MAX_LEN = 30   # 문제에 나오는 식 하나의 '보이는 글자 수' 상한 (휴대폰에서도 두 줄 안에 읽히도록)
+
+
+def _vis_len(tex):
+    """수식이 화면에서 차지하는 글자 수. 공백·중괄호·^ 는 세지 않고, \\times 같은 기호는 한 글자로 센다."""
+    n, i = 0, 0
+    while i < len(tex):
+        ch = tex[i]
+        if ch == "\\":
+            j = i + 1
+            while j < len(tex) and tex[j].isalpha():
+                j += 1
+            n += 0 if tex[i + 1:j] in ("frac", "sqrt", "left", "right", "overline") else 1
+            i = j
+            continue
+        if ch not in " {}^":
+            n += 1
+        i += 1
+    return n
+
+
 def _pn(n):
     """부호를 붙여 괄호로 묶은 수. 7 -> '(+7)', -7 -> '(-7)'."""
     return f"({'+' if n > 0 else '-'}{abs(n)})"
@@ -2975,12 +2993,14 @@ def f_mixed(target, level):
         ops = ["+"] + [random.choice("+-") for _ in range(n - 1)]
         partial = sum(v if o == "+" else -v for o, (_, v) in zip(ops, terms))
         c = target - partial
-        if c != 0 and abs(c) <= 30:
+        if c == 0 or abs(c) > 30:
+            continue
+        expr = terms[0][0] + "".join(
+            f" {o} {tex}" for o, (tex, _) in zip(ops[1:], terms[1:])
+        )
+        expr += f" {_sgn(c)}"
+        if _vis_len(expr) <= EXPR_MAX_LEN - 2:   # 식이 너무 길어지지 않게
             break
-    expr = terms[0][0] + "".join(
-        f" {o} {tex}" for o, (tex, _) in zip(ops[1:], terms[1:])
-    )
-    expr += f" {_sgn(c)}"
     lines = "\n\n".join(f"$${tex} = {v}$$" for tex, v in terms)
     vals = str(terms[0][1]) + "".join(
         f" {o} {_paren(v)}" for o, (_, v) in zip(ops[1:], terms[1:])
@@ -2995,31 +3015,46 @@ def f_mixed(target, level):
 
 # ---------- 3. 문자와 식 ----------
 def f_linexpr(target, level):
-    """일차식의 덧셈·뺄셈 결과에서 계수와 상수항의 합 (괄호 묶음 수: 하 2, 중 3, 상 5)."""
-    g = (2, 3, 5)[level - 1]
+    """일차식의 덧셈·뺄셈 결과에서 계수와 상수항의 합 (괄호 묶음 수: 하 1, 중 2, 상 4).
+
+    상은 식이 너무 길어지지 않도록 따로 더하는 상수항 없이 마지막 묶음의 상수로 값을 맞춘다."""
+    g = (1, 2, 4)[level - 1]
     while True:
         ms = [random.choice([2, 3, 4, 5])] + [
             random.choice([-5, -4, -3, -2, 2, 3, 4, 5]) for _ in range(g - 1)
         ]
-        a = [_nonzero(-4, 4) for _ in range(g)]
+        a = [random.choice([-3, -2, -1, 1, 1, 2, 3, 4]) for _ in range(g)]
         b = [_nonzero(-9, 9) for _ in range(g)]
         p = sum(m * x for m, x in zip(ms, a))
-        s = sum(m * y for m, y in zip(ms, b))
-        k = target - p - s
-        if p != 0 and k != 0 and abs(p) <= 30 and abs(k) <= 30:
+        if level == 3:
+            k = 0
+            rest = target - p - sum(m * y for m, y in zip(ms[:-1], b[:-1]))
+            b[-1], rem = divmod(rest, ms[-1])
+            if rem or not 1 <= abs(b[-1]) <= 9:
+                continue
+            s = sum(m * y for m, y in zip(ms, b))
+        else:
+            s = sum(m * y for m, y in zip(ms, b))
+            k = target - p - s
+            if k == 0 or abs(k) > 30:
+                continue
+        if p == 0 or abs(p) > 30:
+            continue
+        expr = f"{ms[0]}({_lin(a[0], b[0])})" + "".join(
+            f" {'+' if m > 0 else '-'} {abs(m)}({_lin(x, y)})"
+            for m, x, y in zip(ms[1:], a[1:], b[1:])
+        )
+        expr = f"{expr} {_sgn(k)}".strip()
+        if _vis_len(expr) <= EXPR_MAX_LEN - 2:
             break
-    expr = f"{ms[0]}({_lin(a[0], b[0])})" + "".join(
-        f" {'+' if m > 0 else '-'} {abs(m)}({_lin(x, y)})"
-        for m, x, y in zip(ms[1:], a[1:], b[1:])
-    )
-    expr += f" {_sgn(k)}"
     q = (
         f"식 ${expr}$을 계산하면 $x$의 계수는 $a$, 상수항은 $b$입니다. "
         "$a+b$의 값을 구하시오."
     )
+    gathered = f"{_coef(p)} {_sgn(s)} {_sgn(k)}".strip()
     exp = (
         "분배법칙으로 괄호를 풀고 동류항끼리 모으면:\n\n"
-        f"$${_coef(p)} {_sgn(s)} {_sgn(k)}$$\n\n"
+        f"$${gathered}$$\n\n"
         f"$${_lin(p, s + k)}$$\n\n"
         f"이므로 $a={p}$, $b={s + k}$이고 $a+b={target}$"
     )
@@ -3230,12 +3265,12 @@ def f_parallel_angle(target, level):
 
 # ---------- 6. 평면도형의 성질 ----------
 def f_polygon_angle(target, level):
-    """다각형의 내각의 크기의 합 (사각형 → 육각형 → 팔각형)."""
-    n = (4, 6, 8)[level - 1]
+    """다각형의 내각의 크기의 합 (사각형 → 육각형 → 칠각형). 각을 너무 많이 늘어놓지 않도록 칠각형까지만 쓴다."""
+    n = (4, 6, 7)[level - 1]
     total = 180 * (n - 2)
     exprs = _angle_exprs(_split(total, n, 50, 170), target)
     A, B = _sum_ab(exprs)
-    name = {4: "사각형", 6: "육각형", 8: "팔각형"}[n]
+    name = {4: "사각형", 6: "육각형", 7: "칠각형"}[n]
     listing = ", ".join(f"${_ang(a, b)}$" for a, b in exprs)
     q = f"{name}의 내각의 크기가 차례로 {listing}일 때, $x$의 값을 구하시오."
     exp = (
@@ -3654,23 +3689,35 @@ def _quad_tex(a, b, c):
 
 
 def f_poly_coef(target, level):
-    """이차식의 덧셈·뺄셈에서 x의 계수 (이차식의 개수: 하 2, 중 3, 상 4)."""
-    g = level + 1
+    """이차식의 덧셈·뺄셈에서 x의 계수 (하: 두 항짜리 2개, 중: 두 항짜리 3개, 상: 세 항짜리 섞인 3개 + 앞의 수 곱하기).
+
+    식이 한 줄로 읽히는 길이를 넘지 않도록 상에서도 이차식을 4개까지 늘리지 않고, 앞에 곱하는 수로 어렵게 한다."""
+    g = 2 if level == 1 else 3
+    fulls = [True, False, True] if level == 3 else [False] * g    # 상수항까지 쓰는 세 항짜리인지
     while True:
         ops = ["+"] + [random.choice("+-") for _ in range(g - 1)]
+        mults = [random.choice([2, 3]), 1, random.choice([1, 1, 2, 3])] if level == 3 else [1] * g
         polys = [[_nonzero(-5, 5), _nonzero(-9, 9), _nonzero(-9, 9)] for _ in range(g)]
-        partial = sum((1 if o == "+" else -1) * p[1] for o, p in zip(ops[:-1], polys[:-1]))
+        partial = sum(
+            (1 if o == "+" else -1) * m * p[1] for o, m, p in zip(ops[:-1], mults[:-1], polys[:-1])
+        )
         need = target - partial
-        last_b = need if ops[-1] == "+" else -need
-        if 1 <= abs(last_b) <= 12:
-            polys[-1][1] = last_b
+        last_b, rem = divmod(need if ops[-1] == "+" else -need, mults[-1])
+        if rem != 0 or not 1 <= abs(last_b) <= 9:
+            continue
+        polys[-1][1] = last_b
+        shown = ""
+        for i, (o, m, full, (a, b, c)) in enumerate(zip(ops, mults, fulls, polys)):
+            inner = _quad_tex(a, b, c) if full else f"{_coef(a, 'x^{2}')} {_sgn(b)}x".replace("+ 1x", "+ x").replace("- 1x", "- x")
+            body = f"({inner})" if m == 1 else f"{m}({inner})"
+            shown += body if i == 0 else f" {o} {body}"
+        if _vis_len(shown) <= EXPR_MAX_LEN - 2:   # 식이 너무 길어지지 않게
             break
-    shown = ""
-    for i, (o, (a, b, c)) in enumerate(zip(ops, polys)):
-        body = f"({_quad_tex(a, b, c)})"
-        shown += body if i == 0 else f" {o} {body}"
     bs = [p[1] for p in polys]
-    gathered = str(bs[0]) + "".join(f" {o} {_paren(b)}" for o, b in zip(ops[1:], bs[1:]))
+    gathered = (f"{mults[0]}\\times{_paren(bs[0])}" if mults[0] > 1 else str(bs[0])) + "".join(
+        f" {o} " + (f"{m}\\times{_paren(b)}" if m > 1 else _paren(b))
+        for o, m, b in zip(ops[1:], mults[1:], bs[1:])
+    )
     q = f"다음 식을 계산하였을 때 $x$의 계수를 구하시오.\n\n$${shown}$$"
     exp = f"괄호를 풀고 $x$의 계수만 모으면:\n\n$${gathered} = {target}$$"
     return q, exp, str(target)

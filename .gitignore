@@ -3,3 +3,9 @@ __pycache__/
 visitor_count.txt
 visitor_count.txt.tmp
 visitor_count.txt.broken
+
+# 교과서 PDF (저작물이라 저장소에 올리지 않는다. 내 컴퓨터에만 둔다.)
+중1/
+중2/
+중3/
+*.pdf

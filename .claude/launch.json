@@ -2,10 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "hidden-1-copy",
+      "name": "Math-Merged",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "streamlit", "run", "hidden-1-copy.py", "--server.port", "8502", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
+      "runtimeArgs": ["-m", "streamlit", "run", "Math-Merged.py", "--server.port", "8502", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
       "port": 8502
+    },
+    {
+      "name": "Math-Merged-copy",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "streamlit", "run", "Math-Merged-copy.py", "--server.port", "8503", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
+      "port": 8503
     }
   ]
 }

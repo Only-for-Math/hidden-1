@@ -103,12 +103,8 @@ def lucky_button(label, *args, dg=None, **kwargs):
     """
     target = dg if dg is not None else st
     clicked = target.button(label, *args, **kwargs)
-    if clicked:
-        blue_watch_turn = count_click_and_check_blue_watch_clue()
-        if _secret_rng.randrange(SECRET_ROOM_ODDS) == 0:
-            go_secret_room()
-        if blue_watch_turn:
-            go_blue_watch_clue()
+    if clicked and _secret_rng.randrange(SECRET_ROOM_ODDS) == 0:
+        go_secret_room()
     return clicked
 
 
@@ -278,24 +274,134 @@ def hide_streamlit_chrome():
 
 
 # ==========================================
-# 스토커 단서 화면 (문제 선택 화면에 숨겨 둔 이벤트)
-#  - 문제 선택 화면의 버튼 3개 중 하나가 무작위로 정해진다. (한 판에 한 번만 뽑는다)
-#  - 그 버튼을 처음 누르는 순간 반드시 검은 화면으로 넘어가 단서 문장을 보여 주고,
+# 스톱워치 (난이도 선택 화면에서 난이도를 '선택'하면 시작해서, 이후 모든 화면 우측 상단에 작게 보여 준다)
+#  - 분:초.밀리초 (예: 03:25.417) 로 보여 주고, 마지막 화면의 "다음으로"를 누르면 그 시간에서 멈춘다.
+#  - 시작 시각은 서버(파이썬)가 기록하고, 화면은 브라우저에서 계속 올라간다. (버튼을 눌러 스크립트가 다시
+#    실행돼도 끊기지 않는다.) 서버 시계와 접속한 기기의 시계를 직접 비교하지 않고 '흐른 시간'만 넘겨 준다.
+#  - 숫자 상자는 앱 화면(parent)에 만들고, 멈추기·읽기는 window.parent.__sw 로 한다. (감옥 퍼즐 화면이 쓴다.)
+# ==========================================
+STOPWATCH_OVERLAY_HTML = r"""
+<script>
+(function () {
+  // 앱 화면(window.parent)에 스톱워치 상자를 만들고 올리는 코드. 이 iframe 이 사라져도 계속 돌도록
+  // 앱 화면 쪽에 <script> 로 심어서 실행한다. (심지 못하면 이 iframe 안에서 그대로 실행한다.)
+  function install(win, doc, beforeMs) {
+    if (win.__sw) return win.__sw;
+    var el = doc.getElementById('stopwatch-overlay');
+    if (!el) {
+      el = doc.createElement('div');
+      el.id = 'stopwatch-overlay';
+      el.setAttribute('aria-hidden', 'true');
+      // 글씨 크기는 font 의 20px. (더 키우거나 줄이려면 이 숫자만 바꾼다)
+      // 처음에는 투명(opacity:0)으로 두었다가 천천히 또렷해진다. (희미하게 보이기 시작하는 효과)
+      // 걸리는 시간은 아래 transition 의 1.6s 이다. 위치가 움직이는 효과가 아니라 투명도만 바뀌므로,
+      // 윈도우의 '애니메이션 효과 끄기'(prefers-reduced-motion) 설정과 상관없이 항상 재생한다.
+      el.style.cssText = 'position:fixed;top:10px;right:12px;z-index:2147483647;padding:3px 12px;'
+        + 'border-radius:10px;background:rgba(0,0,0,.6);color:#fff;pointer-events:none;user-select:none;'
+        + 'font:700 20px/1.4 Consolas,"Courier New",monospace;letter-spacing:.02em;'
+        + 'font-variant-numeric:tabular-nums;text-shadow:none;'
+        + 'opacity:0;transition:opacity 1.6s ease-out;';
+      doc.body.appendChild(el);
+      void el.offsetWidth;            // 투명한 상태를 화면에 한 번 확정한 뒤에 바꿔야 전환이 일어난다.
+      el.style.opacity = '1';
+    }
+    var sw = { base: Date.now() - beforeMs, frozen: null };
+    function pad(n, w) { n = String(n); while (n.length < w) n = '0' + n; return n; }
+    function fmt(ms) {
+      ms = Math.max(0, Math.floor(ms));
+      return pad(Math.floor(ms / 60000), 2) + ':' + pad(Math.floor(ms / 1000) % 60, 2) + '.' + pad(ms % 1000, 3);
+    }
+    sw.read = function () { return sw.frozen !== null ? sw.frozen : Date.now() - sw.base; };
+    function draw() { el.textContent = fmt(sw.read()); }
+    function tick() { draw(); if (sw.frozen === null) win.requestAnimationFrame(tick); }
+    sw.stop = function () {
+      if (sw.frozen === null) { sw.frozen = Date.now() - sw.base; draw(); }
+      return sw.frozen;
+    };
+    win.__sw = sw;
+    tick();
+    return sw;
+  }
+
+  var before = Number("__ELAPSED_BEFORE_MS__") || 0;
+  var win, doc;
+  try { win = window.parent; doc = win.document; } catch (e) { return; }
+  if (win.__sw) return;            // 이미 돌고 있으면 시간을 다시 맞추지 않는다. (시계가 뒤로 가지 않게)
+  try {
+    var s = doc.createElement('script');
+    s.textContent = '(' + install.toString() + ')(window, document, ' + before + ');';
+    doc.head.appendChild(s);
+  } catch (e) { /* 막히면 아래에서 직접 실행한다 */ }
+  if (!win.__sw) { try { install(win, doc, before); } catch (e) {} }
+
+  // 이 스크립트를 담은 빈 iframe 이 화면에 간격을 만들지 않도록 접어 둔다.
+  try {
+    var box = window.frameElement && window.frameElement.closest(
+      '[data-testid="stElementContainer"], [data-testid="element-container"], .stElementContainer, .element-container'
+    );
+    if (box) {
+      box.style.setProperty('position', 'absolute', 'important');
+      box.style.setProperty('width', '0', 'important');
+      box.style.setProperty('height', '0', 'important');
+      box.style.setProperty('overflow', 'hidden', 'important');
+      box.style.setProperty('margin', '0', 'important');
+    }
+  } catch (e) {}
+})();
+</script>
+"""
+
+
+def show_stopwatch():
+    """스톱워치가 시작된 뒤(난이도를 고른 이후)에는 모든 화면에서 우측 상단에 스톱워치를 올린다."""
+    if "stopwatch_start" not in st.session_state:
+        return
+    # 같은 내용이면 iframe 이 다시 만들어지지 않으므로, 처음 한 번만 만들어 둔다.
+    if "stopwatch_html" not in st.session_state:
+        elapsed_ms = max(0, round((time.monotonic() - st.session_state.stopwatch_start) * 1000))
+        st.session_state.stopwatch_html = STOPWATCH_OVERLAY_HTML.replace("__ELAPSED_BEFORE_MS__", str(elapsed_ms))
+    st.iframe(st.session_state.stopwatch_html, height=1)
+
+
+# ==========================================
+# 스토커 단서 (단서는 두 개: 녹색 장갑, 파란색 시계)
+#  - 문제 선택 화면에서는 두 단서 중 '한 개'만, 무작위로 뽑아서 보여 준다.
+#    (새 문제 세트를 시작할 때마다 다시 뽑는다. 어느 쪽인지는 select_clue 에 들어 있다.)
+#    문제 선택 화면의 버튼 3개 중 하나가 무작위로 정해지고(한 판에 한 번만 뽑는다),
+#    그 버튼을 처음 누르는 순간 반드시 검은 화면으로 넘어가 단서 문장을 보여 주고,
 #    STALKER_CLUE_SECONDS 초가 지나면 문제 선택 화면으로 저절로 돌아온다.
 #    (이때 버튼의 원래 동작은 실행되지 않는다. 돌아와서 다시 누르면 평소처럼 문제로 들어간다.)
 #    문장 아래에는 남은 시간이 5, 4, 3, 2, 1 로 작게 줄어든다.
-#  - 문제 3개를 모두 풀어야 타임머신에 갈 수 있어서 버튼 3개를 모두 누르게 되므로,
-#    단서는 한 판에 정확히 한 번, 반드시 나온다.
-#  - 이 검은 단서 화면은 파란색 시계 단서도 함께 쓰므로, 표시 시간도 같다.
+#  - 문제 3개를 모두 풀어야 타임머신에 갈 수 있어서 버튼 3개를 모두 누르게 되고,
+#    '매우 어려움' 문제로 곧장 가도 그 전에 단서를 먼저 보여 주므로, 단서는 반드시 한 번 나온다.
+#  - 나머지 한 개는 감옥 열쇠 퍼즐을 풀었을 때 "정답은 6번 열쇠입니다" 와 함께 나온다.
+#    (PRISON_KEY_PUZZLE_HTML 의 승리 창. prison_clue_text() 로 문장을 넘겨 준다.)
 # ==========================================
-STALKER_CLUE_TEXT = "스토커는 녹색 장갑을 끼고 있었다"
+STALKER_CLUE_TEXTS = {
+    "green": "스토커는 녹색 장갑을 끼고 있었다",
+    "blue": "스토커는 파란색 계열의 시계를 차고 있었다",
+}
 STALKER_CLUE_SECONDS = 5
 
 
+def pick_select_clue():
+    """문제 선택 화면에서 보여 줄 단서('green' 또는 'blue')를 무작위로 하나 뽑는다."""
+    return random.choice(list(STALKER_CLUE_TEXTS))
+
+
+def prison_clue_text():
+    """감옥 퍼즐을 풀었을 때 보여 줄 단서: 문제 선택 화면에서 보여 주지 않은 나머지 한 개."""
+    shown = st.session_state.select_clue
+    return next(text for key, text in STALKER_CLUE_TEXTS.items() if key != shown)
+
+
 def reset_stalker_clue():
-    """새 문제 세트를 시작할 때마다 단서 버튼을 새로 뽑도록 상태를 비운다."""
+    """새 문제 세트를 시작할 때마다 단서와 단서 버튼을 새로 뽑도록 상태를 비운다."""
     st.session_state.stalker_clue_shown = False
     st.session_state.stalker_clue_button_idx = None
+    st.session_state.select_clue = pick_select_clue()
+    # 이미 만들어 둔 감옥 퍼즐 화면에는 이전 단서가 들어 있으므로 버린다. (다음에 열 때 새로 만든다)
+    st.session_state.pop("prison_key_html", None)
 
 
 def is_stalker_clue_button(idx):
@@ -317,49 +423,9 @@ def go_clue(text, return_step):
 
 
 def go_stalker_clue():
-    """검은 단서 화면으로 넘어간다. 한 판에 한 번만 보여 준다."""
+    """검은 단서 화면으로 넘어가 이번 판의 단서(select_clue)를 보여 준다. 한 판에 한 번만 보여 준다."""
     st.session_state.stalker_clue_shown = True
-    go_clue(STALKER_CLUE_TEXT, "select_problem")
-
-
-# ==========================================
-# 파란색 시계 단서 (앱 전체에서 딱 한 번, 무작위 버튼에 숨겨 둔 이벤트)
-#  - 파이썬 화면의 버튼(lucky_button)을 누를 때마다 클릭 횟수를 센다.
-#  - 세션을 시작할 때 1 ~ BLUE_WATCH_CLUE_MAX_CLICK 사이에서 '몇 번째 클릭'일지 미리 뽑아 두고,
-#    그 번째 버튼을 누르는 순간 검은 화면에 단서 문장을 보여 준다.
-#    (이때 버튼의 원래 동작은 실행되지 않는다. 단서가 끝나면 누르던 화면으로 돌아온다.)
-#  - 한 번 보여 주면 다시는 나오지 않는다. 새 문제 세트를 시작해도 초기화하지 않는다.
-#  - 시작 화면(인트로)과 난이도 선택 화면은 단서가 나오지 않는 구간이다. 이 두 화면의 버튼은
-#    클릭 횟수에도 세지 않는다. (BLUE_WATCH_CLUE_EXEMPT_STEPS)
-#  - 그 구간을 뺀 파이썬 버튼만 해도 감옥 열쇠 퍼즐까지 가려면 최소 13번은 눌러야 하므로,
-#    최대 클릭 수를 그보다 작게 두면 단서는 반드시 한 번 나온다.
-#  - 비밀의 방이 그 클릭을 먼저 가져가도 단서를 놓치지 않도록, '정확히 N번째'가 아니라
-#    'N번째 이후 첫 클릭'에 보여 준다.
-# ==========================================
-BLUE_WATCH_CLUE_TEXT = "스토커는 파란색 계열의 시계를 차고 있었다"
-BLUE_WATCH_CLUE_MAX_CLICK = 12
-BLUE_WATCH_CLUE_EXEMPT_STEPS = ("intro", "select_difficulty")
-
-
-def count_click_and_check_blue_watch_clue():
-    """버튼 클릭을 한 번 세고, 이번 클릭이 파란색 시계 단서를 보여 줄 차례면 True.
-
-    시작~난이도 선택 구간의 클릭은 세지도 않고 단서도 띄우지 않는다.
-    """
-    if st.session_state.step in BLUE_WATCH_CLUE_EXEMPT_STEPS:
-        return False
-    st.session_state.button_click_count += 1
-    return (
-        not st.session_state.blue_watch_clue_shown
-        and st.session_state.button_click_count
-        >= st.session_state.blue_watch_clue_target
-    )
-
-
-def go_blue_watch_clue():
-    """파란색 시계 단서 화면으로 넘어간다. 앱 전체에서 한 번만 보여 준다."""
-    st.session_state.blue_watch_clue_shown = True
-    go_clue(BLUE_WATCH_CLUE_TEXT, st.session_state.step)
+    go_clue(STALKER_CLUE_TEXTS[st.session_state.select_clue], "select_problem")
 
 
 # ==========================================
@@ -579,7 +645,8 @@ PRISON_KEY_PUZZLE_HTML = """
   ::-webkit-scrollbar-thumb{ background:#5c3826; border-radius:4px; }
 
   /* ---------- prison / key-select screen ---------- */
-  #prisonView{ position:fixed; inset:0; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  #prisonView{ position:fixed; inset:0; overflow-x:hidden; overflow-y:auto; display:flex; align-items:flex-start; justify-content:center; }
+  #prisonView .prison-bg, #prisonView .prison-vignette, #prisonView .prison-bars, #prisonView .prison-glow{ position:fixed; }
   .prison-bg{
     position:absolute; inset:0;
     background:
@@ -604,16 +671,42 @@ PRISON_KEY_PUZZLE_HTML = """
   .prison-bars .bar{ position:absolute; top:0; bottom:0; width:14px; background:linear-gradient(90deg,#0a0603,#5c4530 45%,#0a0603); }
 
   .prison-content{
-    position:relative; z-index:2; width:100%; max-width:380px;
-    display:flex; flex-direction:column; align-items:center; gap:26px;
-    padding:90px 20px 28px;
+    position:relative; z-index:2; width:100%; max-width:420px; margin:auto;
+    display:flex; flex-direction:column; align-items:center; gap:16px;
+    padding:28px 20px 28px;
   }
-  .prison-title{ font-size:1.7rem; letter-spacing:.02em; color:var(--gold-bright); text-shadow:0 3px 10px rgba(0,0,0,.7); text-align:center; }
+  .prison-head{ text-align:center; }
+  .prison-kicker{ font-size:.78rem; letter-spacing:.16em; color:#c9a877; margin-bottom:2px; }
+  .prison-title{ font-size:1.9rem; letter-spacing:.04em; color:var(--gold-bright); text-shadow:0 3px 10px rgba(0,0,0,.7); text-align:center; }
   .prison-sub{ font-size:.8rem; color:#c9a877; text-align:center; letter-spacing:.03em; }
 
-  .key-rack{ display:flex; flex-direction:column; gap:10px; width:100%; }
+  /* 안내 카드: 이야기 + 해야 할 일 + 게임 버튼 */
+  .prison-quest{
+    width:100%; padding:16px 16px 16px; border-radius:14px;
+    background:rgba(20,12,8,.62); border:1px solid rgba(212,175,55,.35);
+    box-shadow:inset 0 0 18px rgba(0,0,0,.45), 0 8px 24px rgba(0,0,0,.35);
+    display:flex; flex-direction:column; gap:12px;
+  }
+  .quest-story{ margin:0; font-size:.88rem; line-height:1.8; color:#f3e9dc; text-align:center; word-break:keep-all; }
+  .quest-story b{ color:var(--gold-bright); }
+  .quest-story span{ display:block; text-wrap:balance; }
+  .quest-story span + span{ margin-top:4px; }
+  .quest-steps{ list-style:none; margin:0; padding:12px 0 0; border-top:1px dashed rgba(212,175,55,.3); display:flex; flex-direction:column; gap:8px; }
+  .quest-steps li{ display:flex; gap:10px; align-items:flex-start; font-size:.82rem; line-height:1.55; color:#e7cfa8; word-break:keep-all; }
+  .step-no{
+    flex:none; width:20px; height:20px; margin-top:1px; border-radius:50%;
+    background:rgba(212,175,55,.16); border:1px solid rgba(212,175,55,.6);
+    color:var(--gold-bright); font-size:.72rem; font-weight:800;
+    display:inline-flex; align-items:center; justify-content:center;
+  }
+  .quest-steps li.done{ color:#9fdcb4; }
+  .quest-steps li.done .step-no{ background:var(--emerald); border-color:var(--emerald); color:#0c2a17; font-size:0; }
+  .quest-steps li.done .step-no::after{ content:"✓"; font-size:.78rem; }
+  .rack-caption{ width:100%; text-align:center; font-size:.8rem; color:#c9a877; letter-spacing:.03em; margin-top:2px; word-break:keep-all; text-wrap:balance; }
+
+  .key-rack{ display:flex; flex-direction:column; gap:8px; width:100%; }
   .key-btn{
-    position:relative; width:100%; height:56px; padding:0 14px;
+    position:relative; width:100%; height:48px; padding:0 14px;
     display:flex; align-items:center; gap:14px;
     background:rgba(20,12,8,.55); border:1px solid rgba(140,90,60,.45); border-radius:12px;
     cursor:pointer; overflow:visible; transition:transform .15s ease, border-color .15s ease, background .15s ease;
@@ -633,12 +726,11 @@ PRISON_KEY_PUZZLE_HTML = """
   .key-rack.locked .key-lock-badge{ opacity:.85; }
 
   .go-game-btn{
-    position:fixed; top:18px; left:50%; transform:translateX(-50%);
-    z-index:10; padding:11px 20px; border-radius:10px; font-size:.85rem;
-    display:inline-flex; align-items:center; gap:8px;
+    width:100%; padding:12px 20px; border-radius:12px; font-size:.92rem;
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
   }
-  .go-game-btn:hover{ transform:translateX(-50%) translateY(-2px); }
-  .go-game-btn:active{ transform:translateX(-50%) translateY(1px); }
+  .go-game-btn:hover{ transform:translateY(-2px); }
+  .go-game-btn:active{ transform:translateY(1px); }
 
   #toast{
     position:fixed; left:50%; bottom:28px; transform:translate(-50%,16px);
@@ -833,16 +925,25 @@ PRISON_KEY_PUZZLE_HTML = """
   <div class="prison-vignette"></div>
 
   <div class="prison-content">
-    <div>
+    <div class="prison-head">
+      <div class="prison-kicker"><span aria-hidden="true">🔑</span> 마지막 관문</div>
       <div class="prison-title cinzel-font">탈옥의 열쇠</div>
-      <div class="prison-sub" id="prisonSub">일곱 개의 열쇠 중 자물쇠를 여는 것은 단 하나뿐이다</div>
     </div>
+
+    <div class="prison-quest">
+      <p class="quest-story"><span>우물의 물길을 고친 뒤 정신을 차려보니, <b>낯선 감옥</b>에 갇혀 있다.</span><span>일곱 개의 열쇠가 걸려 있지만 아직은 만질 수조차 없다.</span></p>
+      <ol class="quest-steps">
+        <li id="questStep1"><span class="step-no">1</span><span>게임 화면의 <b>파이프 퍼즐</b>을 끝까지 연결해 물길을 완성한다</span></li>
+        <li id="questStep2"><span class="step-no">2</span><span>그 상태로 감옥에 돌아와 <b>열쇠</b>를 시도해 본다</span></li>
+      </ol>
+      <button id="btnGoGame" class="btn-gold go-game-btn">
+        <span aria-hidden="true">🧩</span> 게임 하러 가기
+      </button>
+    </div>
+
+    <div class="rack-caption prison-sub" id="prisonSub">일곱 개의 열쇠 중 자물쇠를 여는 것은 단 하나뿐이다</div>
     <div class="key-rack" id="keyRack"></div>
   </div>
-
-  <button id="btnGoGame" class="btn-gold go-game-btn">
-    <span aria-hidden="true">🧩</span> 게임 하러 가기
-  </button>
 </div>
 
 <!-- ============================================================ -->
@@ -878,7 +979,7 @@ PRISON_KEY_PUZZLE_HTML = """
 </div>
 
 <!-- ============================================================ -->
-<!-- 마지막 화면 ("다음으로"를 누르면 등장): 처음부터 지금까지 걸린 시간                  -->
+<!-- 마지막 화면 ("다음으로"를 누르면 등장): 난이도를 고른 때부터 지금까지 걸린 시간          -->
 <!-- ============================================================ -->
 <div id="finishView" hidden>
   <div class="prison-bg"></div>
@@ -961,6 +1062,7 @@ PRISON_KEY_PUZZLE_HTML = """
   <div id="modalVictory" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50 hidden transition-opacity duration-300">
     <div class="wood-frame max-w-sm w-full p-6 text-center" id="victoryCard">
       <div class="text-xl sm:text-2xl font-extrabold text-amber-300 mb-5 tracking-wide">🔑 정답은 6번 열쇠입니다</div>
+      <div id="victoryClue" style="margin:0 0 20px;padding:10px 12px;border:1px solid rgba(252,224,128,.35);border-radius:12px;background:rgba(0,0,0,.35);color:#f3e9dc;font-size:15px;font-weight:700;line-height:1.6;word-break:keep-all;"><span aria-hidden="true">🔍</span> __PRISON_CLUE__</div>
       <div class="hud-panel rounded-xl p-3 mb-6 text-xs">
         <span class="text-amber-600 block uppercase font-bold">소요 시간</span>
         <span id="vicTime" class="text-base font-extrabold text-amber-200">00:00</span>
@@ -1181,6 +1283,8 @@ PRISON_KEY_PUZZLE_HTML = """
     const rack = document.getElementById('keyRack');
     if(!rack) return;
     rack.classList.toggle('locked', !keysUnlocked);
+    const step1 = document.getElementById('questStep1');
+    if(step1) step1.classList.toggle('done', keysUnlocked);
     rack.querySelectorAll('.key-btn').forEach(btn=> btn.setAttribute('aria-disabled', String(!keysUnlocked)));
     const sub = document.getElementById('prisonSub');
     if(sub){
@@ -1332,48 +1436,62 @@ PRISON_KEY_PUZZLE_HTML = """
   /* ========================================================
      화면 전환
   ======================================================== */
-  // st.iframe은 단방향 임베드지만, srcdoc iframe은 부모 문서와 같은 출처를
-  // 공유하므로 window.parent.document에 직접 접근해 안내문 블록을 여닫을 수 있다.
-  // (Streamlit 밖의 아티팩트 미리보기 등 parent에 해당 id가 없는 환경에서는
-  //  querySelector가 그냥 null을 반환하므로 조용히 아무 일도 하지 않는다.)
-  function syncParentIntroVisibility(name){
-    try{
-      const parentDoc = window.parent && window.parent.document;
-      if(!parentDoc) return;
-      const introEl = parentDoc.getElementById('prisonIntroBlock');
-      if(introEl) introEl.style.display = (name === 'suspects' || name === 'found' || name === 'finish') ? 'none' : '';
-    }catch(e){ /* 크로스 오리진 등으로 접근이 막히면 무시 */ }
-  }
-
-  // 스토커를 찾은 화면은 '우측 하단' 버튼이 실제로 보이는 화면 아래쪽에 오도록,
-  // 이 iframe 의 높이를 바깥 페이지에서 보이는 높이에 맞춘다. (그대로 두면 820px 고정이라
-  // 낮은 폰 화면에서는 버튼이 화면 아래로 밀려 스크롤해야 보인다.)
+  // 이 iframe 의 높이를 바깥 페이지에서 보이는 높이에 맞춰서, 화면 아래에 빈 공간이 생기지 않게 한다.
+  //  - 스토커를 찾은 화면·마지막 화면: '우측 하단' 버튼이 화면 아래쪽에 보이도록, 보이는 높이에 딱 맞춘다.
+  //    (그대로 두면 820px 고정이라 낮은 폰 화면에서는 버튼이 화면 아래로 밀려 스크롤해야 보인다.)
+  //  - 나머지 화면: 820px 보다 줄이지는 않고(감옥 화면은 스크롤해서 본다), 창이 더 크면 창 높이까지 키운다.
+  //  iframe 만 바꾸면 안 되고, 그것을 감싼 Streamlit 칸의 높이도 같이 바꿔야 한다. (아니면 그 차이만큼 아래가 빈다.)
   function fitFrameToParentViewport(){
     try{
       const fr = window.frameElement, pw = window.parent;
       if(!fr || !pw) return;
-      // 앞 화면에서 스크롤해 둔 상태라면 iframe 윗부분이 화면 밖에 있으므로, 바깥 페이지를 맨 위로 올린 뒤 잰다.
+      const shrink = (currentView === 'found' || currentView === 'finish');
       const main = pw.document.querySelector('[data-testid="stMain"]');
-      if(main) main.scrollTop = 0;
-      pw.scrollTo(0, 0);
-      const top = Math.max(0, fr.getBoundingClientRect().top);
-      const h = Math.round(pw.innerHeight - top - 8);
-      fr.style.height = Math.max(420, Math.min(820, h)) + 'px';
+      let top;
+      if(shrink){
+        // 앞 화면에서 스크롤해 둔 상태라면 iframe 윗부분이 화면 밖에 있으므로, 바깥 페이지를 맨 위로 올린 뒤 잰다.
+        if(main) main.scrollTop = 0;
+        pw.scrollTo(0, 0);
+        top = Math.max(0, fr.getBoundingClientRect().top);
+      }else{
+        // 스크롤 위치는 건드리지 않고, 페이지 맨 위에서 iframe 까지의 거리를 잰다.
+        top = Math.max(0, fr.getBoundingClientRect().top + (main ? main.scrollTop : 0) + (pw.scrollY || 0));
+      }
+      // 아래쪽 안쪽 여백(페이지 맨 아래의 padding)까지 빼서, 스크롤 없이 딱 맞게 한다.
+      const blockEl = pw.document.querySelector('[data-testid="stMainBlockContainer"]');
+      const padBottom = blockEl ? (parseFloat(pw.getComputedStyle(blockEl).paddingBottom) || 0) : 0;
+      const fill = Math.floor(pw.innerHeight - top - padBottom);
+      const h = shrink ? Math.max(420, fill) : Math.max(900, fill);
+      fr.style.height = h + 'px';
+      // 칸은 flex 항목이라 flex-basis 가 820px 로 잡혀 있어서, height 와 함께 flex 도 바꿔야 바뀐다.
+      const box = fr.closest('[data-testid="stElementContainer"]');
+      if(box){ box.style.height = h + 'px'; box.style.minHeight = '0'; box.style.flex = '0 0 ' + h + 'px'; }
     }catch(e){ /* 접근이 막히면 기본 높이(820px) 그대로 둔다 */ }
   }
-  window.addEventListener('resize', ()=>{ if(currentView === 'found' || currentView === 'finish') fitFrameToParentViewport(); });
+  window.addEventListener('resize', fitFrameToParentViewport);
 
   /* ========================================================
-     스톱워치 (화면에는 보이지 않는다)
-     처음 "다음으로"를 누른 때부터 마지막 "다음으로"를 누를 때까지 걸린 시간을 잰다.
-     시작은 서버(파이썬)가 기록하고, 이 화면을 만들 때까지 흐른 시간(ELAPSED_BEFORE_MS)을 넘겨 준다.
+     스톱워치
+     난이도를 선택한 때부터 마지막 "다음으로"를 누를 때까지 걸린 시간을 잰다.
+     숫자는 앱 화면 우측 상단에 작게 보이고(파이썬 쪽 show_stopwatch), 여기서는 마지막 "다음으로"에서
+     그 스톱워치를 멈춰 시간을 읽는다. (window.parent.__sw)
+     앱 화면의 스톱워치를 쓸 수 없을 때를 위해, 이 화면을 만들 때까지 흐른 시간(ELAPSED_BEFORE_MS)에
+     이 화면이 열린 뒤 흐른 시간을 더하는 계산도 같이 둔다.
      (서버 시계와 접속한 기기의 시계를 직접 비교하지 않고 '흐른 시간'만 더하므로 시계가 달라도 맞다.)
   ======================================================== */
   const ELAPSED_BEFORE_MS = Math.max(0, Number("__ELAPSED_BEFORE_MS__") || 0);
   const FRAME_OPENED_AT = Date.now();
   function elapsedMs(){ return ELAPSED_BEFORE_MS + (Date.now() - FRAME_OPENED_AT); }
+  function stopParentStopwatch(){
+    try{
+      const w = window.parent;
+      if(w && w.__sw && typeof w.__sw.stop === 'function') return w.__sw.stop();
+    }catch(e){ /* 접근이 막히면 아래의 자체 계산을 쓴다 */ }
+    return null;
+  }
+  // 우측 상단 스톱워치(분:초.밀리초)의 분·초와 같게 보이도록, 초 아래는 버린다.
   function formatElapsed(ms){
-    const total = Math.round(ms / 1000);
+    const total = Math.floor(ms / 1000);
     return `${Math.floor(total / 60)}분 ${total % 60}초`;
   }
 
@@ -1386,8 +1504,7 @@ PRISON_KEY_PUZZLE_HTML = """
     document.getElementById('foundView').hidden = name !== 'found';
     document.getElementById('finishView').hidden = name !== 'finish';
     document.getElementById('gameView').hidden = name !== 'game';
-    syncParentIntroVisibility(name);
-    if(name === 'found' || name === 'finish') fitFrameToParentViewport(); // 안내문을 숨긴 뒤(위치가 바뀐 뒤)에 맞춘다
+    fitFrameToParentViewport(); // 안내문을 숨기거나 보인 뒤(위치가 바뀐 뒤)에 맞춘다
     if(name === 'game' && !opts.skipRegen){
       GAME_LEVELS[0] = generateLevelSafe(1, 8);
       loadLevel();
@@ -1957,8 +2074,10 @@ PRISON_KEY_PUZZLE_HTML = """
     });
     document.getElementById('btnGoGame').addEventListener('click', ()=> applyView('game'));
     document.getElementById('btnFoundNext').addEventListener('click', ()=>{
-      // 마지막 "다음으로": 처음부터 지금까지 걸린 시간을 알려 주고 끝낸다.
-      document.getElementById('finishTime').textContent = `축하합니다. 당신은 ${formatElapsed(elapsedMs())} 걸렸습니다.`;
+      // 마지막 "다음으로": 우측 상단 스톱워치를 멈추고, 난이도를 고른 때부터 지금까지 걸린 시간을 알려 주고 끝낸다.
+      const stopped = stopParentStopwatch();
+      const ms = stopped !== null ? stopped : elapsedMs();
+      document.getElementById('finishTime').textContent = `축하합니다. 당신은 ${formatElapsed(ms)} 걸렸습니다.`;
       applyView('finish');
     });
     document.getElementById('btnUnlockClose').addEventListener('click', ()=>{
@@ -5108,6 +5227,9 @@ UNIT_FAMILIES = {
 }
 GRADE_TITLES = {1: "중학교 1학년 수학", 2: "중학교 2학년 수학", 3: "중학교 3학년 수학"}
 DIFFICULTY_LABELS = {1: "하", 2: "중", 3: "상"}
+# 난이도 선택 버튼에 적는 예상 플레이타임(분). 문제 푸는 시간이 난이도에 따라 늘어나는 것(하 1 : 중 1.5 : 상 2)을
+# 어림해서 잡았다. (문제 3개 약 6~12분 + 타임머신·퍼즐·용의자 지목 등 고정 구간 약 4분) 값만 바꾸면 화면에 반영된다.
+DIFFICULTY_PLAYTIME_MIN = {1: 10, 2: 15, 3: 20}
 
 
 def generate_grade_problems(grade, difficulty=1):
@@ -5128,6 +5250,28 @@ def generate_grade_problems(grade, difficulty=1):
 
 
 # ==========================================
+# 빠른 통과 문제 (문제 선택 화면에 문제 번호 없이 빨간 '매우 어려움' 버튼으로 따로 둔 고3 미적분 문제)
+#  - 정답이 곧 타임머신 암호 1592 다. 이 문제만 풀어도 타임머신으로 갈 수 있다.
+#  - 풀고 나면 다른 문제처럼 "정답을 기억하세요" 화면에서 정답을 보여 준다.
+#  - 들어가 보고 어려우면 풀이 화면의 "← 문제 목록으로 돌아가기"로 다시 문제 선택 화면에 갈 수 있다.
+#  - 문제를 바꾸려면 정답이 1592 가 되도록 맞춰야 한다. (f(x)=(e^x+1)^3+C, f(0)=600 에서 C=592, f(ln 9)=1000+592)
+# ==========================================
+FAST_PASS_INDEX = 3
+FAST_PASS_TITLE = "[ 고등학교 3학년 수학 · 미적분 ]"
+FAST_PASS_PROBLEM = (
+    "함수 $f(x)$가 모든 실수 $x$에 대하여 다음을 만족시킨다.\n\n"
+    "$$f'(x)=3e^{x}(e^{x}+1)^{2}$$\n\n"
+    "$f(0)=600$일 때, $f(\\ln 9)$의 값을 구하시오.",
+    "*(미적분 · 치환적분 단원)*\n\n"
+    "$t=e^{x}+1$로 놓으면 $dt=e^{x}dx$이므로\n\n"
+    "$$\\int 3e^{x}(e^{x}+1)^{2}dx=\\int 3t^{2}dt=t^{3}+C=(e^{x}+1)^{3}+C$$\n\n"
+    "$f(0)=8+C=600$이므로 $C=592$입니다.\n\n"
+    "따라서 $f(\\ln 9)=(9+1)^{3}+592=1000+592=1592$",
+    "1592",
+)
+
+
+# ==========================================
 # Streamlit 메인 로직 및 GUI 구성
 # ==========================================
 st.set_page_config(page_title="중생대 문제", layout="centered")
@@ -5138,6 +5282,8 @@ if "visit_number" not in st.session_state:
 
 # 모든 화면에서 Streamlit 자체 버튼(상단 툴바·메뉴, Manage app 등)을 숨긴다.
 hide_streamlit_chrome()
+# 스톱워치가 시작된 뒤(난이도를 고른 뒤)에는 모든 화면 우측 상단에 작게 보여 준다.
+show_stopwatch()
 
 if "step" not in st.session_state:
     st.session_state.step = "intro"
@@ -5155,11 +5301,7 @@ if "step" not in st.session_state:
 # 이미 열려 있던 세션에도 단서 화면용 상태가 항상 있도록 보장한다.
 st.session_state.setdefault("stalker_clue_shown", False)
 st.session_state.setdefault("stalker_clue_button_idx", None)
-st.session_state.setdefault("button_click_count", 0)
-st.session_state.setdefault("blue_watch_clue_shown", False)
-st.session_state.setdefault(
-    "blue_watch_clue_target", random.randint(1, BLUE_WATCH_CLUE_MAX_CLICK)
-)
+st.session_state.setdefault("select_clue", pick_select_clue())
 # 난이도: 1=하(기본), 2=중, 3=상. 난이도 선택 화면에서 고른다.
 st.session_state.setdefault("difficulty", 1)
 
@@ -5257,8 +5399,6 @@ if st.session_state.step == "intro":
     col1, col2, col3 = st.columns([6, 2, 2])
     with col3:
         if lucky_button("다음으로", use_container_width=True):
-            # 화면에는 보이지 않는 스톱워치를 여기서 시작한다. (끝은 마지막 화면의 "다음으로")
-            st.session_state.stopwatch_start = time.monotonic()
             st.session_state.step = "select_difficulty"
             st.rerun()
 
@@ -5270,7 +5410,7 @@ if st.session_state.step == "intro":
         )
 
 # --- 화면 0-1: 난이도 선택 (인트로와 같은 검은 배경, 상·중·하 버튼 3개) ---
-#  - 시작 화면부터 이 화면까지는 스토커 단서가 나오지 않는 구간이다. (BLUE_WATCH_CLUE_EXEMPT_STEPS)
+#  - 스토커 단서는 문제 선택 화면에서 나온다. 시작 화면과 이 화면에서는 나오지 않는다.
 elif st.session_state.step == "select_difficulty":
     st.markdown(
         f"""
@@ -5283,11 +5423,18 @@ elif st.session_state.step == "select_difficulty":
             font-family: {APP_FONT_FAMILY} !important;
         }}
         .difficulty-title {{
-            margin: 110px 0 36px 0;
+            margin: 110px 0 10px 0;
             text-align: center;
             color: #f1f1f1;
             font-size: 26px;
             letter-spacing: 2px;
+            word-break: keep-all;
+        }}
+        .difficulty-note {{
+            margin: 0 0 28px 0;
+            text-align: center;
+            color: #8d93a1;
+            font-size: 13px;
             word-break: keep-all;
         }}
         div.stButton > button, div[data-testid="stButton"] > button {{
@@ -5332,14 +5479,20 @@ elif st.session_state.step == "select_difficulty":
         }}
         </style>
         <div class="difficulty-title">난이도를 선택하세요</div>
+        <div class="difficulty-note">버튼 아래 시간은 예상 플레이타임입니다</div>
         """,
         unsafe_allow_html=True,
     )
 
     # (표시 이름, 난이도 값): 상=3, 중=2, 하=1. 값이 클수록 문제가 어렵다.
+    # 버튼 글자는 두 줄: 난이도 이름 + 작은 글씨의 예상 플레이타임. (줄바꿈은 마크다운의 '공백 두 칸 + 줄바꿈')
     cols = st.columns(3)
     for col, (label, level) in zip(cols, [("상", 3), ("중", 2), ("하", 1)]):
-        if lucky_button(label, use_container_width=True, dg=col):
+        button_text = f"{label}  \n:small[약 {DIFFICULTY_PLAYTIME_MIN[level]}분]"
+        if lucky_button(button_text, use_container_width=True, dg=col, key=f"difficulty_{level}"):
+            # 스톱워치를 여기서 시작한다. (난이도를 '선택'한 순간부터. 우측 상단에 작게 보이고, 끝은 마지막 화면의 "다음으로")
+            # 이미 시작했다면(setdefault) 시계를 다시 맞추지 않는다.
+            st.session_state.setdefault("stopwatch_start", time.monotonic())
             st.session_state.difficulty = level
             st.session_state.step = "select_grade"
             st.rerun()
@@ -5575,11 +5728,18 @@ elif st.session_state.step == "prison_key":
         .stApp h2, .stApp p, .stApp li {
             color: #f3e9dc !important;
         }
+        /* 감옥 화면은 위·아래에 빈 공간 없이 화면을 꽉 채운다.
+           페이지 안쪽 여백과, 비어 있는 요소 사이에도 생기는 요소 간격(gap)을 모두 없앤다. */
         .block-container {
-            padding-top: 1.5rem !important;
-            padding-bottom: 1rem !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
         }
+        [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {
+            gap: 0 !important;
+        }
+        /* iframe 은 기본이 글자처럼 놓이는 inline 이라 아래에 글줄 여백(약 8px)이 남아 맨 아래가 스크롤된다. 블록으로 둔다. */
         iframe {
+            display: block !important;
             margin-bottom: 0px !important;
         }
         </style>
@@ -5587,25 +5747,15 @@ elif st.session_state.step == "prison_key":
         unsafe_allow_html=True,
     )
 
-    # id="prisonIntroBlock"를 붙여 두면, 아래 임베드된 게임 안에서 용의자(스토커) 화면으로
-    # 넘어갔을 때 이 안내문을 JS로 찾아 감출 수 있다.
-    st.markdown(
-        """
-        <div id="prisonIntroBlock">
-        <h2>🔑 마지막 관문: 감옥 열쇠</h2>
-        <p>우물의 물길을 고친 뒤 정신을 차려보니, 낯선 감옥에 갇혀 있습니다. 일곱 개의 열쇠가 걸려 있지만 아직은 만질 수조차 없습니다. 먼저 게임 화면의 파이프 퍼즐을 끝까지 연결해 물길을 완성하고, 그 상태로 감옥으로 돌아와야만 열쇠를 시도해 볼 수 있습니다.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # 스톱워치: 처음 "다음으로"를 누른 뒤 지금까지 흐른 시간을 게임 화면에 넘겨 준다.
+    # 스톱워치: 난이도를 고른 뒤 지금까지 흐른 시간을 게임 화면에 넘겨 준다.
     # 화면 내용(srcdoc)이 다시 실행될 때마다 바뀌면 게임이 처음부터 다시 로드되므로, 한 번만 만들어 둔다.
     if "prison_key_html" not in st.session_state:
         started = st.session_state.get("stopwatch_start", time.monotonic())
         elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
-        st.session_state.prison_key_html = PRISON_KEY_PUZZLE_HTML.replace("__ELAPSED_BEFORE_MS__", str(elapsed_ms))
-    st.iframe(st.session_state.prison_key_html, height=820)
+        st.session_state.prison_key_html = PRISON_KEY_PUZZLE_HTML.replace(
+            "__ELAPSED_BEFORE_MS__", str(elapsed_ms)
+        ).replace("__PRISON_CLUE__", html_escape(prison_clue_text()))
+    st.iframe(st.session_state.prison_key_html, height=900)
 
 # --- 비밀의 방: 어떤 버튼이든 25만분의 1 확률로 누르면 도착하는 화면 ---
 elif st.session_state.step == "secret_room":
@@ -5674,7 +5824,7 @@ elif st.session_state.step == "secret_room":
             )
             st.rerun()
 
-# --- 단서 화면(녹색 장갑·파란색 시계 공용): 검은 화면에 단서를 보여 준 뒤 원래 화면으로 자동 복귀 ---
+# --- 단서 화면: 검은 화면에 단서(녹색 장갑 또는 파란색 시계)를 보여 준 뒤 원래 화면으로 자동 복귀 ---
 elif st.session_state.step == "stalker_clue":
     st.markdown(
         f"""
@@ -5723,7 +5873,7 @@ elif st.session_state.step == "stalker_clue":
 
     # 문장은 그대로 두고 그 아래 숫자만 1초마다 바꿔서 남은 시간(5, 4, 3, 2, 1)을 보여 준다.
     clue_box = st.empty()
-    clue_text = html_escape(st.session_state.get("clue_text", STALKER_CLUE_TEXT))
+    clue_text = html_escape(st.session_state.get("clue_text", STALKER_CLUE_TEXTS["green"]))
     for seconds_left in range(STALKER_CLUE_SECONDS, 0, -1):
         clue_box.markdown(
             '<div class="stalker-clue">'
@@ -5862,46 +6012,86 @@ else:
         )
         st.markdown("---")
 
+        # 문제 3개 + 따로 떨어진 빨간 '매우 어려움' 문제(고3 미적분) 1개. (이 문제의 정답은 타임머신 암호 1592 다.)
+        entries = list(st.session_state.problems) + [FAST_PASS_PROBLEM]
+
+        def solved_card(label, ans, color):
+            """풀고 난 문제 칸: 완료 표시와 정답을 보여 주는 흰 카드."""
+            st.markdown(
+                f"""
+                <div style="
+                    background-color: rgba(255, 255, 255, 0.85);
+                    border: 2px solid {color};
+                    border-radius: 10px;
+                    padding: 12px 8px;
+                    text-align: center;
+                    box-shadow: 0px 4px 10px rgba(0,0,0,0.2);
+                ">
+                    <div style="color: {color}; font-size: 13px; font-weight: bold; margin-bottom: 4px;">✅ {label} 완료</div>
+                    <div style="color: #000000; font-size: 18px; font-weight: bold;">정답: {ans}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        def open_problem(i):
+            """i번 문제 풀이 화면으로 간다. (단서를 아직 못 봤다면 먼저 검은 단서 화면으로 간다.)"""
+            if i == FAST_PASS_INDEX:
+                # 매우 어려움 문제로 곧장 넘어가도 단서를 놓치지 않도록, 아직 못 봤다면 먼저 보여 준다.
+                if not st.session_state.stalker_clue_shown:
+                    go_stalker_clue()
+            elif is_stalker_clue_button(i):
+                # 무작위로 뽑힌 '단서 버튼'을 처음 누르면 문제 대신 검은 단서 화면으로 간다.
+                go_stalker_clue()
+            st.session_state.current_problem = entries[i]
+            st.session_state.current_problem_idx = i
+            st.session_state.current_title = (
+                FAST_PASS_TITLE if i == FAST_PASS_INDEX else st.session_state.title
+            )
+            st.session_state.step = "solve"
+            st.rerun()
+
         cols = st.columns(3)
         for i in range(3):
-            ans = st.session_state.problems[i][2]
-            is_solved = i in st.session_state.solved_indices
-
             with cols[i]:
-                if is_solved:
-                    st.markdown(
-                        f"""
-                        <div style="
-                            background-color: rgba(255, 255, 255, 0.85);
-                            border: 2px solid #2e7d32;
-                            border-radius: 10px;
-                            padding: 12px 8px;
-                            text-align: center;
-                            box-shadow: 0px 4px 10px rgba(0,0,0,0.2);
-                        ">
-                            <div style="color: #2e7d32; font-size: 13px; font-weight: bold; margin-bottom: 4px;">✅ 문제 {i+1} 완료</div>
-                            <div style="color: #000000; font-size: 18px; font-weight: bold;">정답: {ans}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    if lucky_button(
-                        f"문제 {i+1} 📝",
-                        key=f"prob_btn_{i}",
-                        use_container_width=True,
-                    ):
-                        # 무작위로 뽑힌 '단서 버튼'을 처음 누르면 문제 대신 검은 단서 화면으로 간다.
-                        if is_stalker_clue_button(i):
-                            go_stalker_clue()
-                        st.session_state.current_problem = (
-                            st.session_state.problems[i]
-                        )
-                        st.session_state.current_problem_idx = i
-                        st.session_state.step = "solve"
-                        st.rerun()
+                if i in st.session_state.solved_indices:
+                    solved_card(f"문제 {i+1}", entries[i][2], "#2e7d32")
+                elif lucky_button(f"문제 {i+1} 📝", key=f"prob_btn_{i}", use_container_width=True):
+                    open_problem(i)
 
-        if len(st.session_state.solved_indices) == 3:
+        # 고3 미적분 문제: 문제 번호 없이 빨간 '매우 어려움' 버튼으로 따로 둔다.
+        st.markdown(
+            """
+            <style>
+            .st-key-fast_pass_btn div[data-testid="stButton"] > button {
+                background-color: #d32f2f !important;
+                border: 1px solid #b71c1c !important;
+            }
+            .st-key-fast_pass_btn div[data-testid="stButton"] > button:hover {
+                background-color: #b71c1c !important;
+                border-color: #7f0000 !important;
+            }
+            .st-key-fast_pass_btn div[data-testid="stButton"] > button,
+            .st-key-fast_pass_btn div[data-testid="stButton"] > button *,
+            .st-key-fast_pass_btn div[data-testid="stButton"] > button:hover * {
+                color: #ffffff !important;
+                font-weight: 900 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.write("")
+        _, hard_col, _ = st.columns([1, 1, 1])
+        with hard_col:
+            if FAST_PASS_INDEX in st.session_state.solved_indices:
+                solved_card("매우 어려움", FAST_PASS_PROBLEM[2], "#c62828")
+            elif lucky_button("매우 어려움", key="fast_pass_btn", use_container_width=True):
+                open_problem(FAST_PASS_INDEX)
+
+        # 문제 3개를 모두 풀었거나, 매우 어려움 문제를 풀었으면 타임머신으로 갈 수 있다.
+        solved = st.session_state.solved_indices
+        if FAST_PASS_INDEX in solved or {0, 1, 2} <= solved:
             st.write("")
             st.write("")
             st.markdown("---")
@@ -5918,7 +6108,7 @@ else:
 
         # 제목 · 구분선 · 문제(수식 포함)를 흰 상자 하나에 담는다.
         readable_markdown(
-            f"<h3>{html_escape(st.session_state.title)}</h3>\n\n<hr>\n\n{current_q}"
+            f"<h3>{html_escape(st.session_state.get('current_title', st.session_state.title))}</h3>\n\n<hr>\n\n{current_q}"
         )
         st.write("")
 
@@ -5951,6 +6141,17 @@ else:
 
         st.write("")
         col1, col2, col3 = st.columns([6, 2, 2])
+        # '매우 어려움' 문제는 들어와 보고 어려우면 풀지 않고 문제 선택 화면으로 돌아갈 수 있다.
+        if st.session_state.current_problem_idx == FAST_PASS_INDEX:
+            with col1:
+                if lucky_button(
+                    "← 문제 목록으로 돌아가기", key="fast_pass_back", use_container_width=True
+                ):
+                    if "pw_single" in st.session_state:
+                        del st.session_state["pw_single"]
+                    st.session_state.dev_panel_open = False
+                    st.session_state.step = "select_problem"
+                    st.rerun()
         with col3:
             if lucky_button(
                 "완료 ❯", type="primary", use_container_width=True

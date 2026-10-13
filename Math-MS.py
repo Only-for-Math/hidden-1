@@ -1,6 +1,7 @@
 import math
 import os
 import random
+import re
 import threading
 import time
 from fractions import Fraction
@@ -2214,7 +2215,7 @@ def g1_linear(target):
     d_str = f"{d}x" if abs(d) != 1 else ("x" if d == 1 else "-x")
 
     q = f"다음 방정식의 해 $x$를 구하시오.\n\n$${a}(x {b_str}) {c_str} = {d_str} {e_str}$$"
-    exp = f"괄호를 풀고 식을 정리하면:\n\n$${a}x - {a*b} {c_str} = {d_str} {e_str}$$\n\n$${a-d}x = {e + a*b - c}$$\n\n따라서 $x={target}$"
+    exp = f"괄호를 풀고 식을 정리하면:\n\n$${a}x - {a*b} {c_str} = {d_str} {e_str}$$\n\n$${_coef(a - d)} = {e + a*b - c}$$\n\n따라서 $x={target}$"
     return q, exp, str(target)
 
 
@@ -2271,13 +2272,18 @@ def g1_stat(target):
 # [중2]
 # ==========================================
 def g2_sys(target):
-    x = target
+    # 두 식의 y 의 계수가 서로 반대라서 변끼리 더하면 y 가 없어지는 꼴. (x ± y 만 쓰면 암산으로 끝나서 쉬워진다.)
+    p = random.choice([1, 2, 3])
+    r = random.choice([1, 2, 3])
     y = random.randint(1, 5)
-    a = x + y
-    b = x - y
+    a = p * target + y
+    b = r * target - y
 
-    q = f"다음 연립방정식의 해 $x$의 값을 구하시오.\n\n$$\\begin{{cases}}x + y = {a}\\\\x - y = {b}\\end{{cases}}$$"
-    exp = f"두 식을 변끼리 더하면 $2x = {a + b}$ 이므로 $x = {target}$ 입니다."
+    q = (
+        "다음 연립방정식의 해 $x$의 값을 구하시오.\n\n"
+        f"$$\\begin{{cases}}{_coef(p)} + y = {a}\\\\{_coef(r)} - y = {b}\\end{{cases}}$$"
+    )
+    exp = f"두 식을 변끼리 더하면 $y$가 없어져서 ${_coef(p + r)} = {a + b}$ 이므로 $x = {target}$ 입니다."
     return q, exp, str(target)
 
 
@@ -2287,7 +2293,7 @@ def g2_func(target):
     y1 = slope * x1 + target
 
     q = f"기울기가 ${slope}$이고 점 $({x1}, {y1})$을 지나는 일차함수의 $y$절편을 구하시오."
-    exp = f"일차함수 식을 $y = {slope}x + b$로 두고 점 $({x1}, {y1})$을 대입하면:\n\n$${y1} = {slope} \\times {x1} + b$$\n\n따라서 $y$절편 $b = {target}$ 입니다."
+    exp = f"일차함수 식을 $y = {_coef(slope)} + b$로 두고 점 $({x1}, {y1})$을 대입하면:\n\n$${y1} = {slope} \\times {x1} + b$$\n\n따라서 $y$절편 $b = {target}$ 입니다."
     return q, exp, str(target)
 
 
@@ -2297,7 +2303,7 @@ def g2_exp(target):
     a = random.randint(1, total - 1)
     b = total - a
 
-    q = f"다음 등식을 만족하는 $x$의 값을 구하시오.\n\n$$(2^{{{a}}} \\times 2^{{{b}}}) \\div 2^{{{c}}} = 2^x$$"
+    q = f"다음 등식을 만족하는 $x$의 값을 구하시오.\n\n$$({_pw(2, a)} \\times {_pw(2, b)}) \\div {_pw(2, c)} = 2^x$$"
     exp = f"지수법칙에 의해 지수끼리 계산하면:\n\n$$x = {a} + {b} - {c} = {target}$$"
     return q, exp, str(target)
 
@@ -2380,6 +2386,63 @@ def _coef(n, var="x"):
 
 def _sqrt(n):
     return "\\sqrt{" + str(n) + "}"
+
+
+def _pw(base, e):
+    """base 의 e 제곱을 식으로. 지수가 1 이면 지수를 쓰지 않는다. (2^{1} -> 2)"""
+    return str(base) if e == 1 else f"{base}^{{{e}}}"
+
+
+# 수식($...$) 바로 뒤에 붙는 조사를 수식의 끝소리에 맞게 고친다.
+#  - 문제 문장은 조사를 미리 정해 두고 숫자만 바꿔 끼우므로 "$x + 3$로", "$6$와 $8$" 같은 어색한 말이 생긴다.
+#  - 끝소리를 확실히 알 수 있을 때(숫자, 영문자, 괄호로 끝남, 거듭제곱)만 고치고, 모르면 그대로 둔다.
+#  - "이다/이므로" 처럼 조사 뒤에 한글이 바로 이어지면 서술격 조사이므로 건드리지 않는다.
+_DIGIT_END = {"0": "C", "1": "L", "2": "V", "3": "C", "4": "V", "5": "V", "6": "C", "7": "L", "8": "L", "9": "V"}
+_LETTER_END = {"l": "L", "r": "L", "m": "C", "n": "C"}      # 영문자 이름: 엘·알(ㄹ), 엠·엔(받침), 나머지는 모음
+_JOSA_PAIRS = {
+    "을": ("을", "를"), "를": ("을", "를"), "은": ("은", "는"), "는": ("은", "는"),
+    "이": ("이", "가"), "가": ("이", "가"), "과": ("과", "와"), "와": ("과", "와"),
+    "으로": ("으로", "로"), "로": ("으로", "로"),
+}
+
+
+def _end_sound(tex):
+    """수식을 소리 내어 읽었을 때의 끝소리. 'V'=받침 없음, 'C'=받침 있음, 'L'=ㄹ 받침, 모르면 None."""
+    s = re.sub(r"\\(?:right|left)\s*", "", tex).strip()
+    while s and s[-1] in ")] ":
+        s = s[:-1]                       # 괄호는 읽지 않는다. f(x) -> x, (4, 1) -> 1
+    if not s:
+        return None
+    if s.endswith("}"):
+        return "C" if re.search(r"\^\{[^{}]*\}$", s) else None   # 거듭제곱은 '제곱'으로 끝난다.
+    cmd = re.search(r"\\([A-Za-z]+)$", s)
+    if cmd:
+        return "V" if cmd.group(1) in ("pi", "alpha", "beta", "sigma", "theta") else None
+    ch = s[-1]
+    if ch.isdigit():
+        return _DIGIT_END[ch]
+    if ch.isascii() and ch.isalpha():
+        return _LETTER_END.get(ch.lower(), "V")
+    return None
+
+
+def _fix_josa(text):
+    """문장 안의 '$수식$조사' 를 받침 유무에 맞게 고친다. ($$...$$ 는 건드리지 않는다.)"""
+    def repl(m):
+        if m.group(1):
+            return m.group(0)
+        math_part, josa = m.group(2), m.group(3)
+        kind = _end_sound(math_part[1:-1])
+        if kind is None:
+            return m.group(0)
+        with_c, without_c = _JOSA_PAIRS[josa]
+        if josa in ("으로", "로"):
+            return math_part + ("으로" if kind == "C" else "로")
+        return math_part + (with_c if kind in ("C", "L") else without_c)
+
+    return re.sub(
+        r"(\$\$.*?\$\$)|(\$[^$]+\$)(으로|로|을|를|은|는|이|가|과|와)(?![가-힣])", repl, text, flags=re.S
+    )
 
 
 SIN30 = "\\sin 30^\\circ"
@@ -2631,7 +2694,7 @@ def g2_exp_mid(target):
 
     q = (
         "다음 등식을 만족하는 $x$의 값을 구하시오.\n\n"
-        f"$$(2^{{{a}}} \\times 2^{{{b}}}) \\div 2^{{{c}}} \\times 2^{{{d}}} \\div 2^{{{e}}} = 2^x$$"
+        f"$$({_pw(2, a)} \\times {_pw(2, b)}) \\div {_pw(2, c)} \\times {_pw(2, d)} \\div {_pw(2, e)} = 2^x$$"
     )
     exp = (
         "곱셈과 나눗셈은 앞에서부터 차례로 지수끼리 계산하면:\n\n"
@@ -2712,12 +2775,12 @@ def g2_func_high(target):
 
 def g2_exp_high(target):
     while True:
-        a = random.choice([1, 2, 3])
+        a = random.choice([2, 3])        # (2^1)^k 꼴은 2^k 와 같아 거듭제곱의 거듭제곱이 아니므로 a, d 는 2 이상으로 한다.
         k = random.choice([2, 3])
-        d = random.choice([1, 2])
+        d = random.choice([2, 3])
         h = random.choice([2, 3])
-        c = random.randint(1, 4)
-        e = random.randint(1, 4)
+        c = random.randint(1, 6)
+        e = random.randint(1, 6)
         f = random.randint(1, 3)
         b = target - a * k + c - d * h + e - f
         if b < 1:
@@ -2729,8 +2792,8 @@ def g2_exp_high(target):
 
     q = (
         "다음 등식을 만족하는 $x$의 값을 구하시오.\n\n"
-        f"$$(2^{{{a}}})^{{{k}}} \\times 2^{{{b}}} \\div 2^{{{c}}} \\times (2^{{{d}}})^{{{h}}}"
-        f" \\div 2^{{{e}}} \\times 2^{{{f}}} = 2^x$$"
+        f"$$(2^{{{a}}})^{{{k}}} \\times {_pw(2, b)} \\div {_pw(2, c)} \\times (2^{{{d}}})^{{{h}}}"
+        f" \\div {_pw(2, e)} \\times {_pw(2, f)} = 2^x$$"
     )
     exp = (
         f"$(2^{{{a}}})^{{{k}}} = 2^{{{a * k}}}$, $(2^{{{d}}})^{{{h}}} = 2^{{{d * h}}}$ 이므로, "
@@ -3056,10 +3119,13 @@ def f_gcd(target, level):
 def f_divcount(target, level):
     """약수의 개수가 주어졌을 때 모르는 지수 x 구하기 (소인수의 개수: 하 2, 중 3, 상 4)."""
     primes = random.sample([2, 3, 5, 7], level + 1)
-    exps = {p: random.choice([1, 2, 3]) for p in primes[1:]}
-    k = 1
-    for e in exps.values():
-        k *= e + 1
+    while True:
+        exps = {p: random.choice([1, 2, 3]) for p in primes[1:]}
+        k = 1
+        for e in exps.values():
+            k *= e + 1
+        if k <= 18:      # 약수의 개수가 세 자리 이상(최대 1024)으로 커지지 않게 한다.
+            break
     total = (target + 1) * k
     parts = [f"{primes[0]}^{{x}}"] + [
         f"{p}^{{{e}}}" if e > 1 else str(p) for p, e in exps.items()
@@ -3241,21 +3307,21 @@ def _factor_pairs(n, lo=1, hi=12):
 
 
 def f_area(target, level):
-    """좌표평면 위 도형의 넓이 (하: 삼각형, 중: 직사각형, 상: 사다리꼴)."""
+    """좌표평면 위 도형의 넓이 (하: 직사각형, 중: 삼각형, 상: 사다리꼴). 넓이 공식이 간단한 것부터 놓는다."""
     if level == 1:
+        w, h = random.choice(_factor_pairs(target))
+        pts = [(0, 0), (w, 0), (w, h), (0, h)]
+        name, shape = "ABCD", "직사각형"
+        exp_core = (
+            f"가로의 길이는 ${w}$, 세로의 길이는 ${h}$이므로\n\n$${w}\\times{h}={target}$$"
+        )
+    elif level == 2:
         bw, h = random.choice(_factor_pairs(2 * target))
         pts = [(0, 0), (bw, 0), (random.randint(0, bw), h * random.choice([1, -1]))]
         name, shape = "ABC", "삼각형"
         exp_core = (
             f"선분 $AB$의 길이는 ${bw}$이고, 점 $C$에서 직선 $AB$까지의 거리는 ${h}$이므로\n\n"
             f"$$\\frac{{1}}{{2}}\\times{bw}\\times{h}={target}$$"
-        )
-    elif level == 2:
-        w, h = random.choice(_factor_pairs(target))
-        pts = [(0, 0), (w, 0), (w, h), (0, h)]
-        name, shape = "ABCD", "직사각형"
-        exp_core = (
-            f"가로의 길이는 ${w}$, 세로의 길이는 ${h}$이므로\n\n$${w}\\times{h}={target}$$"
         )
     else:
         while True:
@@ -3455,7 +3521,10 @@ def f_sector(target, level):
 def f_cuboid_cut(target, level):
     """직육면체의 부피로 높이 구하기 (하: 그대로, 중: 정육면체 1개를 잘라 냄, 상: 정육면체와 직육면체를 잘라 냄)."""
     while True:
-        a, b = random.randint(3, 12), random.randint(3, 12)
+        # 부피(가로×세로×높이)가 네 자리(최대 2160)로 커지지 않도록 가로·세로는 작게 잡고 부피를 800 이하로 한다.
+        a, b = random.randint(3, 9), random.randint(3, 9)
+        if a * b * target > 800:
+            continue
         cuts = []  # 잘라 낸 입체의 (가로, 세로, 높이)
         if level == 2:
             c = random.randint(1, 3)
@@ -3500,7 +3569,7 @@ def f_cuboid_cut(target, level):
 def f_pour(target, level):
     """부피가 같게 그릇에 옮겨 담을 때 높이 구하기 (하: 원기둥, 중: 원뿔 → 원기둥, 상: 원뿔 두 개 → 원기둥)."""
     if level == 1:
-        r = random.randint(2, 9)
+        r = random.randint(2, 5)          # r 이 크면 부피가 r²·target 으로 1000 을 넘는다.
         q = (
             f"밑면의 반지름의 길이가 ${r}$ cm인 원기둥의 부피가 ${r * r * target}\\pi$ cm³일 때, "
             "이 원기둥의 높이를 구하시오."
@@ -3584,7 +3653,7 @@ def f_relative(target, level):
         while True:
             r = random.choice(rates)
             N = Fraction(target) / Fraction(str(r))
-            if N.denominator == 1:
+            if N.denominator == 1 and N <= 200:      # 도수의 총합이 너무 크지 않게
                 break
         N = int(N)
         q = (
@@ -3598,7 +3667,7 @@ def f_relative(target, level):
             r2 = random.choice(rates)
             N = Fraction(target) / Fraction(str(r2))
             r1 = random.choice([x for x in rates if x != r2])
-            if N.denominator == 1 and (N * Fraction(str(r1))).denominator == 1:
+            if N.denominator == 1 and N <= 200 and (N * Fraction(str(r1))).denominator == 1:
                 break
         N = int(N)
         d1 = int(N * Fraction(str(r1)))
@@ -3677,7 +3746,8 @@ def f_finite_count(target, level):
         need = p
         dens = [(twos, fives, others, den)]
     elif level == 2:
-        pool = [[(3, 2)], [(3, 1), (7, 1)], [(3, 1), (11, 1)], [(7, 1), (11, 1)]]
+        # need(= a 가 배수여야 하는 수)가 클수록 M 이 need×target 으로 커지므로 21 이하만 쓴다.
+        pool = [[(3, 2)], [(3, 1), (7, 1)]]
         others = random.choice(pool)
         twos, fives, others, den = make_den(others)
         need = 1
@@ -3685,7 +3755,7 @@ def f_finite_count(target, level):
             need *= p ** e
         dens = [(twos, fives, others, den)]
     else:
-        p1, p2 = random.sample([3, 7, 11], 2)
+        p1, p2 = random.sample([3, 7], 2)
         dens = [make_den([(p1, 1)]), make_den([(p2, 1)])]
         need = p1 * p2
     M = need * target + random.randint(0, need - 1)
@@ -3904,8 +3974,11 @@ def _round_budget(lo, span):
 
 def f_ineq_word(target, level):
     """일차부등식의 활용 (하: 포장비 포함, 중: 이미 산 물건 제외, 상: 할인 + 포장비 + 배송비)."""
+    # 금액이 네·다섯 자리(최대 31000원)로 커지지 않도록, 사려는 개수(target)에 맞춰 한 개의 값을 정한다.
+    # 예산은 대체로 1만 원 안팎이 되게 한다.
+    max_unit = max(3, min(15, 9000 // target // 100))     # 한 개의 값의 상한(백 원 단위)
     if level == 1:
-        p, w = random.randint(3, 15) * 100, random.randint(1, 5) * 500
+        p, w = random.randint(3, max_unit) * 100, random.randint(1, 5) * 500
         B = _round_budget(w + p * target, p)
         q = (
             f"한 개에 ${p}$원인 사탕을 포장비 ${w}$원을 내고 포장하여 ${B}$원 이하로 사려고 한다. "
@@ -3917,8 +3990,8 @@ def f_ineq_word(target, level):
         )
         return q, exp, str(target)
     if level == 2:
-        p, q_ = random.randint(3, 15) * 100, random.randint(2, 12) * 100
-        m = random.randint(2, 6)
+        p, q_ = random.randint(3, 10) * 100, random.randint(2, max(2, max_unit)) * 100
+        m = random.randint(2, 4)
         B = _round_budget(p * m + q_ * target, q_)
         q = (
             f"한 개에 ${p}$원인 연필을 이미 ${m}$자루 샀고, 남은 돈으로 한 개에 ${q_}$원인 지우개를 사려고 한다. "
@@ -3933,7 +4006,8 @@ def f_ineq_word(target, level):
         d = random.choice([10, 20, 25, 30, 40, 50])
         p = random.randint(2, 20) * 100
         price = p * (100 - d) // 100
-        break
+        if price * target <= 9000:     # 할인한 값으로 target 개를 샀을 때 9000원을 넘지 않게
+            break
     w, s = random.randint(1, 5) * 500, random.randint(1, 4) * 500
     B = _round_budget(w + s + price * target, price)
     q = (
@@ -3966,10 +4040,11 @@ def f_sys_word(target, level):
         return q, exp, str(target)
     if level == 2:
         while True:
-            p, q_ = random.randint(3, 15) * 100, random.randint(3, 15) * 100
-            if p != q_:
+            # 낸 금액 M 이 네·다섯 자리(최대 39300원)로 커지지 않게 한 송이의 값과 송이 수를 작게 잡는다.
+            p, q_ = random.randint(2, 8) * 100, random.randint(2, 8) * 100
+            y = random.randint(2, 6)
+            if p != q_ and p * target + q_ * y <= 12000:
                 break
-        y = random.randint(2, 12)
         n, M = target + y, p * target + q_ * y
         q = (
             f"한 송이에 ${p}$원인 장미와 한 송이에 ${q_}$원인 카네이션을 합하여 ${n}$송이를 사고 "
@@ -4001,7 +4076,7 @@ def f_sys_word(target, level):
 
 # ---------- 5. 일차함수와 그래프 ----------
 def f_func_intercept(target, level):
-    """일차함수의 절편·기울기 (하: x절편으로 y절편, 중: 두 그래프의 절편이 같다, 상: 평행이동한 그래프가 일치)."""
+    """일차함수의 절편·기울기 (하: x절편으로 y절편, 중: 두 그래프의 절편이 같다, 상: 평행이동한 그래프가 일치할 때 기울기와 절편의 합)."""
     if level == 1:
         p = random.choice([d for d in range(1, target + 1) if target % d == 0])
         a = -target // p
@@ -4030,23 +4105,20 @@ def f_func_intercept(target, level):
             f"$y={_coef(n)} + a$의 $x$절편은 $-\\frac{{a}}{{{n}}}$이므로 $-\\frac{{a}}{{{n}}}={c}$, 즉 $a={target}$"
         )
         return q, exp, str(target)
-    k = random.choice([d for d in range(2, 9) if target % d == 0] or [1])
-    m = target // k
+    # 기울기 a 와 y절편 b 를 둘 다 구해야 하는 문제. (기울기만 비교하면 끝나는 문제는 상이라 하기에 너무 쉽다.)
     while True:
-        c, e = _nonzero(-6, 6), _nonzero(-6, 6)
-        d = c + e
-        if d != 0:
+        m, e = _nonzero(-4, 4), _nonzero(-6, 6)
+        d = target - m + e                 # a=m, b=d-e 이므로 a+b = target
+        if d != 0 and d != e:
             break
-    lead = f"\\frac{{a}}{{{k}}}x" if k > 1 else "ax"
     q = (
-        f"일차함수 $y={lead} {_sgn(c)}$의 그래프를 $y$축의 방향으로 ${e}$만큼 평행이동하면 "
-        f"일차함수 $y={_lin(m, d)}$의 그래프와 일치한다. 상수 $a$의 값을 구하시오."
+        f"일차함수 $y=ax+b$의 그래프를 $y$축의 방향으로 ${e}$만큼 평행이동하면 "
+        f"일차함수 $y={_lin(m, d)}$의 그래프와 일치한다. 상수 $a$, $b$에 대하여 $a+b$의 값을 구하시오."
     )
     exp = (
-        f"평행이동한 그래프의 식은 $y={lead} {_sgn(c)} {_sgn(e)}$이고, 이 그래프가 $y={_lin(m, d)}$와 일치하므로\n\n"
-        f"기울기가 같아야 합니다. $\\frac{{a}}{{{k}}}={m}$, 즉 $a={target}$"
-        if k > 1
-        else f"평행이동한 그래프의 기울기는 변하지 않으므로 $a={m}$입니다."
+        f"평행이동한 그래프의 식은 $y=ax+b {_sgn(e)}$이고, 이 그래프가 $y={_lin(m, d)}$와 일치하므로\n\n"
+        f"$a={m}$, $b {_sgn(e)}={d}$에서 $b={d - e}$입니다.\n\n"
+        f"따라서 $a+b={m}+({d - e})={target}$"
     )
     return q, exp, str(target)
 
@@ -4271,7 +4343,7 @@ def f_center(target, level):
 
 # ---------- 7. 도형의 닮음 ----------
 def f_similar(target, level):
-    """닮은 도형의 넓이·부피 (하: 닮음비 1:n 두 삼각형의 넓이, 중: 1:2:n 세 원기둥의 부피, 상: 1:2:3:n 네 원기둥의 부피)."""
+    """닮은 도형의 넓이·부피 (하: 닮음비 1:n 두 도형의 넓이, 중: 닮음비 1:n 두 입체의 부피, 상: 닮음비 1:2:3 세 입체의 부피)."""
     if level == 1:
         n = random.choice([2, 3, 4, 5])
         S = target * (1 + n * n)
@@ -4285,10 +4357,11 @@ def f_similar(target, level):
             f"작은 {shape}의 넓이는 ${S}\\times\\frac{{1}}{{{1 + n * n}}}={target}$"
         )
         return q, exp, str(target)
-    ratios = [1, 2, random.choice([3, 4, 5])] if level == 2 else [1, 2, 3, random.choice([4, 5, 6])]
+    # 부피의 합(target × (1+8+n³ …))이 네 자리 이상으로 커지지 않게 가장 큰 닮음비를 작게 잡는다.
+    ratios = [1, random.choice([2, 3])] if level == 2 else [1, 2, 3]
     total = sum(r ** 3 for r in ratios)
     V = target * total
-    word = {3: "세", 4: "네"}[len(ratios)]
+    word = {2: "두", 3: "세"}[len(ratios)]
     solid = random.choice(["원기둥", "원뿔", "구", "직육면체", "삼각기둥"])
     q = (
         f"닮음비가 ${':'.join(map(str, ratios))}$인 {word} 닮은 {solid}의 부피의 합이 ${V}$ cm³일 때, "
@@ -4323,7 +4396,7 @@ def f_parallel_prop(target, level):
     if level == 2:
         while True:
             a, b = random.randint(1, 9), random.randint(1, 9)
-            if (a * target) % b == 0:
+            if (a * target) % b == 0 and a * target // b <= 45:     # DE 가 세 자리(최대 135)로 커지지 않게
                 d = a * target // b
                 break
         q = (
@@ -4365,7 +4438,8 @@ _BALL_COLORS = ["파란", "빨간", "노란", "초록", "검은"]
 def f_prob_unknown(target, level):
     """확률이 주어졌을 때 모르는 공의 개수 x 구하기 (하: 3색 한 번, 중: 4색 한 번 '또는', 상: 5색 두 번 복원추출)."""
     kinds = {1: 2, 2: 3, 3: 4}[level]   # x 를 뺀 색의 수
-    counts = [random.randint(1, 8) for _ in range(kinds)]
+    # 상은 확률이 (개수/전체)² 꼴이라 분모가 전체²까지 커지므로 한 색의 공을 적게 잡는다.
+    counts = [random.randint(1, 3 if level == 3 else 8) for _ in range(kinds)]
     N = sum(counts) + target
     if level == 1:
         fr = Fraction(counts[0], N)
@@ -4537,7 +4611,11 @@ def f_sqrt_count(target, level):
 
 def f_surd(target, level):
     """근호가 있는 식 (하: √(a²c) 간단히, 중: 근호의 곱, 상: 근호의 덧셈·뺄셈)."""
-    c = random.choice([2, 3, 5, 6, 7, 10])
+    # 근호 안의 수(target²·c, 각 항의 a²·c)가 네 자리(최대 2250)로 커지지 않게 c 를 고른다.
+    if level == 3:
+        c = random.choice([2, 3, 5])
+    else:
+        c = random.choice([v for v in (2, 3, 5, 6, 7, 10) if target * target * v <= 1000])
     if level == 1:
         N = target * target * c
         q = f"$\\sqrt{{{N}}}=a\\sqrt{{{c}}}$일 때, 자연수 $a$의 값을 구하시오."
@@ -4560,7 +4638,7 @@ def f_surd(target, level):
         part = a1 + (a2 if ops[1] == "+" else -a2)
         need = target - part
         a3 = need if ops[2] == "+" else -need
-        if 1 <= a3 <= 12 and len({a1, a2, a3}) == 3:
+        if 1 <= a3 <= 9 and len({a1, a2, a3}) == 3:
             break
     parts = [a1, a2, a3]
     expr = f"\\sqrt{{{a1 * a1 * c}}}" + "".join(
@@ -4718,7 +4796,7 @@ def f_quad_roots(target, level):
             f"따라서 $a={target}$"
         )
         return q, exp, str(target)
-    alpha, beta = random.randint(1, 3), random.randint(1, 9)
+    alpha, beta = random.randint(1, 2), random.randint(1, 5)     # c² 이 너무 커지지 않게(최대 54² → 34²)
     c = alpha * target + beta
     q = (
         f"이차방정식 $x^2+2({_lin(alpha, beta, 'm')})x+{c * c}=0$이 중근을 가질 때, "
@@ -4749,8 +4827,9 @@ def f_quad_word(target, level):
         )
         return q, exp, str(target)
     if level == 2:
-        # 길의 폭이 정원의 가로·세로에 비해 지나치게 넓어지지 않도록 3배 이상으로 잡는다.
-        W, H = 3 * target + random.randint(2, 20), 3 * target + random.randint(1, 14)
+        # 길의 폭이 정원의 가로·세로에 비해 지나치게 넓어지지 않도록 2배 이상으로 잡되, 넓이 A 가
+        # 네 자리(최대 2156)로 커지지 않게 가로·세로를 2배 남짓으로만 키운다.
+        W, H = 2 * target + random.randint(3, 12), 2 * target + random.randint(2, 10)
         A = (W - target) * (H - target)
         q = (
             f"가로의 길이가 ${W}$ m, 세로의 길이가 ${H}$ m인 직사각형 모양의 정원에 폭이 일정한 십자 모양의 길을 "
@@ -4829,7 +4908,7 @@ def _expanded(a):
 
 def f_parabola_shift(target, level):
     """이차함수의 평행이동 (하: x축 방향으로만 p, 중: 두 방향 p+q, 상: x축 대칭이동 후 평행이동 p+q)."""
-    a = random.choice([1, 2, 3, -1, -2, -3])
+    a = random.choice([1, 2, -1, -2])        # |a|=3 이면 상수항 a·p² 가 세 자리 중반(최대 675+q)이 되어 빼 둔다.
     if level == 1:
         p = target
         b, c = -2 * a * p, a * p * p
@@ -4843,7 +4922,7 @@ def f_parabola_shift(target, level):
         )
         return q, exp, str(target)
     while True:
-        p = random.randint(-3, target + 3)
+        p = random.randint(-3, max(target - 1, 1))      # p 가 크면 상수항 a·p² 가 세 자리 중반까지 커진다.
         qv = target - p
         if p != 0 and qv != 0:
             break
@@ -4982,7 +5061,7 @@ def f_circle_angle(target, level):
 
 
 def f_circle_length(target, level):
-    """원의 현·접선의 길이 (하: 현의 수직이등분선, 중: 외접사각형, 상: 내접원의 접선의 길이)."""
+    """원의 현·접선의 길이 (하: 현의 수직이등분선, 중: 외접사각형, 상: 삼각형의 세 변으로 내접원의 접선의 길이)."""
     if level == 1:
         d = random.randint(1, 12)
         r2 = d * d + target * target
@@ -5014,20 +5093,20 @@ def f_circle_length(target, level):
             f"$${ab}+{cd}={bc}+\\overline{{AD}}$$\n\n따라서 $\\overline{{AD}}={target}$ cm"
         )
         return q, exp, str(target)
-    while True:
-        b = random.randint(1, target - 1)
-        c = target - b
-        a = random.randint(1, 15)
-        if b >= 1 and c >= 1:
-            break
+    # 세 접선의 길이 AP=x, BQ=y, CR=z 라 하면 세 변은 x+y, y+z, z+x. 세 변의 길이만 주고 AP 를 묻는다. (연립 3개)
+    y, z = random.randint(1, 8), random.randint(1, 8)
+    ab, bc, ca = target + y, y + z, z + target
     q = (
         "삼각형 $ABC$의 내접원이 세 변 $AB$, $BC$, $CA$와 만나는 점을 각각 $P$, $Q$, $R$라고 하자. "
-        f"$\\overline{{AP}}={a}$ cm, $\\overline{{BQ}}={b}$ cm, $\\overline{{CR}}={c}$ cm일 때, $\\overline{{BC}}$의 길이를 구하시오."
+        f"$\\overline{{AB}}={ab}$ cm, $\\overline{{BC}}={bc}$ cm, $\\overline{{CA}}={ca}$ cm일 때, "
+        "$\\overline{AP}$의 길이를 구하시오."
     )
     exp = (
-        "원 밖의 한 점에서 그 원에 그은 두 접선의 길이는 같으므로 $\\overline{BP}=\\overline{BQ}$, "
-        "$\\overline{CQ}=\\overline{CR}$입니다.\n\n"
-        f"$$\\overline{{BC}}=\\overline{{BQ}}+\\overline{{CQ}}=\\overline{{BQ}}+\\overline{{CR}}={b}+{c}={target}$$ (cm)"
+        "원 밖의 한 점에서 그 원에 그은 두 접선의 길이는 같으므로 "
+        "$\\overline{AP}=\\overline{AR}=x$, $\\overline{BP}=\\overline{BQ}=y$, $\\overline{CQ}=\\overline{CR}=z$라 하면\n\n"
+        f"$$x+y={ab},\\quad y+z={bc},\\quad z+x={ca}$$\n\n"
+        f"$\\overline{{AB}}+\\overline{{CA}}-\\overline{{BC}}=2x$이므로 $2x={ab}+{ca}-{bc}={2 * target}$\n\n"
+        f"따라서 $\\overline{{AP}}={target}$ cm"
     )
     return q, exp, str(target)
 
@@ -5216,6 +5295,7 @@ def generate_grade_problems(grade, difficulty=1):
     problems = []
     for target, (unit, families) in zip(targets, units):
         question, explanation, answer = random.choice(families)(target, difficulty)
+        question, explanation = _fix_josa(question), _fix_josa(explanation)
         problems.append((question, f"*({unit} 단원)*\n\n{explanation}", answer))
 
     return title, problems

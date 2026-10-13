@@ -2,6 +2,7 @@ import itertools
 import math
 import os
 import random
+import re
 import threading
 import time
 from fractions import Fraction
@@ -2302,6 +2303,63 @@ def _mat(a, b, c, d):
     return rf"\begin{{pmatrix}}{a}&{b}\\{c}&{d}\end{{pmatrix}}"
 
 
+# 수식($...$) 바로 뒤에 붙는 조사를 수식의 끝소리에 맞게 고친다.
+#  - 문제 문장은 조사를 미리 정해 두고 숫자만 바꿔 끼우므로 "$x + 3$로", "$6$와 $8$" 같은 어색한 말이 생긴다.
+#  - 끝소리를 확실히 알 수 있을 때(숫자, 영문자, 괄호로 끝남, 거듭제곱)만 고치고, 모르면 그대로 둔다.
+#  - "이다/이므로" 처럼 조사 뒤에 한글이 바로 이어지면 서술격 조사이므로 건드리지 않는다.
+_DIGIT_END = {"0": "C", "1": "L", "2": "V", "3": "C", "4": "V", "5": "V", "6": "C", "7": "L", "8": "L", "9": "V"}
+_LETTER_END = {"l": "L", "r": "L", "m": "C", "n": "C"}      # 영문자 이름: 엘·알(ㄹ), 엠·엔(받침), 나머지는 모음
+_JOSA_PAIRS = {
+    "을": ("을", "를"), "를": ("을", "를"), "은": ("은", "는"), "는": ("은", "는"),
+    "이": ("이", "가"), "가": ("이", "가"), "과": ("과", "와"), "와": ("과", "와"),
+    "으로": ("으로", "로"), "로": ("으로", "로"),
+}
+
+
+def _end_sound(tex):
+    """수식을 소리 내어 읽었을 때의 끝소리. 'V'=받침 없음, 'C'=받침 있음, 'L'=ㄹ 받침, 모르면 None."""
+    s = re.sub(r"\\(?:right|left)\s*", "", tex).strip()
+    while s and s[-1] in ")] ":
+        s = s[:-1]                       # 괄호는 읽지 않는다. f(x) -> x, (4, 1) -> 1
+    if not s:
+        return None
+    if s.endswith("}"):
+        return "C" if re.search(r"\^\{[^{}]*\}$", s) else None   # 거듭제곱은 '제곱'으로 끝난다.
+    cmd = re.search(r"\\([A-Za-z]+)$", s)
+    if cmd:
+        return "V" if cmd.group(1) in ("pi", "alpha", "beta", "sigma", "theta") else None
+    ch = s[-1]
+    if ch.isdigit():
+        return _DIGIT_END[ch]
+    if ch.isascii() and ch.isalpha():
+        return _LETTER_END.get(ch.lower(), "V")
+    return None
+
+
+def _fix_josa(text):
+    """문장 안의 '$수식$조사' 를 받침 유무에 맞게 고친다. ($$...$$ 는 건드리지 않는다.)"""
+    def repl(m):
+        if m.group(1):
+            return m.group(0)
+        math_part, josa = m.group(2), m.group(3)
+        kind = _end_sound(math_part[1:-1])
+        if kind is None:
+            return m.group(0)
+        with_c, without_c = _JOSA_PAIRS[josa]
+        if josa in ("으로", "로"):
+            return math_part + ("으로" if kind == "C" else "로")
+        return math_part + (with_c if kind in ("C", "L") else without_c)
+
+    return re.sub(
+        r"(\$\$.*?\$\$)|(\$[^$]+\$)(으로|로|을|를|은|는|이|가|과|와)(?![가-힣])", repl, text, flags=re.S
+    )
+
+
+def _pow2(e):
+    """2 의 e 제곱을 식으로. 0 -> 1, 1 -> 2 (2^{1} 처럼 지수 1 을 쓰지 않는다)."""
+    return "1" if e == 0 else ("2" if e == 1 else f"2^{{{e}}}")
+
+
 def _poly(cs, var="x"):
     """계수 목록(높은 차수부터)을 다항식 문자열로. [1, -3, 2] -> 'x^{2} - 3x + 2'."""
     deg = len(cs) - 1
@@ -2383,7 +2441,7 @@ def h_remainder(target, level):
 
 
 def h_expand_coef(target, level):
-    """다항식의 전개 (하: 두 일차식의 곱에서 x의 계수, 중: 세 일차식의 곱에서 x²의 계수, 상: 세 일차식의 곱에서 x의 계수)."""
+    """다항식의 전개 (하: 두 일차식의 곱에서 x의 계수, 중: 이차식과 일차식의 곱에서 x의 계수, 상: 세 일차식 또는 두 이차식의 곱에서 한 항의 계수)."""
     if level == 1:
         while True:
             p = _nonzero(-9, 12)
@@ -2398,28 +2456,42 @@ def h_expand_coef(target, level):
         )
         return q, exp, str(target)
     if level == 2:
-        while True:
-            p, r = _nonzero(-6, 9), _nonzero(-6, 9)
-            s = target - p - r
-            if s != 0 and abs(s) <= 9:
-                break
-        e = f"(x {_sgn(p)})(x {_sgn(r)})(x {_sgn(s)})"
-        q = f"다음 식을 전개하였을 때 $x^{{2}}$의 계수를 구하시오.\n\n$${e}$$"
+        # (x^2 + px + c)(x + r) 의 x 의 계수: c + p·r  (x 항이 나오는 경우가 두 가지)
+        def make():
+            return _nonzero(-6, 6), _nonzero(-9, 9), _nonzero(-6, 6)
+
+        p, c, r = _roll(make, lambda v: v[1] + v[0] * v[2], target)
+        e = f"({_poly([1, p, c])})(x {_sgn(r)})"
+        q = f"다음 식을 전개하였을 때 $x$의 계수를 구하시오.\n\n$${e}$$"
         exp = (
-            "$(x+a)(x+b)(x+c)=x^{3}+(a+b+c)x^{2}+(ab+bc+ca)x+abc$이므로\n\n"
-            f"$x^{{2}}$의 계수는 ${_p(p)}+{_p(r)}+{_p(s)}={target}$"
+            f"$x$항은 $({_coef(p)})\\times({r})$과 ${c}\\times x$에서 나오므로\n\n"
+            f"$x$의 계수는 ${_p(p)}\\times{_p(r)}+{_p(c)}={target}$"
         )
         return q, exp, str(target)
 
-    def make():
-        return [_nonzero(-6, 6) for _ in range(3)]
+    if random.random() < 0.5:
+        def make():
+            return [_nonzero(-6, 6) for _ in range(3)]
 
-    p, r, s = _roll(make, lambda v: v[0] * v[1] + v[1] * v[2] + v[2] * v[0], target)
-    e = f"(x {_sgn(p)})(x {_sgn(r)})(x {_sgn(s)})"
-    q = f"다음 식을 전개하였을 때 $x$의 계수를 구하시오.\n\n$${e}$$"
+        p, r, s = _roll(make, lambda v: v[0] * v[1] + v[1] * v[2] + v[2] * v[0], target)
+        e = f"(x {_sgn(p)})(x {_sgn(r)})(x {_sgn(s)})"
+        q = f"다음 식을 전개하였을 때 $x$의 계수를 구하시오.\n\n$${e}$$"
+        exp = (
+            "$(x+a)(x+b)(x+c)=x^{3}+(a+b+c)x^{2}+(ab+bc+ca)x+abc$이므로\n\n"
+            f"$x$의 계수는 ${_p(p)}\\times{_p(r)}+{_p(r)}\\times{_p(s)}+{_p(s)}\\times{_p(p)}={target}$"
+        )
+        return q, exp, str(target)
+
+    # (x^2 + px + c)(x^2 + rx + s) 의 x^2 의 계수: s + p·r + c  (x^2 항이 나오는 경우가 세 가지)
+    def make2():
+        return _nonzero(-5, 5), _nonzero(-6, 6), _nonzero(-5, 5), _nonzero(-6, 6)
+
+    p, c, r, s = _roll(make2, lambda v: v[3] + v[0] * v[2] + v[1], target)
+    e = f"({_poly([1, p, c])})({_poly([1, r, s])})"
+    q = f"다음 식을 전개하였을 때 $x^{{2}}$의 계수를 구하시오.\n\n$${e}$$"
     exp = (
-        "$(x+a)(x+b)(x+c)=x^{3}+(a+b+c)x^{2}+(ab+bc+ca)x+abc$이므로\n\n"
-        f"$x$의 계수는 ${_p(p)}\\times{_p(r)}+{_p(r)}\\times{_p(s)}+{_p(s)}\\times{_p(p)}={target}$"
+        f"$x^{{2}}$항은 $x^{{2}}\\times({s})$, $({_coef(p)})\\times({_coef(r)})$, ${c}\\times x^{{2}}$에서 나오므로\n\n"
+        f"$x^{{2}}$의 계수는 ${s}+{_p(p)}\\times{_p(r)}+{_p(c)}={target}$"
     )
     return q, exp, str(target)
 
@@ -2457,7 +2529,7 @@ def h_quad_roots(target, level):
         return q, exp, str(target)
     if level == 2:
         lo = math.isqrt(4 * target) + 1       # p^2 > 4k 라서 두 근이 실수
-        p = random.randint(lo, lo + 5)
+        p = random.randint(lo, lo + 2)        # 너무 큰 수가 나오지 않게 좁게 잡는다.
         S = p * p - 2 * target
         q = (
             f"이차방정식 $x^{{2}}-{p}x+k=0$의 두 근을 $\\alpha$, $\\beta$라 할 때, "
@@ -2554,7 +2626,7 @@ def h_quad_ineq_count(target, level):
 
 # ---------- 행렬 ----------
 def h_matrix(target, level):
-    """행렬 (하: 곱의 성분, 중: 2A-B 의 성분의 합, 상: 거듭제곱의 성분으로 상수 구하기)."""
+    """행렬 (하: 곱의 한 성분, 중: 곱의 두 대각성분의 합, 상: 거듭제곱의 성분으로 상수 구하기)."""
     if level == 3:
         n = random.choice([2, 3, 4, 5])
         N = n * target
@@ -2601,19 +2673,20 @@ def h_matrix(target, level):
 
     def solve2(s):
         A, B, _, _ = s
-        return 2 * sum(map(sum, A)) - sum(map(sum, B))
+        return A[0][0] * B[0][0] + A[0][1] * B[1][0] + A[1][0] * B[0][1] + A[1][1] * B[1][1]
 
     A, B, _, _ = _roll(make, solve2, target)
     q = (
         "두 행렬\n\n"
         + rf"$$A={_mat(A[0][0], A[0][1], A[1][0], A[1][1])},\quad B={_mat(B[0][0], B[0][1], B[1][0], B[1][1])}$$"
-        + "\n\n에 대하여 행렬 $2A-B$의 모든 성분의 합을 구하시오."
+        + "\n\n에 대하여 행렬 $AB$의 $(1,1)$ 성분과 $(2,2)$ 성분의 합을 구하시오."
     )
-    C = [[2 * A[r][c] - B[r][c] for c in range(2)] for r in range(2)]
-    flat = [v for row in C for v in row]
+    c11 = A[0][0] * B[0][0] + A[0][1] * B[1][0]
+    c22 = A[1][0] * B[0][1] + A[1][1] * B[1][1]
     exp = (
-        "$$2A-B=" + _mat(*flat) + "$$\n\n"
-        f"따라서 모든 성분의 합은 ${' + '.join(_p(v) for v in flat)}={target}$"
+        f"$AB$의 $(1,1)$ 성분은 ${_p(A[0][0])}\\times{_p(B[0][0])}+{_p(A[0][1])}\\times{_p(B[1][0])}={c11}$,\n\n"
+        f"$(2,2)$ 성분은 ${_p(A[1][0])}\\times{_p(B[0][1])}+{_p(A[1][1])}\\times{_p(B[1][1])}={c22}$이므로\n\n"
+        f"두 성분의 합은 ${_p(c11)}+{_p(c22)}={target}$"
     )
     return q, exp, str(target)
 
@@ -2628,10 +2701,11 @@ def _mult_solutions(kind, target):
     if key in _MULT_CACHE:
         return _MULT_CACHE[key]
     out = []
+    # N 은 세 난이도 모두 80 이하로 둔다. (N 이 100 을 넘으면 배수를 하나씩 세는 부담이 단원 안에서 너무 커진다.)
     if kind == "or2":            # a 또는 b 의 배수
         for a in range(2, 10):
             for b in range(a + 1, 10):
-                for N in range(5, 121):
+                for N in range(5, 81):
                     if b % a and N >= b and N // a + N // b - N // math.lcm(a, b) == target:
                         out.append(((a, b), N))
     elif kind == "only":         # a 의 배수이지만 b 의 배수는 아닌 것
@@ -2639,12 +2713,14 @@ def _mult_solutions(kind, target):
             for b in range(2, 10):
                 if a == b or a % b == 0:
                     continue
-                for N in range(5, 121):
+                for N in range(5, 81):
                     if N // a - N // math.lcm(a, b) == target:
                         out.append(((a, b), N))
-    elif kind == "or3":          # 세 수 중 적어도 하나의 배수
+    elif kind == "or3":          # 세 수 중 적어도 하나의 배수 (한 수가 다른 수의 약수이면 문제가 싱거워지므로 뺀다)
         for nums in itertools.combinations([2, 3, 4, 5, 6, 7, 9], 3):
-            for N in range(30, 151):
+            if any(x != y and y % x == 0 for x in nums for y in nums):
+                continue
+            for N in range(10, 61):
                 if sum(1 for k in range(1, N + 1) if any(k % m == 0 for m in nums)) == target:
                     out.append((nums, N))
     else:                        # 두 수 어느 것의 배수도 아닌 것
@@ -2764,15 +2840,19 @@ def _dice_conditions(level):
         conds.append(("두 눈의 수가 모두 소수", lambda i, j: i in (2, 3, 5) and j in (2, 3, 5)))
         conds.append(("두 눈의 수가 서로 같은", lambda i, j: i == j))
         return conds
-    for k in range(2, 36):
-        conds.append((f"나오는 두 눈의 수의 곱이 ${k}$ 이하", lambda i, j, k=k: i * j <= k))
-        conds.append((f"나오는 두 눈의 수의 곱이 ${k}$ 이상", lambda i, j, k=k: i * j >= k))
-    for k in (5, 7, 10, 15, 20, 30):
-        conds.append((f"나오는 두 눈의 수의 곱이 ${k}$", lambda i, j, k=k: i * j == k))
-    conds.append(("나오는 두 눈의 수의 곱이 홀수", lambda i, j: (i * j) % 2 == 1))
-    conds.append(("나오는 두 눈의 수의 곱이 짝수", lambda i, j: (i * j) % 2 == 0))
-    for m in (3, 4, 5, 6):
-        conds.append((f"나오는 두 눈의 수의 곱이 ${m}$의 배수", lambda i, j, m=m: (i * j) % m == 0))
+    # 상: 조건이 두 개 겹친다. (합의 조건 + 곱의 조건, 또는 곱의 범위)
+    sum_conds = [(f"합이 ${k}$ 이하", lambda i, j, k=k: i + j <= k) for k in range(4, 11)]
+    sum_conds += [(f"합이 ${k}$ 이상", lambda i, j, k=k: i + j >= k) for k in range(5, 11)]
+    prod_conds = [("곱이 홀수", lambda i, j: (i * j) % 2 == 1), ("곱이 짝수", lambda i, j: (i * j) % 2 == 0)]
+    prod_conds += [(f"곱이 ${m}$의 배수", lambda i, j, m=m: (i * j) % m == 0) for m in (3, 4, 6)]
+    for s_text, s_fn in sum_conds:
+        for p_text, p_fn in prod_conds:
+            conds.append(
+                (
+                    f"나오는 두 눈의 수의 {s_text}이고 {p_text}",
+                    lambda i, j, s_fn=s_fn, p_fn=p_fn: s_fn(i, j) and p_fn(i, j),
+                )
+            )
     for lo in range(2, 30, 2):
         for hi in range(lo + 4, 37, 2):
             conds.append(
@@ -2785,7 +2865,7 @@ def _dice_conditions(level):
 
 
 def h_dice(target, level):
-    """서로 다른 두 주사위의 눈에 대한 경우의 수 (하: 합이 정해진 값, 중: 합·차의 조건, 상: 곱의 조건)."""
+    """서로 다른 두 주사위의 눈에 대한 경우의 수 (하: 합이 정해진 값, 중: 합·차의 조건, 상: 합과 곱의 조건이 겹친 경우)."""
     ok = [
         (text, f)
         for text, f in _dice_conditions(level)
@@ -2982,8 +3062,24 @@ def h_line(target, level):
 
 # ---------- 집합과 명제 ----------
 def h_set_count(target, level):
-    """집합의 원소의 개수 (하: 어느 쪽에도 속하지 않는 원소, 중: 교집합의 원소, 상: 세 집합의 합집합)."""
+    """집합의 원소의 개수 (하: 합집합의 원소, 중: 합집합의 여집합의 원소, 상: 세 집합의 합집합의 여집합의 원소)."""
     if level == 1:
+        # 한 집합이 다른 집합에 완전히 포함되면(n(A∩B) 가 n(A) 와 같으면) 답이 문제에 그대로 보이므로,
+        # 가능하면 두 집합 모두 교집합보다 크게 잡는다. (target 이 작으면 그럴 수 없다.)
+        strict = target >= 4
+        both = random.randint(1, min(8, target - 2 if strict else target))
+        n_a = random.randint(both + 1 if strict else both, target - 1 if strict else target)   # n(A) + n(B) = target + both
+        n_b = target + both - n_a
+        q = (
+            f"두 집합 $A$, $B$에 대하여 $n(A)={n_a}$, $n(B)={n_b}$, $n(A\\cap B)={both}$일 때, "
+            "$n(A\\cup B)$의 값을 구하시오."
+        )
+        exp = (
+            "$n(A\\cup B)=n(A)+n(B)-n(A\\cap B)$이므로\n\n"
+            f"$$n(A\\cup B)={n_a}+{n_b}-{both}={target}$$"
+        )
+        return q, exp, str(target)
+    if level == 2:
         a_only, b_only, both = random.randint(3, 20), random.randint(3, 20), random.randint(1, 10)
         n_a, n_b = a_only + both, b_only + both
         N = a_only + b_only + both + target
@@ -2996,108 +3092,107 @@ def h_set_count(target, level):
             f"$n\\left((A\\cup B)^{{c}}\\right)=n(U)-n(A\\cup B)={N}-{n_a + n_b - both}={target}$"
         )
         return q, exp, str(target)
-    if level == 2:
-        n_a, n_b = random.randint(target + 3, target + 25), random.randint(target + 3, target + 25)
-        n_u = n_a + n_b - target
-        q = (
-            f"두 집합 $A$, $B$에 대하여 $n(A)={n_a}$, $n(B)={n_b}$, $n(A\\cup B)={n_u}$일 때, "
-            "$n(A\\cap B)$의 값을 구하시오."
-        )
-        exp = (
-            "$n(A\\cup B)=n(A)+n(B)-n(A\\cap B)$이므로\n\n"
-            f"$$n(A\\cap B)={n_a}+{n_b}-{n_u}={target}$$"
-        )
-        return q, exp, str(target)
+    # 벤 다이어그램의 일곱 영역(A만, B만, C만, A∩B만, B∩C만, C∩A만, 셋 모두)을 정하고, 어느 집합에도 속하지 않는 원소를 target 개로 둔다.
     while True:
-        # 벤 다이어그램의 일곱 영역(A만, B만, C만, A∩B만, B∩C만, C∩A만, 셋 모두)의 크기. 합이 target.
-        cuts = sorted(random.sample(range(1, target), 6)) if target >= 7 else None
-        if cuts is None:
-            r = [0] * 7
-            for _ in range(target):
-                r[random.randrange(7)] += 1
-        else:
-            r = [cuts[0]] + [cuts[i] - cuts[i - 1] for i in range(1, 6)] + [target - cuts[5]]
-        ao, bo, co, ab, bc, ca, abc = r
-        if max(r) <= target and sum(r) == target and abc >= 1:
+        ao, bo, co, ab, bc, ca = (random.randint(1, 6) for _ in range(6))
+        abc = random.randint(1, 4)
+        union = ao + bo + co + ab + bc + ca + abc
+        if union + target <= 60:
             break
+    N = union + target
     nA, nB, nC = ao + ab + ca + abc, bo + ab + bc + abc, co + bc + ca + abc
     nAB, nBC, nCA = ab + abc, bc + abc, ca + abc
     q = (
-        f"세 집합 $A$, $B$, $C$에 대하여 $n(A)={nA}$, $n(B)={nB}$, $n(C)={nC}$, "
-        f"$n(A\\cap B)={nAB}$, $n(B\\cap C)={nBC}$, $n(C\\cap A)={nCA}$, $n(A\\cap B\\cap C)={abc}$일 때, "
-        "$n(A\\cup B\\cup C)$의 값을 구하시오."
+        f"전체집합 $U$의 원소의 개수가 ${N}$이고 세 집합 $A$, $B$, $C$에 대하여 $n(A)={nA}$, $n(B)={nB}$, "
+        f"$n(C)={nC}$, $n(A\\cap B)={nAB}$, $n(B\\cap C)={nBC}$, $n(C\\cap A)={nCA}$, "
+        f"$n(A\\cap B\\cap C)={abc}$일 때, $n\\left((A\\cup B\\cup C)^{{c}}\\right)$의 값을 구하시오."
     )
     exp = (
         "포함과 배제의 원리에 의하여\n\n"
-        f"$$n(A\\cup B\\cup C)={nA}+{nB}+{nC}-{nAB}-{nBC}-{nCA}+{abc}={target}$$"
+        f"$$n(A\\cup B\\cup C)={nA}+{nB}+{nC}-{nAB}-{nBC}-{nCA}+{abc}={union}$$\n\n"
+        f"$n\\left((A\\cup B\\cup C)^{{c}}\\right)=n(U)-n(A\\cup B\\cup C)={N}-{union}={target}$"
     )
     return q, exp, str(target)
 
 
 def h_subset(target, level):
-    """부분집합의 개수 (하: 부분집합의 개수로 원소의 개수, 중: 특정 원소를 포함하는 부분집합, 상: 진부분집합)."""
+    """부분집합의 개수 (하: 특정 원소를 반드시 포함, 중: 특정 원소는 포함하고 다른 원소는 제외, 상: 원소의 개수가 홀수·짝수인 부분집합).
+
+    부분집합의 개수는 $2^{m}$ 꼴(지수 m 만)로 준다. ($2^{15}=32768$ 같은 큰 수를 문제에 쓰지 않으려고.)
+    """
+    univ = "$A=\\{1, 2, 3, \\cdots, n\\}$"
     if level == 1:
-        if random.random() < 0.5:
-            q = f"부분집합의 개수가 ${2 ** target}$인 집합의 원소의 개수를 구하시오."
-        else:
-            q = (
-                f"집합 $A=\\{{1, 2, 3, \\cdots, n\\}}$의 부분집합의 개수가 ${2 ** target}$일 때, "
-                "자연수 $n$의 값을 구하시오."
-            )
+        k = random.choice([k for k in (1, 2, 3) if target - k >= 1])
+        names = {1: "$1$을", 2: "$1$, $2$를", 3: "$1$, $2$, $3$을"}[k]
+        m = target - k
+        q = (
+            f"집합 {univ}의 부분집합 중에서 {names} 반드시 원소로 갖는 것의 개수가 ${_pow2(m)}$일 때, "
+            "자연수 $n$의 값을 구하시오."
+        )
         exp = (
-            f"원소의 개수가 $n$인 집합의 부분집합의 개수는 $2^{{n}}$입니다.\n\n"
-            f"$2^{{n}}={2 ** target}=2^{{{target}}}$이므로 $n={target}$"
+            f"{names} 반드시 원소로 가지므로 나머지 $n-{k}$개의 원소로 부분집합을 만들면 됩니다.\n\n"
+            f"$2^{{n-{k}}}={_pow2(m)}$이므로 $n-{k}={m}$, 즉 $n={target}$"
         )
         return q, exp, str(target)
     if level == 2:
-        k = random.choice([k for k in (1, 2, 3) if target - k >= 1])
-        names = {1: "$1$을", 2: "$1$, $2$를", 3: "$1$, $2$, $3$을"}[k]
+        # 1, ..., a 는 반드시 포함하고, 그 다음 b 개는 포함하지 않는다. 남은 n-a-b 개로 만든다.
+        # (target 이 2 면 남는 원소가 없어 둘 다 정할 수 없으므로 포함 조건 없이 제외만 한다.)
+        combos = [(a, b) for a in (1, 2) for b in (1, 2) if target - a - b >= 1] or [(0, 1)]
+        a, b = random.choice(combos)
+        m = target - a - b
+        inc = "$1$을" if a == 1 else "$1$, $2$를"
+        exc_nums = [a + t + 1 for t in range(b)]
+        exc = ", ".join(f"${v}$" for v in exc_nums) + {1: "을", 2: "를", 3: "을", 4: "를"}[exc_nums[-1]]
+        cond = f"{inc} 반드시 원소로 갖고 {exc} 원소로 갖지 않는" if a else f"{exc} 원소로 갖지 않는"
         q = (
-            f"집합 $A=\\{{1, 2, 3, \\cdots, n\\}}$의 부분집합 중에서 {names} 반드시 원소로 갖는 것의 개수가 "
-            f"${2 ** (target - k)}$일 때, 자연수 $n$의 값을 구하시오."
+            f"집합 {univ}의 부분집합 중에서 {cond} 것의 개수가 "
+            f"${_pow2(m)}$일 때, 자연수 $n$의 값을 구하시오."
         )
-        e = target - k
-        power = "2" if e == 1 else f"2^{{{e}}}"
-        eqn = f"2^{{n-{k}}}={2 ** e}" if e == 1 else f"2^{{n-{k}}}={2 ** e}={power}"
         exp = (
-            f"{names} 반드시 원소로 가지므로 나머지 $n-{k}$개의 원소로 부분집합을 만들면 됩니다.\n\n"
-            f"${eqn}$이므로 $n-{k}={e}$, 즉 $n={target}$"
+            f"원소 {a + b}개는 포함 여부가 정해져 있으므로 나머지 $n-{a + b}$개의 원소로 부분집합을 만들면 됩니다.\n\n"
+            f"$2^{{n-{a + b}}}={_pow2(m)}$이므로 $n-{a + b}={m}$, 즉 $n={target}$"
         )
         return q, exp, str(target)
-    kind = random.choice(["proper", "nonempty", "both"])
-    if kind == "nonempty":
-        N = 2 ** target - 1
-        q = f"공집합이 아닌 부분집합의 개수가 ${N}$인 집합의 원소의 개수를 구하시오."
+    # 상: 원소의 개수가 홀수(짝수)인 부분집합은 전체의 절반, 특정 원소를 반드시 포함하면 그 절반이다.
+    parity = random.choice(["홀수", "짝수"])
+    with_one = target >= 3 and random.random() < 0.5
+    if with_one:
+        m = target - 2
+        q = (
+            f"집합 {univ}의 부분집합 중에서 $1$을 반드시 원소로 갖고 원소의 개수가 {parity}인 것의 개수가 "
+            f"${_pow2(m)}$일 때, 자연수 $n$의 값을 구하시오."
+        )
         exp = (
-            "원소의 개수가 $n$인 집합의 부분집합은 $2^{n}$개이고, 공집합을 빼면 $2^{n}-1$개입니다.\n\n"
-            f"$2^{{n}}-1={N}$에서 $2^{{n}}={N + 1}=2^{{{target}}}$이므로 $n={target}$"
+            "원소의 개수가 $k$인 집합의 부분집합 중 원소의 개수가 홀수인 것과 짝수인 것은 각각 $2^{k-1}$개입니다.\n\n"
+            "$1$을 반드시 원소로 가지므로 나머지 $n-1$개의 원소로 만드는 부분집합 중 "
+            f"원소의 개수가 {'짝수' if parity == '홀수' else '홀수'}인 것을 세면 되고, 그 개수는 $2^{{n-2}}$입니다.\n\n"
+            f"$2^{{n-2}}={_pow2(m)}$이므로 $n-2={m}$, 즉 $n={target}$"
         )
         return q, exp, str(target)
-    if kind == "both":
-        N = 2 ** target - 2
-        q = f"공집합도 아니고 자기 자신도 아닌 부분집합의 개수가 ${N}$인 집합의 원소의 개수를 구하시오."
-        exp = (
-            "원소의 개수가 $n$인 집합의 부분집합은 $2^{n}$개이고, 공집합과 자기 자신을 빼면 $2^{n}-2$개입니다.\n\n"
-            f"$2^{{n}}-2={N}$에서 $2^{{n}}={N + 2}=2^{{{target}}}$이므로 $n={target}$"
-        )
-        return q, exp, str(target)
-    N = 2 ** target - 1
-    q = f"진부분집합의 개수가 ${N}$인 집합의 원소의 개수를 구하시오."
+    m = target - 1
+    q = (
+        f"집합 {univ}의 부분집합 중에서 원소의 개수가 {parity}인 것의 개수가 ${_pow2(m)}$일 때, "
+        "자연수 $n$의 값을 구하시오."
+    )
     exp = (
-        "원소의 개수가 $n$인 집합의 진부분집합의 개수는 (부분집합의 개수) $-1=2^{n}-1$입니다.\n\n"
-        f"$2^{{n}}-1={N}$에서 $2^{{n}}={N + 1}=2^{{{target}}}$이므로 $n={target}$"
+        "원소의 개수가 $n$인 집합의 부분집합 중 원소의 개수가 홀수인 것과 짝수인 것은 각각 $2^{n-1}$개입니다.\n\n"
+        f"$2^{{n-1}}={_pow2(m)}$이므로 $n-1={m}$, 즉 $n={target}$"
     )
     return q, exp, str(target)
 
 
 def h_prop(target, level):
-    """충분조건과 필요조건 (하: x ≤ a, 중: 절댓값 부등식, 상: 이차부등식과 절댓값 부등식)."""
+    """충분조건과 필요조건 (하: 일차부등식, 중: 절댓값 부등식, 상: 이차부등식과 절댓값 부등식)."""
     if level == 1:
+        # 답이 문제에 그대로 보이지 않도록, 일차부등식을 한 번 풀어야 x ≤ target 이 나오게 한다.
+        a, b = random.choice([2, 3, 4, 5]), _nonzero(-9, 9)
+        c = a * target + b
         q = (
-            f"두 조건 $p: x\\le {target}$, $q: x\\le k$에 대하여 $p$가 $q$이기 위한 충분조건이 되도록 하는 "
+            f"두 조건 $p: {_lin(a, b)}\\le {c}$, $q: x\\le k$에 대하여 $p$가 $q$이기 위한 충분조건이 되도록 하는 "
             "실수 $k$의 최솟값을 구하시오."
         )
         exp = (
+            f"$p$의 진리집합은 ${_lin(a, b)}\\le {c}$에서 ${a}x\\le {c - b}$, 즉 $x\\le {target}$입니다.\n\n"
             f"$p$가 $q$이기 위한 충분조건이므로 $p$의 진리집합이 $q$의 진리집합에 포함되어야 합니다.\n\n"
             f"$\\{{x\\mid x\\le {target}\\}}\\subset\\{{x\\mid x\\le k\\}}$에서 $k\\ge {target}$이므로 최솟값은 ${target}$"
         )
@@ -3144,7 +3239,9 @@ def h_composite(target, level):
     """합성함수 (하: 일차함수의 합성, 중: 이차함수와 일차함수의 합성, 상: (f∘f)(x) 가 주어졌을 때)."""
     if level == 1:
         while True:
-            a, b, c, k = _nonzero(-4, 4), random.randint(-6, 6), _nonzero(-4, 4), random.randint(-3, 4)
+            # x 의 계수가 1 이면 단순한 덧셈이 되어 너무 쉬우므로, 두 함수 모두 계수는 1 이 아닌 값으로 잡는다.
+            a, b = random.choice([-4, -3, -2, 2, 3, 4]), random.randint(-6, 6)
+            c, k = random.choice([-4, -3, -2, 2, 3, 4]), random.randint(-3, 4)
             d = target - c * (a * k + b)
             if abs(d) <= 12:
                 break
@@ -3168,11 +3265,6 @@ def h_composite(target, level):
             f"두 함수 $f(x)=x^{{2}} {_tx(a)} {_sgn(b)}$, $g(x)={_lin(c, d)}$에 대하여 "
             f"$(f\\circ g)({k})$의 값을 구하시오."
         )
-        exp = (
-            f"$g({k})={c}\\times{_p(k)} {_sgn(d)}={v}$이므로\n\n"
-            f"$(f\\circ g)({k})=f({v})=({v})^{{2}} {_tx(a)}\\times({v}) ... $"
-        )
-        # 위의 f(v) 계산 과정은 숫자로 풀어 쓴다.
         exp = (
             f"$g({k})={c}\\times{_p(k)} {_sgn(d)}={v}$이므로\n\n"
             f"$(f\\circ g)({k})=f({v})="
@@ -3286,7 +3378,9 @@ def h_rational(target, level):
     def make():
         m, n = random.randint(-5, 6), random.randint(-4, 6)
         p, qv = random.randint(-6, 8), random.randint(-6, 8)
-        if p == m:
+        # p == m 이면 점이 점근선 x=m 위에 있고, qv == n 이면 점이 점근선 y=n 위에 있다.
+        # (후자이면 b = -nm 이 되어 분자·분모가 약분되므로 함수가 상수가 된다. 두 경우 모두 문제가 성립하지 않는다.)
+        if p == m or qv == n:
             return None
         return m, n, p, qv
 
@@ -3315,16 +3409,24 @@ def h_rational(target, level):
 # ==========================================
 # ---------- 지수함수와 로그함수 ----------
 def s_log(target, level):
-    """로그 (하: 두 로그의 합, 중: 밑의 변환, 상: 로그방정식)."""
+    """로그 (하: 로그의 합, 중: 밑의 변환, 상: 로그방정식)."""
     if level == 1:
-        bases = [2] + ([3] if target <= 9 else []) + ([5] if target <= 4 else []) + ([10] if target <= 3 else [])
-        B = random.choice(bases)
-        i = random.randint(1, target - 1)
-        a, b = B ** i, B ** (target - i)
-        q = f"$\\log_{{{B}}} {a}+\\log_{{{B}}} {b}$의 값을 구하시오."
+        # 진수가 너무 커지지 않도록(64 이하·81 이하) 로그를 2~4개로 나눠서 합이 target 이 되게 한다.
+        B, cap = random.choice([(2, 6), (3, 4)])
+        lo = max(2, -(-target // cap))                       # 항 하나의 최댓값이 cap 이므로 필요한 최소 항의 수
+        n_terms = random.randint(lo, min(4, target))
+        while True:
+            cuts = sorted(random.sample(range(1, target), n_terms - 1)) if n_terms > 1 else []
+            parts = [b - a for a, b in zip([0] + cuts, cuts + [target])]
+            if all(1 <= e <= cap for e in parts):
+                break
+        random.shuffle(parts)
+        args = [B ** e for e in parts]
+        q = "$" + "+".join(f"\\log_{{{B}}} {v}" for v in args) + "$의 값을 구하시오."
+        prod = "\\times".join(map(str, args))
         exp = (
             "로그의 성질 $\\log_{a}x+\\log_{a}y=\\log_{a}xy$에 의하여\n\n"
-            f"$$\\log_{{{B}}}({a}\\times{b})=\\log_{{{B}}}{B ** target}=\\log_{{{B}}}{B}^{{{target}}}={target}$$"
+            f"$$\\log_{{{B}}}({prod})=\\log_{{{B}}}{B}^{{{target}}}={target}$$"
         )
         return q, exp, str(target)
     if level == 2:
@@ -3374,7 +3476,7 @@ def s_log(target, level):
 
 
 def s_exp(target, level):
-    """지수 (하: 지수가 같은 방정식, 중: 지수를 묶는 방정식, 상: 두 근의 합)."""
+    """지수 (하: 밑이 같은 지수방정식, 중: 밑이 2의 거듭제곱으로 서로 다른 방정식, 상: 치환하여 푸는 이차꼴의 두 근의 합)."""
     if level == 1:
         while True:
             m, n = random.randint(1, 9), random.randint(1, 9)
@@ -3388,24 +3490,40 @@ def s_exp(target, level):
         )
         return q, exp, str(target)
     if level == 2:
-        p = random.choice([1, 2, 3])
-        N = (2 ** p + 1) * 2 ** target
-        q = f"방정식 $2^{{x+{p}}}+2^{{x}}={N}$의 해를 구하시오."
+        # (2^α)^(x-p) = (2^β)^s  =>  α(x-p) = βs.  좌변·우변의 밑을 2 의 거듭제곱으로 서로 다르게 준다.
+        while True:
+            al, be = random.choice([(2, 3), (3, 2), (2, 4), (4, 2), (3, 4), (4, 3)])
+            p = _nonzero(-4, 6)
+            if (al * (target - p)) % be:
+                continue
+            s = al * (target - p) // be
+            if 1 <= s <= 30:
+                break
+        base = lambda e: str(2 ** e)
+        q = f"방정식 ${base(al)}^{{{_lin(1, -p)}}}={base(be)}^{{{s}}}$의 해를 구하시오."
         exp = (
-            f"$2^{{x+{p}}}={2 ** p}\\times 2^{{x}}$이므로 $2^{{x}}\\times({2 ** p}+1)={N}$입니다.\n\n"
-            f"$2^{{x}}={N // (2 ** p + 1)}=2^{{{target}}}$이므로 $x={target}$"
+            f"${base(al)}=2^{{{al}}}$, ${base(be)}=2^{{{be}}}$이므로 양변을 밑이 $2$인 거듭제곱으로 고치면\n\n"
+            f"$$2^{{{al}({_lin(1, -p)})}}=2^{{{be}\\times {s}}}$$\n\n"
+            f"${al}({_lin(1, -p)})={be * s}$이므로 $x={target}$"
         )
         return q, exp, str(target)
-    i = random.choice([i for i in range(0, target) if i != target - i])
-    u, v = 2 ** i, 2 ** (target - i)
+    # 상: 2^(x-a) = t 로 치환하면 t^2 - (2^i + 2^j) t + 2^(i+j) = 0.  두 근은 x = a+i, a+j 이므로
+    # 두 근의 합 = 2a + i + j = target.  (큰 거듭제곱이 나오지 않도록 평행이동 a 를 쓴다.)
+    while True:
+        i, j = sorted(random.sample(range(0, 5), 2))
+        if (target - i - j) >= 0 and (target - i - j) % 2 == 0:
+            a = (target - i - j) // 2
+            break
+    S, P = 2 ** i + 2 ** j, 2 ** (i + j)
+    shift = "x" if a == 0 else f"x-{a}"
     q = (
-        f"방정식 $4^{{x}}-{u + v}\\times 2^{{x}}+{u * v}=0$의 두 실근을 $\\alpha$, $\\beta$라 할 때, "
+        f"방정식 $4^{{{shift}}}-{S}\\times 2^{{{shift}}}+{P}=0$의 두 실근을 $\\alpha$, $\\beta$라 할 때, "
         "$\\alpha+\\beta$의 값을 구하시오."
     )
     exp = (
-        f"$2^{{x}}=t$ ($t>0$)로 놓으면 $t^{{2}}-{u + v}t+{u * v}=0$입니다.\n\n"
-        f"$(t-{u})(t-{v})=0$이므로 $2^{{x}}={u}$ 또는 $2^{{x}}={v}$이고, "
-        f"$\\alpha={i}$, $\\beta={target - i}$입니다.\n\n"
+        f"$2^{{{shift}}}=t$ ($t>0$)로 놓으면 $t^{{2}}-{S}t+{P}=0$입니다.\n\n"
+        f"$(t-{2 ** i})(t-{2 ** j})=0$이므로 $2^{{{shift}}}={2 ** i}$ 또는 $2^{{{shift}}}={2 ** j}$이고, "
+        f"$\\alpha={a + i}$, $\\beta={a + j}$입니다.\n\n"
         f"따라서 $\\alpha+\\beta={target}$"
     )
     return q, exp, str(target)
@@ -3413,7 +3531,7 @@ def s_exp(target, level):
 
 # ---------- 삼각함수 ----------
 def s_trig(target, level):
-    """삼각함수 (하: 특수각의 값, 중: 그래프의 최대·최소·주기, 상: 방정식의 근의 개수)."""
+    """삼각함수 (하: 특수각의 값, 중: 그래프의 최대·최소·주기, 상: 좁은 구간에서 방정식의 근의 개수)."""
     if level == 1:
         vals = [
             (r"\sin\frac{\pi}{6}", Fraction(1, 2)),
@@ -3461,22 +3579,25 @@ def s_trig(target, level):
             f"따라서 $a+b+c={target}$"
         )
         return q, exp, str(target)
-    k = target
+    # 구간이 [0, π) 이고 k = 2·target - 1 (홀수) 이면 t = kx 의 범위가 [0, kπ) 라서,
+    # 한 주기(2π)마다 하나씩이라고만 세면 안 되고 반 주기가 남는 것까지 따져야 한다.
+    k = 2 * target - 1
     kind = random.choice(["sin", "cos"])
-    rhs = "1" if kind == "sin" else "-1"
-    q = f"$0\\le x<2\\pi$에서 방정식 $\\{kind} {k}x={rhs}$의 서로 다른 실근의 개수를 구하시오."
-    first = r"\frac{\pi}{2}" if kind == "sin" else r"\pi"
+    rhs = "1"
+    q = f"$0\\le x<\\pi$에서 방정식 $\\{kind} {k}x={rhs}$의 서로 다른 실근의 개수를 구하시오."
+    sol = r"\frac{\pi}{2}+2n\pi" if kind == "sin" else r"2n\pi"
+    ns_ = "$n=0, 1$" if target == 2 else f"$n=0, 1, \\cdots, {target - 1}$"
     exp = (
-        f"$\\{kind} t={rhs}$을 만족시키는 $t$는 $t={first}+2n\\pi$ ($n$은 정수)입니다.\n\n"
-        f"$t={k}x$이고 $0\\le x<2\\pi$이므로 $0\\le t<{2 * k}\\pi$입니다.\n\n"
-        f"이 범위에서 $t$의 값은 한 주기($2\\pi$)마다 하나씩 있으므로 모두 ${target}$개"
+        f"$\\{kind} t={rhs}$을 만족시키는 $t$는 $t={sol}$ ($n$은 정수)입니다.\n\n"
+        f"$t={k}x$이고 $0\\le x<\\pi$이므로 $0\\le t<{k}\\pi$입니다.\n\n"
+        f"이 범위에서 $t={sol}$인 $t$의 개수를 세면 {ns_}이므로 모두 ${target}$개"
     )
     return q, exp, str(target)
 
 
 # ---------- 수열 ----------
 def s_seq(target, level):
-    """수열 (하: 등차수열의 항의 번호, 중: 등차·등비수열의 합, 상: 시그마)."""
+    """수열 (하: 첫째항·공차로 항의 번호, 중: 두 항으로 일반항을 구해 항의 번호, 상: 시그마)."""
     if level == 1:
         a1, d = random.randint(1, 8), random.choice([2, 3, 4, 5, 6, 7])
         N = a1 + (target - 1) * d
@@ -3487,31 +3608,26 @@ def s_seq(target, level):
         )
         return q, exp, str(target)
     if level == 2:
-        if random.random() < 0.5:
-            a1, d = random.randint(1, 6), random.randint(1, 5)
-            S = target * (2 * a1 + (target - 1) * d) // 2
-            q = (
-                f"첫째항이 ${a1}$, 공차가 ${d}$인 등차수열의 첫째항부터 제$n$항까지의 합이 ${S}$일 때, "
-                "자연수 $n$의 값을 구하시오."
-            )
-            exp = (
-                f"$S_{{n}}=\\frac{{n\\{{2\\times{a1}+(n-1)\\times{d}\\}}}}{{2}}={S}$이므로\n\n"
-                f"$n\\{{{2 * a1}+(n-1)\\times{d}\\}}={2 * S}$\n\n"
-                f"이 식을 만족시키는 자연수는 $n={target}$"
-            )
-            return q, exp, str(target)
-        a1 = random.choice([1, 2, 3])
-        S = a1 * (2 ** target - 1)
+        # 두 항 a_p, a_q 가 주어지면 공차와 첫째항을 먼저 구한 다음 a_n = N 이 되는 n 을 구한다. (두 단계)
+        while True:
+            a1, d = random.randint(-5, 8), random.choice([2, 3, 4, 5])
+            p, r = sorted(random.sample([k for k in range(2, 9) if k != target], 2))
+            N = a1 + (target - 1) * d
+            if abs(N) <= 80:
+                break
+        ap, ar = a1 + (p - 1) * d, a1 + (r - 1) * d
         q = (
-            f"첫째항이 ${a1}$, 공비가 $2$인 등비수열의 첫째항부터 제$n$항까지의 합이 ${S}$일 때, "
-            "자연수 $n$의 값을 구하시오."
+            f"등차수열 $\\{{a_n\\}}$에서 $a_{{{p}}}={ap}$, $a_{{{r}}}={ar}$일 때, "
+            f"$a_n={N}$인 자연수 $n$의 값을 구하시오."
         )
         exp = (
-            f"$S_{{n}}=\\frac{{{a1}(2^{{n}}-1)}}{{2-1}}={S}$이므로 $2^{{n}}-1={2 ** target - 1}$, 즉 $2^{{n}}=2^{{{target}}}$\n\n"
-            f"따라서 $n={target}$"
+            f"공차는 $d=\\frac{{{ar}-{_p(ap)}}}{{{r}-{p}}}={d}$입니다.\n\n"
+            f"$a_{{{p}}}=a_{{1}}+{p - 1}\\times{d}={ap}$이므로 $a_{{1}}={a1}$이고 "
+            f"일반항은 $a_{{n}}={a1}+(n-1)\\times{d}$입니다.\n\n"
+            f"$a_{{n}}={N}$에서 $(n-1)\\times{d}={N - a1}$이므로 $n={target}$"
         )
         return q, exp, str(target)
-    a, b = random.choice([2, 4, 6]), random.randint(-3, 6)
+    a, b = random.choice([2, 3]), random.randint(-3, 6)       # a 가 크면 N 이 수백이 되어 계산이 지나치게 길다.
     N = a * target * (target + 1) // 2 + b * target
     q = (
         f"$\\displaystyle\\sum_{{k=1}}^{{n}}({_lin(a, b, 'k')})={N}$일 때, 자연수 $n$의 값을 구하시오."
@@ -3530,7 +3646,7 @@ def s_limit(target, level):
     """극한과 연속 (하: 0/0 꼴의 극한값, 중: 극한값으로 두 상수의 합, 상: 연속이 되도록 두 상수의 합)."""
     if level == 1:
         while True:
-            a = random.randint(-5, 6)
+            a = _nonzero(-5, 6)          # x→0 이면 그냥 x 로 약분하는 꼴이라 너무 쉽다.
             p = target - 2 * a
             if abs(p) <= 15:
                 break
@@ -3602,7 +3718,7 @@ def s_limit(target, level):
 
 # ---------- 미분 ----------
 def s_deriv(target, level):
-    """미분 (하: 미분계수, 중: 접선의 기울기로 점의 위치, 상: 극값으로 상수)."""
+    """미분 (하: 미분계수, 중: 미분계수의 정의를 이용한 극한값, 상: 극값으로 상수)."""
     if level == 1:
         while True:
             p, a = random.randint(-6, 6), random.randint(-3, 4)
@@ -3621,24 +3737,30 @@ def s_deriv(target, level):
         )
         return q, exp, str(target)
     if level == 2:
+        # 미분계수의 정의: lim_{h→0} {f(a+mh) - f(a-nh)}/h = (m+n) f'(a).
+        # (m+n) 이 target 의 약수라서 f'(a) = target/(m+n) 이 정수이고, 큰 계수가 나오지 않는다.
+        divs = [d for d in (2, 3, 4, 5) if target % d == 0]
         while True:
-            r2 = -random.randint(1, 6)
-            if (target + r2) % 2 != 0:
-                continue
-            p = -3 * (target + r2) // 2
-            qq = random.randint(-9, 9)
-            m = qq - 3 * target * r2
-            if abs(p) <= 30 and abs(m) <= 400:
+            d = random.choice(divs)
+            m = random.randint(1, d - 1)
+            n = d - m
+            a, p, r = random.randint(-3, 4), random.randint(-6, 6), random.randint(-6, 6)
+            F = target // d
+            qq = F - 3 * a * a - 2 * p * a
+            if qq != 0 and abs(qq) <= 25:
                 break
-        f = _poly([1, p, qq, 0])
+        f = _poly([1, p, qq, r])
+        lo = _lin(m, a, "h")
+        hi = _lin(-n, a, "h")
+        calc = str(qq) if a == 0 else _j(f"3\\times{_p(a)}^{{2}}", _sgn(2 * p * a), _sgn(qq))
+        cm, cn = ("" if m == 1 else str(m)), ("" if n == 1 else str(n))
         q = (
-            f"함수 $f(x)={f}$의 그래프 위의 점 $(a, f(a))$에서의 접선의 기울기가 ${m}$일 때, 양수 $a$의 값을 구하시오."
+            f"함수 $f(x)={f}$에 대하여 $\\displaystyle\\lim_{{h\\to 0}}\\frac{{f({lo})-f({hi})}}{{h}}$의 값을 구하시오."
         )
         exp = (
-            f"$f'(x)={_poly([3, 2 * p, qq])}$이므로 $f'(a)={m}$에서\n\n"
-            f"$${_poly([3, 2 * p, qq - m], 'a')}=0$$\n\n"
-            f"$3({_lin(1, -target, 'a')})({_lin(1, -r2, 'a')})=0$이므로 $a={target}$ 또는 $a={r2}$이고, "
-            f"양수는 $a={target}$"
+            f"$$\\lim_{{h\\to 0}}\\frac{{f({lo})-f({hi})}}{{h}}={cm}f'({a})+{cn}f'({a})={d}f'({a})$$\n\n"
+            f"$f'(x)={_poly([3, 2 * p, qq])}$이므로 $f'({a})={calc}={F}$\n\n"
+            f"따라서 구하는 값은 ${d}\\times{F}={target}$"
         )
         return q, exp, str(target)
     while True:
@@ -3693,7 +3815,8 @@ def s_integral(target, level):
     while True:
         m = random.choice([2, 3, 4, 6])
         num = target * m ** 3
-        if num % 6 == 0:
+        # 넓이 N 이 너무 크지 않게(200 이하) 한다. (target=15, m=6 이면 N=540 이 된다.)
+        if num % 6 == 0 and num // 6 <= 200:
             N = num // 6
             break
     q = f"곡선 $y=kx({m}-x)$ ($k>0$)와 $x$축으로 둘러싸인 부분의 넓이가 ${N}$일 때, 상수 $k$의 값을 구하시오."
@@ -3714,7 +3837,7 @@ def s_integral(target, level):
 # ==========================================
 # ---------- 순열과 조합 ----------
 def p_perm(target, level):
-    """순열과 조합 (하: 순열, 중: 조합과 순열의 합, 상: 뽑아서 줄 세우는 경우의 수)."""
+    """순열과 조합 (하: 순열, 중: 조합과 순열의 합, 상: 조합의 성질 nCr = nC(n-r) 을 쓰는 방정식)."""
     if level == 1:
         N = target * (target - 1)
         q = f"${{}}_{{n}}\\mathrm{{P}}_{{2}}={N}$일 때, 자연수 $n$의 값을 구하시오."
@@ -3731,18 +3854,18 @@ def p_perm(target, level):
             f"$$\\frac{{3n(n-1)}}{{2}}={N}$$\n\n$n(n-1)={target * (target - 1)}$이므로 $n={target}$"
         )
         return q, exp, str(target)
-    r = 3 if target >= 3 else 2
-    N = math.perm(target, r)
-    roles = "회장 1명, 부회장 1명, 총무 1명" if r == 3 else "회장 1명, 부회장 1명"
+    # 상: nC(n-2) = nC2, nC(n-1) = nC1 로 바꿔야 식을 풀 수 있다. (nP3 처럼 큰 수가 나오지 않는다.)
+    N = target * (target + 1) // 2
     q = (
-        f"학생 $n$명 중에서 {roles}을 뽑는 경우의 수가 ${N}$일 때, 자연수 $n$의 값을 구하시오. "
-        "(단, 한 학생이 두 가지 역할을 맡을 수 없다.)"
+        f"${{}}_{{n}}\\mathrm{{C}}_{{n-2}}+{{}}_{{n}}\\mathrm{{C}}_{{n-1}}={N}$일 때, 자연수 $n$의 값을 구하시오. "
+        "(단, $n\\ge 2$)"
     )
-    prod = "n(n-1)(n-2)" if r == 3 else "n(n-1)"
     exp = (
-        f"서로 다른 $n$명 중에서 {r}명을 뽑아 역할을 정하는 경우의 수이므로 "
-        f"${{}}_{{n}}\\mathrm{{P}}_{{{r}}}={prod}={N}$입니다.\n\n"
-        f"이 식을 만족시키는 자연수는 $n={target}$"
+        "${}_{n}\\mathrm{C}_{r}={}_{n}\\mathrm{C}_{n-r}$이므로 "
+        "${}_{n}\\mathrm{C}_{n-2}={}_{n}\\mathrm{C}_{2}=\\frac{n(n-1)}{2}$, "
+        "${}_{n}\\mathrm{C}_{n-1}={}_{n}\\mathrm{C}_{1}=n$입니다.\n\n"
+        f"$$\\frac{{n(n-1)}}{{2}}+n=\\frac{{n(n+1)}}{{2}}={N}$$\n\n"
+        f"$n(n+1)={2 * N}$이므로 $n={target}$"
     )
     return q, exp, str(target)
 
@@ -3758,7 +3881,7 @@ def p_binomial_coef(target, level):
         )
         return q, exp, str(target)
     if level == 2:
-        k = random.choice([2, 3])
+        k = random.choice([k for k in (2, 3) if math.comb(target, 2) * k * k <= 500])
         N = math.comb(target, 2) * k * k
         q = f"$(1+{k}x)^{{n}}$의 전개식에서 $x^{{2}}$의 계수가 ${N}$일 때, 자연수 $n$의 값을 구하시오."
         exp = (
@@ -3783,8 +3906,9 @@ def p_binomial_coef(target, level):
 
 # ---------- 확률 ----------
 def p_prob_unknown(target, level):
-    """확률 (하: 한 개를 꺼낼 때, 중: 복원추출로 두 번, 상: 조건부확률)."""
-    a = random.randint(3 if level == 3 else 2, 9)    # 상: 첫 공을 꺼낸 뒤에도 같은 색이 남아야 한다.
+    """확률 (하: 한 개를 꺼낼 때, 중: 복원추출로 두 번, 상: 두 개를 동시에 꺼낼 때 — 이차방정식을 풀어야 한다)."""
+    # 중·상은 확률이 제곱·곱 꼴이라 분모가 커지므로 처음 공의 개수를 작게 잡는다.
+    a = random.randint(2, 9) if level == 1 else random.randint(2, 5)
     colors = random.choice([("빨간", "파란"), ("흰", "검은"), ("노란", "초록")])
     c1, c2 = colors
     base = f"주머니에 {c1} 공이 ${a}$개, {c2} 공이 $x$개 들어 있다. 이 주머니에서 "
@@ -3811,37 +3935,27 @@ def p_prob_unknown(target, level):
             f"이므로 $\\frac{{{a}}}{{{a}+x}}={_frac(a, a + target)}$, 즉 $x={target}$"
         )
         return q, exp, str(target)
-    P = Fraction(a - 1, a + target - 1)
+    # 두 개를 동시에 꺼내 모두 c1 공일 확률: C(a,2)/C(a+x,2) = a(a-1) / {(a+x)(a+x-1)}
+    # → (a+x)(a+x-1) = a(a-1)/P 를 풀면 연속한 두 자연수의 곱이 되어 a+x 가 나온다.
+    tot = a + target
+    P = Fraction(a * (a - 1), tot * (tot - 1))
     q = (
-        base + f"공 두 개를 차례로 꺼낼 때(꺼낸 공은 다시 넣지 않는다), 첫 번째에 {c1} 공이 나왔을 때 "
-        f"두 번째에도 {c1} 공이 나올 확률이 ${_frac(P.numerator, P.denominator)}$이다. $x$의 값을 구하시오."
+        base + f"공 두 개를 동시에 꺼낼 때, 두 공이 모두 {c1} 공일 확률이 ${_frac(P.numerator, P.denominator)}$이다. "
+        "$x$의 값을 구하시오."
     )
     exp = (
-        f"첫 번째에 {c1} 공이 나온 뒤 주머니에는 {c1} 공이 ${a - 1}$개, 전체 공이 ${a - 1}+x$개 남습니다.\n\n"
-        f"따라서 조건부확률은 $\\frac{{{a - 1}}}{{{a - 1}+x}}={_frac(P.numerator, P.denominator)}$이므로 "
-        f"${a - 1}+x={a + target - 1}$, 즉 $x={target}$"
+        f"전체 공은 $({a}+x)$개이므로 두 공이 모두 {c1} 공일 확률은\n\n"
+        f"$$\\frac{{{{}}_{{{a}}}\\mathrm{{C}}_{{2}}}}{{{{}}_{{{a}+x}}\\mathrm{{C}}_{{2}}}}"
+        f"=\\frac{{{a * (a - 1)}}}{{({a}+x)({a}+x-1)}}={_frac(P.numerator, P.denominator)}$$\n\n"
+        f"$({a}+x)({a}+x-1)={tot * (tot - 1)}={tot}\\times{tot - 1}$이므로 ${a}+x={tot}$, 즉 $x={target}$"
     )
     return q, exp, str(target)
 
 
 # ---------- 통계 ----------
 def p_binomial_dist(target, level):
-    """이항분포 (하: 평균과 분산으로 n, 중: E(aX+b), 상: V(aX+b))."""
+    """이항분포 (하: E(aX+b), 중: V(aX+b), 상: E(aX+b)와 V(aX+b)가 주어질 때 n)."""
     if level == 1:
-        p = random.choice([Fraction(1, 3), Fraction(2, 3), Fraction(1, 2), Fraction(1, 5), Fraction(1, 4)])
-        E, V = target * p, target * p * (1 - p)
-        q = (
-            f"확률변수 $X$가 이항분포 $\\mathrm{{B}}(n, p)$를 따르고 $\\mathrm{{E}}(X)={_frac(E.numerator, E.denominator)}$, "
-            f"$\\mathrm{{V}}(X)={_frac(V.numerator, V.denominator)}$일 때, $n$의 값을 구하시오."
-        )
-        exp = (
-            "이항분포 $\\mathrm{B}(n, p)$에서 $\\mathrm{E}(X)=np$, $\\mathrm{V}(X)=np(1-p)$입니다.\n\n"
-            f"$$1-p=\\frac{{\\mathrm{{V}}(X)}}{{\\mathrm{{E}}(X)}}={_frac(V.numerator, V.denominator)}\\div{_frac(E.numerator, E.denominator)}"
-            f"={_frac(1 - p)}$$\n\n"
-            f"이므로 $p={_frac(p.numerator, p.denominator)}$이고 $n=\\frac{{\\mathrm{{E}}(X)}}{{p}}={target}$"
-        )
-        return q, exp, str(target)
-    if level == 2:
         def make():
             n = random.choice([6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 36])
             p = random.choice([Fraction(1, 2), Fraction(1, 3), Fraction(2, 3), Fraction(1, 4), Fraction(1, 5)])
@@ -3862,48 +3976,79 @@ def p_binomial_dist(target, level):
             f"$$\\mathrm{{E}}({_lin(a, b, 'X')})={a}\\mathrm{{E}}(X) {_sgn(b)}={a}\\times{_frac(n * p)} {_sgn(b)}={target}$$"
         )
         return q, exp, str(target)
+    if level == 2:
+        def make2():
+            n = random.choice([2, 4, 6, 8, 9, 12, 16, 18, 24, 36, 48, 60])
+            p = random.choice([Fraction(1, 2), Fraction(1, 3), Fraction(2, 3), Fraction(1, 4), Fraction(3, 4)])
+            return n, p, random.randint(1, 4), random.randint(-5, 5)
 
+        def solve2(s):
+            n, p, a, b = s
+            v = a * a * n * p * (1 - p)
+            return int(v) if v.denominator == 1 else None
+
+        n, p, a, b = _roll(make2, solve2, target)
+        q = (
+            f"확률변수 $X$가 이항분포 $\\mathrm{{B}}\\left({n}, {_frac(p.numerator, p.denominator)}\\right)$을 따를 때, "
+            f"$\\mathrm{{V}}({_lin(a, b, 'X')})$의 값을 구하시오."
+        )
+        V = n * p * (1 - p)
+        exp = (
+            f"$\\mathrm{{V}}(X)={n}\\times{_frac(p.numerator, p.denominator)}\\times{_frac(1 - p)}={_frac(V)}$이므로\n\n"
+            f"$$\\mathrm{{V}}({_lin(a, b, 'X')})={a}^{{2}}\\mathrm{{V}}(X)={a * a}\\times{_frac(V)}={target}$$"
+        )
+        return q, exp, str(target)
+
+    # 상: n=target, 확률 p 를 정하고 E(aX+b), V(aX+b) 가 모두 정수가 되는 (p, a, b) 를 고른다.
     def make3():
-        n = random.choice([2, 4, 6, 8, 9, 12, 16, 18, 24, 36, 48, 60])
-        p = random.choice([Fraction(1, 2), Fraction(1, 3), Fraction(2, 3), Fraction(1, 4), Fraction(3, 4)])
-        return n, p, random.randint(1, 4), random.randint(-5, 5)
+        p = random.choice([Fraction(1, 2), Fraction(1, 3), Fraction(2, 3), Fraction(1, 4), Fraction(3, 4), Fraction(1, 5)])
+        return p, random.randint(2, 4), _nonzero(-5, 5)
 
     def solve3(s):
-        n, p, a, b = s
-        v = a * a * n * p * (1 - p)
-        return int(v) if v.denominator == 1 else None
+        p, a, b = s
+        e, v = a * target * p + b, a * a * target * p * (1 - p)
+        return target if e.denominator == 1 and v.denominator == 1 and v > 0 else None
 
-    n, p, a, b = _roll(make3, solve3, target)
+    p, a, b = _roll(make3, solve3, target)
+    EX = Fraction(target) * p
+    VX = EX * (1 - p)
+    e, v = a * EX + b, a * a * VX
     q = (
-        f"확률변수 $X$가 이항분포 $\\mathrm{{B}}\\left({n}, {_frac(p.numerator, p.denominator)}\\right)$을 따를 때, "
-        f"$\\mathrm{{V}}({_lin(a, b, 'X')})$의 값을 구하시오."
+        f"확률변수 $X$가 이항분포 $\\mathrm{{B}}(n, p)$를 따르고 "
+        f"$\\mathrm{{E}}({_lin(a, b, 'X')})={_frac(e)}$, $\\mathrm{{V}}({_lin(a, b, 'X')})={_frac(v)}$일 때, "
+        "$n$의 값을 구하시오."
     )
-    V = n * p * (1 - p)
     exp = (
-        f"$\\mathrm{{V}}(X)={n}\\times{_frac(p.numerator, p.denominator)}\\times{_frac(1 - p)}={_frac(V)}$이므로\n\n"
-        f"$$\\mathrm{{V}}({_lin(a, b, 'X')})={a}^{{2}}\\mathrm{{V}}(X)={a * a}\\times{_frac(V)}={target}$$"
+        f"$\\mathrm{{E}}({_lin(a, b, 'X')})={a}\\mathrm{{E}}(X) {_sgn(b)}={_frac(e)}$이므로 $\\mathrm{{E}}(X)={_frac(EX)}$입니다.\n\n"
+        f"$\\mathrm{{V}}({_lin(a, b, 'X')})={a}^{{2}}\\mathrm{{V}}(X)={_frac(v)}$이므로 $\\mathrm{{V}}(X)={_frac(VX)}$입니다.\n\n"
+        f"$\\mathrm{{E}}(X)=np$, $\\mathrm{{V}}(X)=np(1-p)$에서 $1-p=\\frac{{\\mathrm{{V}}(X)}}{{\\mathrm{{E}}(X)}}={_frac(1 - p)}$, "
+        f"즉 $p={_frac(p.numerator, p.denominator)}$이고 $n=\\frac{{\\mathrm{{E}}(X)}}{{p}}={target}$"
     )
     return q, exp, str(target)
 
 
 def p_normal(target, level):
-    """정규분포의 표준화 (하: z = 1, 2, 중: z = 1.5, 2.5 등, 상: 아래쪽 꼬리)."""
-    def pick(zs):
+    """정규분포의 표준화 (하: 같은 쪽 꼬리, 중: 반대쪽 꼬리(대칭), 상: 대칭성으로 평균을 먼저 구한 뒤 표준화)."""
+    def pick(zs, below=False):
+        """below=True 이면 평균보다 d 만큼 아래 값(m-d)도 양수가 되도록 평균을 잡는다. (음수 점수가 나오지 않게)"""
         while True:
             z = random.choice(zs)
-            m = random.randint(10, 100)
             d = z * target
-            if d.denominator == 1:
-                return z, m, int(d)
+            if d.denominator != 1:
+                continue
+            d = int(d)
+            m = random.randint(max(15, d + 5) if below else 10, 100)
+            return z, m, d
 
     sigma_sym = "\\sigma"
+    tail = "(단, $Z$는 표준정규분포를 따르는 확률변수이다.)"
     if level == 1:
         z, m, d = pick([Fraction(1), Fraction(2)])
         a = m + d
         q = (
             f"확률변수 $X$가 정규분포 $\\mathrm{{N}}({m}, \\sigma^{{2}})$을 따르고 "
             f"$\\mathrm{{P}}(X\\ge {a})=\\mathrm{{P}}(Z\\ge {_frac(z)})$일 때, 양수 $\\sigma$의 값을 구하시오. "
-            "(단, $Z$는 표준정규분포를 따르는 확률변수이다.)"
+            f"{tail}"
         )
         exp = (
             f"$X$를 표준화하면 $Z=\\frac{{X-{m}}}{{{sigma_sym}}}$입니다.\n\n"
@@ -3912,49 +4057,51 @@ def p_normal(target, level):
         )
         return q, exp, str(target)
     if level == 2:
-        z, m, d = pick([Fraction(3, 2), Fraction(5, 2), Fraction(1), Fraction(2), Fraction(3)])
-        a = m + d
+        z, m, d = pick([Fraction(3, 2), Fraction(1), Fraction(2), Fraction(3)], below=True)
+        a = m - d
         q = (
             f"확률변수 $X$가 정규분포 $\\mathrm{{N}}({m}, \\sigma^{{2}})$을 따르고 "
-            f"$\\mathrm{{P}}(X\\le {a})=\\mathrm{{P}}(Z\\le {_frac(z)})$일 때, 양수 $\\sigma$의 값을 구하시오. "
-            "(단, $Z$는 표준정규분포를 따르는 확률변수이다.)"
+            f"$\\mathrm{{P}}(X\\le {a})=\\mathrm{{P}}(Z\\ge {_frac(z)})$일 때, 양수 $\\sigma$의 값을 구하시오. "
+            f"{tail}"
         )
         exp = (
-            f"$X$를 표준화하면 $Z=\\frac{{X-{m}}}{{{sigma_sym}}}$이므로\n\n"
-            f"$$\\frac{{{a}-{m}}}{{{sigma_sym}}}=\\frac{{{d}}}{{{sigma_sym}}}={_frac(z)}$$\n\n"
+            f"표준정규분포의 확률밀도함수는 $z=0$에 대하여 대칭이므로 $\\mathrm{{P}}(Z\\ge {_frac(z)})=\\mathrm{{P}}(Z\\le -{_frac(z)})$입니다.\n\n"
+            f"$X$를 표준화하면 $\\frac{{{a}-{m}}}{{{sigma_sym}}}=-{_frac(z)}$이므로 $\\frac{{{d}}}{{{sigma_sym}}}={_frac(z)}$\n\n"
             f"따라서 $\\sigma={target}$"
         )
         return q, exp, str(target)
-    z, m, d = pick([Fraction(3, 2), Fraction(1), Fraction(2), Fraction(3)])
-    a = m - d
+    # 상: 평균이 문자 m 이고, P(X≤s1)=P(X≥s2) 에서 m=(s1+s2)/2 를 먼저 구해야 한다.
+    z, m, d = pick([Fraction(3, 2), Fraction(1), Fraction(2), Fraction(3)], below=True)
+    t = random.randint(3, 12)
+    s1, s2 = m - t, m + t
+    a = m + d
     q = (
-        f"확률변수 $X$가 정규분포 $\\mathrm{{N}}({m}, \\sigma^{{2}})$을 따르고 "
-        f"$\\mathrm{{P}}(X\\le {a})=\\mathrm{{P}}(Z\\ge {_frac(z)})$일 때, 양수 $\\sigma$의 값을 구하시오. "
-        "(단, $Z$는 표준정규분포를 따르는 확률변수이다.)"
+        "확률변수 $X$가 정규분포 $\\mathrm{N}(m, \\sigma^{2})$을 따르고 "
+        f"$\\mathrm{{P}}(X\\le {s1})=\\mathrm{{P}}(X\\ge {s2})$, $\\mathrm{{P}}(X\\ge {a})=\\mathrm{{P}}(Z\\ge {_frac(z)})$일 때, "
+        f"양수 $\\sigma$의 값을 구하시오. {tail}"
     )
     exp = (
-        f"표준정규분포의 확률밀도함수는 $z=0$에 대하여 대칭이므로 $\\mathrm{{P}}(Z\\ge {_frac(z)})=\\mathrm{{P}}(Z\\le -{_frac(z)})$입니다.\n\n"
-        f"$X$를 표준화하면 $\\frac{{{a}-{m}}}{{{sigma_sym}}}=-{_frac(z)}$이므로 $\\frac{{{d}}}{{{sigma_sym}}}={_frac(z)}$\n\n"
-        f"따라서 $\\sigma={target}$"
+        f"$\\mathrm{{P}}(X\\le {s1})=\\mathrm{{P}}(X\\ge {s2})$이므로 ${s1}$과 ${s2}$는 평균 $m$에 대하여 대칭입니다.\n\n"
+        f"$m=\\frac{{{s1}+{s2}}}{{2}}={m}$\n\n"
+        f"$\\mathrm{{P}}(X\\ge {a})=\\mathrm{{P}}\\left(Z\\ge\\frac{{{a}-{m}}}{{{sigma_sym}}}\\right)$이므로 "
+        f"$\\frac{{{d}}}{{{sigma_sym}}}={_frac(z)}$, 따라서 $\\sigma={target}$"
     )
     return q, exp, str(target)
 
 
 def p_expectation(target, level):
-    """확률분포의 평균과 분산 (하: 세 값의 평균, 중: 네 값의 평균, 상: 분산으로 V(aX+b))."""
-    if level in (1, 2):
-        n = 3 if level == 1 else 4
-        probsets = {
-            3: [[Fraction(1, 2), Fraction(1, 4), Fraction(1, 4)], [Fraction(1, 3), Fraction(1, 3), Fraction(1, 3)],
-                [Fraction(1, 2), Fraction(1, 3), Fraction(1, 6)], [Fraction(1, 6), Fraction(1, 3), Fraction(1, 2)]],
-            4: [[Fraction(1, 4)] * 4, [Fraction(1, 2), Fraction(1, 4), Fraction(1, 8), Fraction(1, 8)],
-                [Fraction(1, 10), Fraction(2, 5), Fraction(3, 10), Fraction(1, 5)],
-                [Fraction(1, 6), Fraction(1, 3), Fraction(1, 3), Fraction(1, 6)]],
-        }
-
+    """확률분포의 평균과 분산 (하: 세 값의 평균, 중: 확률 하나가 문자인 네 값의 평균, 상: E(aX+b)와 E(X²)으로 V(aX+b))."""
+    probsets = {
+        3: [[Fraction(1, 2), Fraction(1, 4), Fraction(1, 4)], [Fraction(1, 3), Fraction(1, 3), Fraction(1, 3)],
+            [Fraction(1, 2), Fraction(1, 3), Fraction(1, 6)], [Fraction(1, 6), Fraction(1, 3), Fraction(1, 2)]],
+        4: [[Fraction(1, 4)] * 4, [Fraction(1, 2), Fraction(1, 4), Fraction(1, 8), Fraction(1, 8)],
+            [Fraction(1, 10), Fraction(2, 5), Fraction(3, 10), Fraction(1, 5)],
+            [Fraction(1, 6), Fraction(1, 3), Fraction(1, 3), Fraction(1, 6)]],
+    }
+    if level == 1:
         def make():
-            ps = random.choice(probsets[n])
-            xs = sorted(random.sample(range(0, 24), n))
+            ps = random.choice(probsets[3])
+            xs = sorted(random.sample(range(0, 24), 3))
             return xs, ps
 
         xs, ps = _roll(make, lambda s: sum(x * p for x, p in zip(*s)), target)
@@ -3966,21 +4113,43 @@ def p_expectation(target, level):
         terms = " + ".join(f"{x}\\times{_frac(p.numerator, p.denominator)}" for x, p in zip(xs, ps))
         exp = f"$$\\mathrm{{E}}(X)=\\sum x_{{i}}p_{{i}}={terms}={target}$$"
         return q, exp, str(target)
-    while True:
-        a, m = random.choice([1, 2, 3]), random.randint(1, 8)
-        if (target % (a * a)) != 0:
-            continue
-        v = target // (a * a)
-        s = m * m + v
-        b = random.randint(-5, 5)
-        break
+    if level == 2:
+        def make2():
+            ps = random.choice(probsets[4])
+            xs = sorted(random.sample(range(0, 24), 4))
+            return xs, ps, random.randrange(4)
+
+        xs, ps, hid = _roll(make2, lambda s: sum(x * p for x, p in zip(s[0], s[1])), target)
+        rows = []
+        for i, (x, p) in enumerate(zip(xs, ps)):
+            val = "a" if i == hid else _frac(p.numerator, p.denominator)
+            rows.append(f"- $\\mathrm{{P}}(X={x})={val}$")
+        others = " + ".join(_frac(p.numerator, p.denominator) for i, p in enumerate(ps) if i != hid)
+        q = (
+            f"확률변수 $X$가 갖는 값이 ${', '.join(map(str, xs))}$이고, 각 값을 가질 확률이 다음과 같을 때, "
+            f"$\\mathrm{{E}}(X)$의 값을 구하시오. (단, $a$는 상수이다.)\n\n" + "\n".join(rows)
+        )
+        terms = " + ".join(f"{x}\\times{_frac(p.numerator, p.denominator)}" for x, p in zip(xs, ps))
+        exp = (
+            f"확률의 총합은 $1$이므로 $a=1-({others})={_frac(ps[hid].numerator, ps[hid].denominator)}$입니다.\n\n"
+            f"$$\\mathrm{{E}}(X)=\\sum x_{{i}}p_{{i}}={terms}={target}$$"
+        )
+        return q, exp, str(target)
+    # 상: E(aX+b)=e → E(X)=m, V(X)=E(X²)-{E(X)}², V(aX+b)=a²V(X)=target.  (a 가 1 이면 너무 쉬우므로 a≥2)
+    a = random.choice([2, 3])
+    b = _nonzero(-5, 5)
+    m = random.randint(1, 6)
+    Vx = Fraction(target, a * a)
+    s = m * m + Vx
+    e = a * m + b
     q = (
-        f"확률변수 $X$에 대하여 $\\mathrm{{E}}(X)={m}$, $\\mathrm{{E}}(X^{{2}})={s}$일 때, "
+        f"확률변수 $X$에 대하여 $\\mathrm{{E}}({_lin(a, b, 'X')})={e}$, $\\mathrm{{E}}(X^{{2}})={_frac(s)}$일 때, "
         f"$\\mathrm{{V}}({_lin(a, b, 'X')})$의 값을 구하시오."
     )
     exp = (
-        f"$\\mathrm{{V}}(X)=\\mathrm{{E}}(X^{{2}})-\\{{\\mathrm{{E}}(X)\\}}^{{2}}={s}-{m}^{{2}}={v}$이므로\n\n"
-        f"$$\\mathrm{{V}}({_lin(a, b, 'X')})={a}^{{2}}\\mathrm{{V}}(X)={a * a}\\times{v}={target}$$"
+        f"$\\mathrm{{E}}({_lin(a, b, 'X')})={a}\\mathrm{{E}}(X) {_sgn(b)}={e}$이므로 $\\mathrm{{E}}(X)={m}$입니다.\n\n"
+        f"$\\mathrm{{V}}(X)=\\mathrm{{E}}(X^{{2}})-\\{{\\mathrm{{E}}(X)\\}}^{{2}}={_frac(s)}-{m}^{{2}}={_frac(Vx)}$이므로\n\n"
+        f"$$\\mathrm{{V}}({_lin(a, b, 'X')})={a}^{{2}}\\mathrm{{V}}(X)={a * a}\\times{_frac(Vx)}={target}$$"
     )
     return q, exp, str(target)
 
@@ -4036,6 +4205,7 @@ def generate_grade_problems(grade, difficulty=1):
     problems = []
     for target, (unit, families) in zip(targets, units):
         question, explanation, answer = random.choice(families)(target, difficulty)
+        question, explanation = _fix_josa(question), _fix_josa(explanation)
         problems.append((question, f"*({unit} 단원)*\n\n{explanation}", answer))
 
     return title, problems

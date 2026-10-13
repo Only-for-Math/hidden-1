@@ -2941,10 +2941,11 @@ def h_circle(target, level):
     q = (
         f"원 ${_sq('x', a)}+{_sq('y', b)}={r * r}$ 위의 점과 원점 사이의 거리 중 {word} 값을 구하시오."
     )
+    where = "바깥" if d > r else ("위" if d == r else "안")
     exp = (
-        f"원의 중심 $({a}, {b})$와 원점 사이의 거리는 $d=\\sqrt{{{a}^{{2}}+({b})^{{2}}}}={d}$이고 반지름은 $r={r}$입니다.\n\n"
+        f"원의 중심 $({a}, {b})$와 원점 사이의 거리는 $d=\\sqrt{{{_p(a)}^{{2}}+{_p(b)}^{{2}}}}={d}$이고 반지름은 $r={r}$입니다.\n\n"
         + (
-            f"원점은 원 {'바깥' if d > r else '안'}에 있고, 가장 큰 거리는 $d+r={d}+{r}={target}$"
+            f"원점은 원 {where}에 있고, 가장 큰 거리는 $d+r={d}+{r}={target}$"
             if mode == "max"
             else f"원점은 원 바깥에 있고, 가장 작은 거리는 $d-r={d}-{r}={target}$"
         )
@@ -3001,9 +3002,12 @@ def h_line(target, level):
             continue
         break
     q = f"세 점 $A({x1}, {y1})$, $B({x2}, {y2})$, $C({x3}, k)$가 한 직선 위에 있을 때, $k$의 값을 구하시오."
+    def diff(u, v):
+        return str(u) if v == 0 else f"{u}-{_p(v)}"
+
     exp = (
-        f"직선 $AB$의 기울기는 $\\frac{{{y2}-{_p(y1)}}}{{{x2}-{_p(x1)}}}={m}$입니다.\n\n"
-        f"점 $C$도 이 직선 위에 있으므로 $\\frac{{k-{_p(y1)}}}{{{x3}-{_p(x1)}}}={m}$이고, 따라서 $k={target}$"
+        f"직선 $AB$의 기울기는 $\\frac{{{diff(y2, y1)}}}{{{diff(x2, x1)}}}={m}$입니다.\n\n"
+        f"점 $C$도 이 직선 위에 있으므로 $\\frac{{{diff('k', y1)}}}{{{diff(x3, x1)}}}={m}$이고, 따라서 $k={target}$"
     )
     return q, exp, str(target)
 
@@ -3314,7 +3318,7 @@ def h_rational(target, level):
     def make():
         m, n = random.randint(-5, 6), random.randint(-4, 6)
         p, qv = random.randint(-6, 8), random.randint(-6, 8)
-        if p == m:
+        if p == m or qv == n:      # 점이 점근선 위에 있으면 y=n 인 상수함수가 되어 점근선 x=m 이 없다.
             return None
         return m, n, p, qv
 

@@ -2316,6 +2316,38 @@ _JOSA_PAIRS = {
 }
 
 
+def _brace_group(s, i):
+    """s[i] 가 '{' 이면 짝이 맞는 '}' 까지의 (안쪽 문자열, 다음 위치) 를, 아니면 None 을 돌려준다."""
+    if i >= len(s) or s[i] != "{":
+        return None
+    depth = 0
+    for j in range(i, len(s)):
+        if s[j] == "{":
+            depth += 1
+        elif s[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return s[i + 1:j], j + 1
+    return None
+
+
+def _tail_group(s):
+    """수식이 분수·근호·선분(\\frac, \\sqrt, \\overline)으로 끝나면 읽을 때 마지막에 소리 나는 부분을 돌려준다.
+
+    분수는 'b분의 a' 로 읽으므로 분자 a, 근호는 '루트 a' 라서 a, 선분은 그 이름이다."""
+    for m in re.finditer(r"\\(?:d?frac|sqrt|overline)(?=\{)", s):
+        first = _brace_group(s, m.end())
+        if first is None:
+            continue
+        if "frac" in m.group(0):
+            second = _brace_group(s, first[1])
+            if second is not None and second[1] == len(s):
+                return first[0]
+        elif first[1] == len(s):
+            return first[0]
+    return None
+
+
 def _end_sound(tex):
     """수식을 소리 내어 읽었을 때의 끝소리. 'V'=받침 없음, 'C'=받침 있음, 'L'=ㄹ 받침, 모르면 None."""
     s = re.sub(r"\\(?:right|left)\s*", "", tex).strip()
@@ -2323,11 +2355,16 @@ def _end_sound(tex):
         s = s[:-1]                       # 괄호는 읽지 않는다. f(x) -> x, (4, 1) -> 1
     if not s:
         return None
+    if s.endswith("\\%"):
+        return "V"                       # 퍼센트
     if s.endswith("}"):
-        return "C" if re.search(r"\^\{[^{}]*\}$", s) else None   # 거듭제곱은 '제곱'으로 끝난다.
+        if re.search(r"\^\{[^{}]*\}$", s):
+            return "C"                   # 거듭제곱은 '제곱'으로 끝난다.
+        inner = _tail_group(s)           # 분수는 분자, 근호는 근호 안, 선분은 그 이름으로 끝난다.
+        return _end_sound(inner) if inner is not None else None
     cmd = re.search(r"\\([A-Za-z]+)$", s)
     if cmd:
-        return "V" if cmd.group(1) in ("pi", "alpha", "beta", "sigma", "theta") else None
+        return "V" if cmd.group(1) in ("pi", "alpha", "beta", "sigma", "theta", "circ") else None
     ch = s[-1]
     if ch.isdigit():
         return _DIGIT_END[ch]
@@ -2954,7 +2991,7 @@ def h_circle(target, level):
         q = f"원 ${eq}=0$의 반지름의 길이를 구하시오."
         exp = (
             "완전제곱식으로 고치면\n\n"
-            f"$$({_lin(1, -p)})^{{2}}+({_lin(1, -qq, 'y')})^{{2}}={target ** 2}$$\n\n"
+            f"$${_sq('x', p)}+{_sq('y', qq)}={target ** 2}$$\n\n"
             f"이므로 반지름의 길이는 ${target}$"
         )
         return q, exp, str(target)
@@ -2994,7 +3031,7 @@ def h_circle(target, level):
         f"원 ${_sq('x', a)}+{_sq('y', b)}={r * r}$ 위의 점과 원점 사이의 거리 중 {word} 값을 구하시오."
     )
     exp = (
-        f"원의 중심 $({a}, {b})$와 원점 사이의 거리는 $d=\\sqrt{{{a}^{{2}}+({b})^{{2}}}}={d}$이고 반지름은 $r={r}$입니다.\n\n"
+        f"원의 중심 $({a}, {b})$와 원점 사이의 거리는 $d=\\sqrt{{{_p(a)}^{{2}}+{_p(b)}^{{2}}}}={d}$이고 반지름은 $r={r}$입니다.\n\n"
         + (
             f"원점은 원 {'바깥' if d > r else '안'}에 있고, 가장 큰 거리는 $d+r={d}+{r}={target}$"
             if mode == "max"
@@ -3115,6 +3152,11 @@ def h_set_count(target, level):
     return q, exp, str(target)
 
 
+def _elements(vals):
+    """원소 목록을 '$2$, $5$를' 처럼 조사까지 붙여서 쓴다."""
+    return ", ".join(f"${v}$" for v in vals) + ("을" if _DIGIT_END[str(vals[-1])[-1]] in ("C", "L") else "를")
+
+
 def h_subset(target, level):
     """부분집합의 개수 (하: 특정 원소를 반드시 포함, 중: 특정 원소는 포함하고 다른 원소는 제외, 상: 원소의 개수가 홀수·짝수인 부분집합).
 
@@ -3123,7 +3165,7 @@ def h_subset(target, level):
     univ = "$A=\\{1, 2, 3, \\cdots, n\\}$"
     if level == 1:
         k = random.choice([k for k in (1, 2, 3) if target - k >= 1])
-        names = {1: "$1$을", 2: "$1$, $2$를", 3: "$1$, $2$, $3$을"}[k]
+        names = _elements(sorted(random.sample(range(1, min(target, 9) + 1), k)))
         m = target - k
         q = (
             f"집합 {univ}의 부분집합 중에서 {names} 반드시 원소로 갖는 것의 개수가 ${_pow2(m)}$일 때, "
@@ -3140,9 +3182,9 @@ def h_subset(target, level):
         combos = [(a, b) for a in (1, 2) for b in (1, 2) if target - a - b >= 1] or [(0, 1)]
         a, b = random.choice(combos)
         m = target - a - b
-        inc = "$1$을" if a == 1 else "$1$, $2$를"
-        exc_nums = [a + t + 1 for t in range(b)]
-        exc = ", ".join(f"${v}$" for v in exc_nums) + {1: "을", 2: "를", 3: "을", 4: "를"}[exc_nums[-1]]
+        picked = random.sample(range(1, min(target, 9) + 1), a + b)
+        inc = _elements(sorted(picked[:a])) if a else ""
+        exc = _elements(sorted(picked[a:]))
         cond = f"{inc} 반드시 원소로 갖고 {exc} 원소로 갖지 않는" if a else f"{exc} 원소로 갖지 않는"
         q = (
             f"집합 {univ}의 부분집합 중에서 {cond} 것의 개수가 "
@@ -3350,9 +3392,15 @@ def h_rational(target, level):
             f"함수 $y=\\frac{{k}}{{{_lin(1, -a)}}} {_sgn(b)}$의 그래프가 점 $({p}, {qv})$를 지날 때, "
             "상수 $k$의 값을 구하시오."
         )
+        dv_ = p - a                                   # 분모가 ±1 이면 분수로 쓰지 않는다.
+        if dv_ == 1:
+            tail = f"$k={target}$"
+        else:
+            lhs = "-k" if dv_ == -1 else f"\\frac{{k}}{{{dv_}}}"
+            tail = f"${lhs}={qv - b}$이므로 $k={target}$"
         exp = (
             f"$x={p}$, $y={qv}$를 대입하면\n\n$${qv}=\\frac{{k}}{{{p} {_sgn(-a)}}} {_sgn(b)}$$\n\n"
-            f"$\\frac{{k}}{{{p - a}}}={qv - b}$이므로 $k={target}$"
+            + tail
         )
         return q, exp, str(target)
     if level == 2:
@@ -3448,26 +3496,26 @@ def s_log(target, level):
         return q, exp, str(target)
 
     def make():
-        return random.choice([2, 3, 5]), random.randint(2, 4), random.randint(1, 10), random.randint(1, 14)
+        return random.choice([2, 3, 5]), random.randint(2, 4), random.randint(-8, 10), random.randint(-3, 14)
 
     def solve(s):
         b, m, p, qv = s
-        if target - qv <= 0:
-            return None
-        if (target + p) * (target - qv) != b ** m:
+        bound = max(qv, -p)                           # 진수의 조건: x + p > 0 이고 x - qv > 0
+        if target <= bound or (target + p) * (target - qv) != b ** m:
             return None
         other = (qv - p) - target                     # 이차방정식의 다른 한 근
-        if other > max(qv, -p):                       # 다른 근도 진수 조건을 만족하면 해가 둘이 된다.
+        if other > bound:                             # 다른 근도 진수 조건을 만족하면 해가 둘이 된다.
             return None
         return target
 
     b, m, p, qv = _roll(make, solve, target)
     other = (qv - p) - target
+    bound = max(qv, -p)
     q = (
         f"방정식 $\\log_{{{b}}}({_lin(1, p)})+\\log_{{{b}}}({_lin(1, -qv)})={m}$의 해를 구하시오."
     )
     exp = (
-        f"진수의 조건에 의하여 $x>{qv}$입니다.\n\n"
+        f"진수의 조건에 의하여 $x>{bound}$입니다.\n\n"
         f"$\\log_{{{b}}}({_lin(1, p)})({_lin(1, -qv)})={m}$이므로 $({_lin(1, p)})({_lin(1, -qv)})={b ** m}$입니다.\n\n"
         f"정리하면 $({_lin(1, -target)})({_lin(1, -other)})=0$이므로 $x={target}$ 또는 $x={other}$이고, "
         f"진수의 조건을 만족시키는 해는 $x={target}$"
@@ -3579,17 +3627,25 @@ def s_trig(target, level):
             f"따라서 $a+b+c={target}$"
         )
         return q, exp, str(target)
-    # 구간이 [0, π) 이고 k = 2·target - 1 (홀수) 이면 t = kx 의 범위가 [0, kπ) 라서,
-    # 한 주기(2π)마다 하나씩이라고만 세면 안 되고 반 주기가 남는 것까지 따져야 한다.
-    k = 2 * target - 1
+    # 구간 [0, Lπ) 에서 sin kx, cos kx 가 1 또는 -1 이 되는 x 의 개수가 target 이 되도록 k 를 고른다.
+    # t = kx 는 [0, kLπ) 를 움직이고, 해는 t = t0·π + 2nπ (n = 0, 1, ...) 이므로 반 주기가 남는 경우까지 따져야 한다.
     kind = random.choice(["sin", "cos"])
-    rhs = "1"
-    q = f"$0\\le x<\\pi$에서 방정식 $\\{kind} {k}x={rhs}$의 서로 다른 실근의 개수를 구하시오."
-    sol = r"\frac{\pi}{2}+2n\pi" if kind == "sin" else r"2n\pi"
+    rv = random.choice([1, -1])
+    big_l = random.choice([1, 2])
+    t0 = {("cos", 1): Fraction(0), ("cos", -1): Fraction(1), ("sin", 1): Fraction(1, 2), ("sin", -1): Fraction(3, 2)}[(kind, rv)]
+    ks = [k for k in range(2, 40) if math.ceil((k * big_l - t0) / 2) == target]
+    k = random.choice(ks)
+    top = k * big_l
+    big_l_tex = r"\pi" if big_l == 1 else r"2\pi"
+    q = f"$0\\le x<{big_l_tex}$에서 방정식 $\\{kind} {k}x={rv}$의 서로 다른 실근의 개수를 구하시오."
+    sol = {
+        ("cos", 1): r"2n\pi", ("cos", -1): r"(2n+1)\pi",
+        ("sin", 1): r"\frac{\pi}{2}+2n\pi", ("sin", -1): r"\frac{3\pi}{2}+2n\pi",
+    }[(kind, rv)]
     ns_ = "$n=0, 1$" if target == 2 else f"$n=0, 1, \\cdots, {target - 1}$"
     exp = (
-        f"$\\{kind} t={rhs}$을 만족시키는 $t$는 $t={sol}$ ($n$은 정수)입니다.\n\n"
-        f"$t={k}x$이고 $0\\le x<\\pi$이므로 $0\\le t<{k}\\pi$입니다.\n\n"
+        f"$\\{kind} t={rv}$을 만족시키는 $t$는 $t={sol}$ ($n$은 정수)입니다.\n\n"
+        f"$t={k}x$이고 $0\\le x<{big_l_tex}$이므로 $0\\le t<{top}\\pi$입니다.\n\n"
         f"이 범위에서 $t={sol}$인 $t$의 개수를 세면 {ns_}이므로 모두 ${target}$개"
     )
     return q, exp, str(target)
@@ -3633,10 +3689,13 @@ def s_seq(target, level):
         f"$\\displaystyle\\sum_{{k=1}}^{{n}}({_lin(a, b, 'k')})={N}$일 때, 자연수 $n$의 값을 구하시오."
     )
     body = _j(f"{a}\\times\\frac{{n(n+1)}}{{2}}", _tx(b, "n"))
+    c = a * (target + 1) + 2 * b                      # a·n² + (a+2b)·n - 2N = (n - target)(a·n + c)
     exp = (
         f"$\\sum_{{k=1}}^{{n}}k=\\frac{{n(n+1)}}{{2}}$이므로\n\n"
         f"$$\\sum_{{k=1}}^{{n}}({_lin(a, b, 'k')})={body}={N}$$\n\n"
-        f"이 식을 만족시키는 자연수는 $n={target}$"
+        f"양변에 $2$를 곱하여 정리하면 ${_poly([a, a + 2 * b, -2 * N], 'n')}=0$이고 "
+        f"$(n-{target})({_lin(a, c, 'n')})=0$입니다.\n\n"
+        f"$n$은 자연수이므로 $n={target}$"
     )
     return q, exp, str(target)
 
@@ -3819,6 +3878,22 @@ def s_integral(target, level):
         if num % 6 == 0 and num // 6 <= 200:
             N = num // 6
             break
+    if random.random() < 0.5:
+        # 교점이 0 이 아닌 곳에 있는 꼴: y = k(x - lo)(hi - x) 의 넓이는 k(hi - lo)³/6
+        lo = random.choice([-3, -2, -1, 1, 2, 3])
+        hi = lo + m
+        q = (
+            f"곡선 $y=k({_lin(1, -lo)})({_lin(-1, hi)})$ ($k>0$)와 $x$축으로 둘러싸인 부분의 넓이가 ${N}$일 때, "
+            "상수 $k$의 값을 구하시오."
+        )
+        area = _frac(m ** 3, 6)
+        area_k = "k" if area == "1" else f"{area}k"
+        exp = (
+            f"곡선과 $x$축의 교점의 $x$좌표는 ${lo}$, ${hi}$이고 "
+            "$\\int_{\\alpha}^{\\beta}(x-\\alpha)(\\beta-x)\\,dx=\\frac{(\\beta-\\alpha)^{3}}{6}$이므로 넓이는\n\n"
+            f"$$k\\times\\frac{{({hi}-{_p(lo)})^{{3}}}}{{6}}={area_k}={N}$$\n\n따라서 $k={target}$"
+        )
+        return q, exp, str(target)
     q = f"곡선 $y=kx({m}-x)$ ($k>0$)와 $x$축으로 둘러싸인 부분의 넓이가 ${N}$일 때, 상수 $k$의 값을 구하시오."
     half = _frac(m, 2)
     sq_term = "x^{2}" if half == "1" else f"{half}x^{{2}}"
@@ -3837,71 +3912,154 @@ def s_integral(target, level):
 # ==========================================
 # ---------- 순열과 조합 ----------
 def p_perm(target, level):
-    """순열과 조합 (하: 순열, 중: 조합과 순열의 합, 상: 조합의 성질 nCr = nC(n-r) 을 쓰는 방정식)."""
+    """순열과 조합 (하: 순열·조합의 식, 중: 조합과 순열의 합·차, 상: 조합의 성질 nCr = nC(n-r) 을 쓰는 방정식)."""
+    T, T1 = target, target - 1
     if level == 1:
-        N = target * (target - 1)
-        q = f"${{}}_{{n}}\\mathrm{{P}}_{{2}}={N}$일 때, 자연수 $n$의 값을 구하시오."
+        form = random.choice(["perm", "comb", "frac"])
+        if form == "comb":
+            N = T * T1 // 2
+            q = f"${{}}_{{n}}\\mathrm{{C}}_{{2}}={N}$일 때, 자연수 $n$의 값을 구하시오."
+            exp = (
+                f"${{}}_{{n}}\\mathrm{{C}}_{{2}}=\\frac{{n(n-1)}}{{2}}$이므로 $\\frac{{n(n-1)}}{{2}}={N}$, 즉 $n(n-1)={2 * N}$입니다.\n\n"
+                f"$n^{{2}}-n-{2 * N}=0$, $(n-{T})(n+{T1})=0$이고 $n\\ge 2$이므로 $n={T}$"
+            )
+            return q, exp, str(T)
+        N = T * T1
+        if form == "frac":
+            q = f"$\\frac{{n!}}{{(n-2)!}}={N}$일 때, 자연수 $n$의 값을 구하시오. (단, $n\\ge 2$)"
+            head = "$\\frac{n!}{(n-2)!}=n(n-1)$이므로 "
+        else:
+            q = f"${{}}_{{n}}\\mathrm{{P}}_{{2}}={N}$일 때, 자연수 $n$의 값을 구하시오."
+            head = "${}_{n}\\mathrm{P}_{2}=n(n-1)$이므로 "
         exp = (
-            f"${{}}_{{n}}\\mathrm{{P}}_{{2}}=n(n-1)$이므로 $n(n-1)={N}$입니다.\n\n"
-            f"$n^{{2}}-n-{N}=0$, $(n-{target})(n+{target - 1})=0$이고 $n\\ge 2$이므로 $n={target}$"
+            f"{head}$n(n-1)={N}$입니다.\n\n"
+            f"$n^{{2}}-n-{N}=0$, $(n-{T})(n+{T1})=0$이고 $n\\ge 2$이므로 $n={T}$"
         )
-        return q, exp, str(target)
+        return q, exp, str(T)
     if level == 2:
-        N = 3 * target * (target - 1) // 2
-        q = f"${{}}_{{n}}\\mathrm{{C}}_{{2}}+{{}}_{{n}}\\mathrm{{P}}_{{2}}={N}$일 때, 자연수 $n$의 값을 구하시오."
-        exp = (
-            f"${{}}_{{n}}\\mathrm{{C}}_{{2}}=\\frac{{n(n-1)}}{{2}}$, ${{}}_{{n}}\\mathrm{{P}}_{{2}}=n(n-1)$이므로\n\n"
-            f"$$\\frac{{3n(n-1)}}{{2}}={N}$$\n\n$n(n-1)={target * (target - 1)}$이므로 $n={target}$"
-        )
-        return q, exp, str(target)
+        form = random.choice(["sum", "diff", "double"])
+        if form == "diff":
+            N = T * T1 // 2
+            q = f"${{}}_{{n}}\\mathrm{{P}}_{{2}}-{{}}_{{n}}\\mathrm{{C}}_{{2}}={N}$일 때, 자연수 $n$의 값을 구하시오."
+            exp = (
+                "${}_{n}\\mathrm{P}_{2}=n(n-1)$, ${}_{n}\\mathrm{C}_{2}=\\frac{n(n-1)}{2}$이므로\n\n"
+                f"$$n(n-1)-\\frac{{n(n-1)}}{{2}}=\\frac{{n(n-1)}}{{2}}={N}$$\n\n"
+                f"$n(n-1)={T * T1}$이므로 $n={T}$"
+            )
+        elif form == "double":
+            N = 2 * T * T1
+            q = f"$2\\times{{}}_{{n}}\\mathrm{{C}}_{{2}}+{{}}_{{n}}\\mathrm{{P}}_{{2}}={N}$일 때, 자연수 $n$의 값을 구하시오."
+            exp = (
+                "${}_{n}\\mathrm{C}_{2}=\\frac{n(n-1)}{2}$, ${}_{n}\\mathrm{P}_{2}=n(n-1)$이므로\n\n"
+                f"$$2\\times\\frac{{n(n-1)}}{{2}}+n(n-1)=2n(n-1)={N}$$\n\n"
+                f"$n(n-1)={T * T1}$이므로 $n={T}$"
+            )
+        else:
+            N = 3 * T * T1 // 2
+            q = f"${{}}_{{n}}\\mathrm{{C}}_{{2}}+{{}}_{{n}}\\mathrm{{P}}_{{2}}={N}$일 때, 자연수 $n$의 값을 구하시오."
+            exp = (
+                f"${{}}_{{n}}\\mathrm{{C}}_{{2}}=\\frac{{n(n-1)}}{{2}}$, ${{}}_{{n}}\\mathrm{{P}}_{{2}}=n(n-1)$이므로\n\n"
+                f"$$\\frac{{3n(n-1)}}{{2}}={N}$$\n\n$n(n-1)={T * T1}$이므로 $n={T}$"
+            )
+        return q, exp, str(T)
     # 상: nC(n-2) = nC2, nC(n-1) = nC1 로 바꿔야 식을 풀 수 있다. (nP3 처럼 큰 수가 나오지 않는다.)
-    N = target * (target + 1) // 2
-    q = (
-        f"${{}}_{{n}}\\mathrm{{C}}_{{n-2}}+{{}}_{{n}}\\mathrm{{C}}_{{n-1}}={N}$일 때, 자연수 $n$의 값을 구하시오. "
-        "(단, $n\\ge 2$)"
-    )
-    exp = (
-        "${}_{n}\\mathrm{C}_{r}={}_{n}\\mathrm{C}_{n-r}$이므로 "
-        "${}_{n}\\mathrm{C}_{n-2}={}_{n}\\mathrm{C}_{2}=\\frac{n(n-1)}{2}$, "
-        "${}_{n}\\mathrm{C}_{n-1}={}_{n}\\mathrm{C}_{1}=n$입니다.\n\n"
-        f"$$\\frac{{n(n-1)}}{{2}}+n=\\frac{{n(n+1)}}{{2}}={N}$$\n\n"
-        f"$n(n+1)={2 * N}$이므로 $n={target}$"
-    )
-    return q, exp, str(target)
+    form = random.choice(["two", "three", "shift"])
+    if form == "three":
+        N = T * (T + 1) // 2 + 1
+        q = (
+            f"${{}}_{{n}}\\mathrm{{C}}_{{n-2}}+{{}}_{{n}}\\mathrm{{C}}_{{n-1}}+{{}}_{{n}}\\mathrm{{C}}_{{n}}={N}$일 때, "
+            "자연수 $n$의 값을 구하시오. (단, $n\\ge 2$)"
+        )
+        exp = (
+            "${}_{n}\\mathrm{C}_{r}={}_{n}\\mathrm{C}_{n-r}$이므로 "
+            "${}_{n}\\mathrm{C}_{n-2}={}_{n}\\mathrm{C}_{2}=\\frac{n(n-1)}{2}$, "
+            "${}_{n}\\mathrm{C}_{n-1}={}_{n}\\mathrm{C}_{1}=n$, ${}_{n}\\mathrm{C}_{n}=1$입니다.\n\n"
+            f"$$\\frac{{n(n-1)}}{{2}}+n+1=\\frac{{n(n+1)}}{{2}}+1={N}$$\n\n"
+            f"$n(n+1)={T * (T + 1)}$이므로 $n={T}$"
+        )
+    elif form == "shift":
+        N = T * (T + 1) // 2
+        q = f"${{}}_{{n+1}}\\mathrm{{C}}_{{n-1}}={N}$일 때, 자연수 $n$의 값을 구하시오."
+        exp = (
+            "${}_{n+1}\\mathrm{C}_{n-1}={}_{n+1}\\mathrm{C}_{(n+1)-(n-1)}={}_{n+1}\\mathrm{C}_{2}$이므로\n\n"
+            f"$$\\frac{{(n+1)n}}{{2}}={N}$$\n\n$n(n+1)={2 * N}$이므로 $n={T}$"
+        )
+    else:
+        N = T * (T + 1) // 2
+        q = (
+            f"${{}}_{{n}}\\mathrm{{C}}_{{n-2}}+{{}}_{{n}}\\mathrm{{C}}_{{n-1}}={N}$일 때, 자연수 $n$의 값을 구하시오. "
+            "(단, $n\\ge 2$)"
+        )
+        exp = (
+            "${}_{n}\\mathrm{C}_{r}={}_{n}\\mathrm{C}_{n-r}$이므로 "
+            "${}_{n}\\mathrm{C}_{n-2}={}_{n}\\mathrm{C}_{2}=\\frac{n(n-1)}{2}$, "
+            "${}_{n}\\mathrm{C}_{n-1}={}_{n}\\mathrm{C}_{1}=n$입니다.\n\n"
+            f"$$\\frac{{n(n-1)}}{{2}}+n=\\frac{{n(n+1)}}{{2}}={N}$$\n\n"
+            f"$n(n+1)={2 * N}$이므로 $n={T}$"
+        )
+    return q, exp, str(T)
 
 
 def p_binomial_coef(target, level):
-    """이항정리 (하: (1+x)^n 의 x² 계수, 중: (1+2x)^n 의 x² 계수, 상: x² 계수와 x³ 계수의 합)."""
+    """이항정리 (하: (1+x)^n 의 x² 계수, 중: (1+2x)^n 의 x² 계수나 x·x² 계수의 합, 상: 계수들의 합으로 n 구하기)."""
+    T = target
     if level == 1:
-        N = math.comb(target, 2)
-        q = f"$(1+x)^{{n}}$의 전개식에서 $x^{{2}}$의 계수가 ${N}$일 때, 자연수 $n$의 값을 구하시오."
-        exp = (
-            f"$(1+x)^{{n}}$의 전개식에서 $x^{{2}}$의 계수는 ${{}}_{{n}}\\mathrm{{C}}_{{2}}=\\frac{{n(n-1)}}{{2}}$입니다.\n\n"
-            f"$\\frac{{n(n-1)}}{{2}}={N}$에서 $n(n-1)={2 * N}$이므로 $n={target}$"
-        )
-        return q, exp, str(target)
+        var = random.choice(["x", "x", "y", "t"])
+        N = math.comb(T, 2)
+        if random.random() < 0.5:
+            q = f"$(1+{var})^{{n}}$의 전개식에서 ${var}^{{2}}$의 계수가 ${N}$일 때, 자연수 $n$의 값을 구하시오."
+            head = f"$(1+{var})^{{n}}$의 전개식에서 ${var}^{{2}}$의 계수는 ${{}}_{{n}}\\mathrm{{C}}_{{2}}=\\frac{{n(n-1)}}{{2}}$입니다.\n\n"
+        else:
+            q = (
+                f"$({var}+1)^{{n}}$의 전개식에서 ${var}^{{n-2}}$의 계수가 ${N}$일 때, 자연수 $n$의 값을 구하시오. "
+                "(단, $n\\ge 2$)"
+            )
+            head = (
+                f"$({var}+1)^{{n}}$의 전개식에서 ${var}^{{n-2}}$의 계수는 "
+                "${}_{n}\\mathrm{C}_{n-2}={}_{n}\\mathrm{C}_{2}=\\frac{n(n-1)}{2}$입니다.\n\n"
+            )
+        exp = head + f"$\\frac{{n(n-1)}}{{2}}={N}$에서 $n(n-1)={2 * N}$이므로 $n={T}$"
+        return q, exp, str(T)
     if level == 2:
-        k = random.choice([k for k in (2, 3) if math.comb(target, 2) * k * k <= 500])
-        N = math.comb(target, 2) * k * k
+        if random.random() < 0.5:
+            N = T * (T + 1) // 2
+            q = f"$(1+x)^{{n}}$의 전개식에서 $x$의 계수와 $x^{{2}}$의 계수의 합이 ${N}$일 때, 자연수 $n$의 값을 구하시오."
+            exp = (
+                "$x$의 계수는 ${}_{n}\\mathrm{C}_{1}=n$, $x^{2}$의 계수는 ${}_{n}\\mathrm{C}_{2}=\\frac{n(n-1)}{2}$이므로\n\n"
+                f"$$n+\\frac{{n(n-1)}}{{2}}=\\frac{{n(n+1)}}{{2}}={N}$$\n\n$n(n+1)={2 * N}$이므로 $n={T}$"
+            )
+            return q, exp, str(T)
+        k = random.choice([k for k in (2, 3) if math.comb(T, 2) * k * k <= 500])
+        N = math.comb(T, 2) * k * k
         q = f"$(1+{k}x)^{{n}}$의 전개식에서 $x^{{2}}$의 계수가 ${N}$일 때, 자연수 $n$의 값을 구하시오."
         exp = (
             f"$(1+{k}x)^{{n}}$의 전개식에서 $x^{{2}}$의 계수는 ${{}}_{{n}}\\mathrm{{C}}_{{2}}\\times{k}^{{2}}"
             f"=\\frac{{n(n-1)}}{{2}}\\times{k * k}$입니다.\n\n"
-            f"$\\frac{{n(n-1)}}{{2}}\\times{k * k}={N}$에서 $n(n-1)={target * (target - 1)}$이므로 $n={target}$"
+            f"$\\frac{{n(n-1)}}{{2}}\\times{k * k}={N}$에서 $n(n-1)={T * (T - 1)}$이므로 $n={T}$"
         )
-        return q, exp, str(target)
-    N = math.comb(target, 2) + math.comb(target, 3)
-    q = (
-        f"$(1+x)^{{n}}$의 전개식에서 $x^{{2}}$의 계수와 $x^{{3}}$의 계수의 합이 ${N}$일 때, "
-        "자연수 $n$의 값을 구하시오."
-    )
+        return q, exp, str(T)
+    # 상: x³ 항은 n 이 3 이상일 때만 있으므로 target 이 2 면 쓰지 않는다.
+    if T >= 3 and random.random() < 0.5:
+        N = math.comb(T, 2) + math.comb(T, 3)
+        q = (
+            f"$(1+x)^{{n}}$의 전개식에서 $x^{{2}}$의 계수와 $x^{{3}}$의 계수의 합이 ${N}$일 때, "
+            "자연수 $n$의 값을 구하시오."
+        )
+        exp = (
+            "$x^{2}$의 계수는 ${}_{n}\\mathrm{C}_{2}$, $x^{3}$의 계수는 ${}_{n}\\mathrm{C}_{3}$이고 "
+            "${}_{n}\\mathrm{C}_{2}+{}_{n}\\mathrm{C}_{3}={}_{n+1}\\mathrm{C}_{3}$입니다.\n\n"
+            f"${{}}_{{n+1}}\\mathrm{{C}}_{{3}}={N}$이고 ${{}}_{{{T + 1}}}\\mathrm{{C}}_{{3}}={N}$이므로 "
+            f"$n+1={T + 1}$, 즉 $n={T}$"
+        )
+        return q, exp, str(T)
+    N = 2 * T * T
+    q = f"$(1+2x)^{{n}}$의 전개식에서 $x$의 계수와 $x^{{2}}$의 계수의 합이 ${N}$일 때, 자연수 $n$의 값을 구하시오."
     exp = (
-        "$x^{2}$의 계수는 ${}_{n}\\mathrm{C}_{2}$, $x^{3}$의 계수는 ${}_{n}\\mathrm{C}_{3}$이고 "
-        "${}_{n}\\mathrm{C}_{2}+{}_{n}\\mathrm{C}_{3}={}_{n+1}\\mathrm{C}_{3}$입니다.\n\n"
-        f"${{}}_{{n+1}}\\mathrm{{C}}_{{3}}={N}$이고 ${{}}_{{{target + 1}}}\\mathrm{{C}}_{{3}}={N}$이므로 "
-        f"$n+1={target + 1}$, 즉 $n={target}$"
+        "$x$의 계수는 ${}_{n}\\mathrm{C}_{1}\\times2=2n$, "
+        "$x^{2}$의 계수는 ${}_{n}\\mathrm{C}_{2}\\times2^{2}=2n(n-1)$이므로\n\n"
+        f"$$2n+2n(n-1)=2n^{{2}}={N}$$\n\n$n^{{2}}={T * T}$이고 $n$은 자연수이므로 $n={T}$"
     )
-    return q, exp, str(target)
+    return q, exp, str(T)
 
 
 # ---------- 확률 ----------

@@ -2241,15 +2241,18 @@ def g1_prop(target):
         a = random.randint(-5, 5)
         b = random.choice([2, 3, 4])
         d = random.choice([3, 5])
-        # 비례식에 0 이 들어가지 않도록(target + a != 0) 한다.
-        if ((target + a) * d) % b == 0 and target + a != 0:
+        # 비의 항은 양수여야 하므로 target + a > 0 이 되게 한다. (0 이거나 음수인 항이 생기지 않는다.)
+        if ((target + a) * d) % b == 0 and target + a > 0:
             break
     c = ((target + a) * d) // b
 
-    a_str = f"+ {a}" if a > 0 else (f"- {abs(a)}" if a < 0 else "")
+    lhs = "x" if a == 0 else f"(x {_sgn(a)})"
 
-    q = f"다음 비례식을 만족하는 $x$의 값을 구하시오.\n\n$$(x {a_str}) : {b} = {c} : {d}$$"
-    exp = f"내항의 곱과 외항의 곱은 같으므로:\n\n$${d}(x {a_str}) = {b} \\times {c}$$\n\n$${d}x {f'+ {d*a}' if a>0 else (f'- {abs(d*a)}' if a<0 else '')} = {b*c}$$\n\n따라서 $x={target}$"
+    q = f"다음 비례식을 만족하는 $x$의 값을 구하시오.\n\n$${lhs} : {b} = {c} : {d}$$"
+    exp = (
+        f"내항의 곱과 외항의 곱은 같으므로:\n\n$${d}{lhs} = {b} \\times {c}$$\n\n"
+        f"$${' '.join(t for t in (f'{d}x', _sgn(d * a)) if t)} = {b * c}$$\n\n따라서 $x={target}$"
+    )
     return q, exp, str(target)
 
 
@@ -2323,8 +2326,10 @@ def g2_ineq(target):
 # ==========================================
 def g3_trigo(target):
     a = target - 1
-    q = f"다음 식의 값을 구하시오.\n\n$$\\tan 45^\\circ + {a}$$"
-    exp = f"$\\tan 45^\\circ = 1$ 이므로:\n\n$$1 + {a} = {target}$$"
+    value = random.choice(["\\tan 45^\\circ", "\\sin 90^\\circ", "\\cos 0^\\circ"])      # 셋 다 값이 1
+    first = random.random() < 0.5
+    q = f"다음 식의 값을 구하시오.\n\n$${value} + {a}$$" if first else f"다음 식의 값을 구하시오.\n\n$${a} + {value}$$"
+    exp = f"${value} = 1$ 이므로:\n\n$${'1 + ' + str(a) if first else str(a) + ' + 1'} = {target}$$"
     return q, exp, str(target)
 
 
@@ -2406,6 +2411,38 @@ _JOSA_PAIRS = {
 }
 
 
+def _brace_group(s, i):
+    """s[i] 가 '{' 이면 짝이 맞는 '}' 까지의 (안쪽 문자열, 다음 위치) 를, 아니면 None 을 돌려준다."""
+    if i >= len(s) or s[i] != "{":
+        return None
+    depth = 0
+    for j in range(i, len(s)):
+        if s[j] == "{":
+            depth += 1
+        elif s[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return s[i + 1:j], j + 1
+    return None
+
+
+def _tail_group(s):
+    """수식이 분수·근호·선분(\\frac, \\sqrt, \\overline)으로 끝나면 읽을 때 마지막에 소리 나는 부분을 돌려준다.
+
+    분수는 'b분의 a' 로 읽으므로 분자 a, 근호는 '루트 a' 라서 a, 선분은 그 이름이다."""
+    for m in re.finditer(r"\\(?:d?frac|sqrt|overline)(?=\{)", s):
+        first = _brace_group(s, m.end())
+        if first is None:
+            continue
+        if "frac" in m.group(0):
+            second = _brace_group(s, first[1])
+            if second is not None and second[1] == len(s):
+                return first[0]
+        elif first[1] == len(s):
+            return first[0]
+    return None
+
+
 def _end_sound(tex):
     """수식을 소리 내어 읽었을 때의 끝소리. 'V'=받침 없음, 'C'=받침 있음, 'L'=ㄹ 받침, 모르면 None."""
     s = re.sub(r"\\(?:right|left)\s*", "", tex).strip()
@@ -2413,11 +2450,16 @@ def _end_sound(tex):
         s = s[:-1]                       # 괄호는 읽지 않는다. f(x) -> x, (4, 1) -> 1
     if not s:
         return None
+    if s.endswith("\\%"):
+        return "V"                       # 퍼센트
     if s.endswith("}"):
-        return "C" if re.search(r"\^\{[^{}]*\}$", s) else None   # 거듭제곱은 '제곱'으로 끝난다.
+        if re.search(r"\^\{[^{}]*\}$", s):
+            return "C"                   # 거듭제곱은 '제곱'으로 끝난다.
+        inner = _tail_group(s)           # 분수는 분자, 근호는 근호 안, 선분은 그 이름으로 끝난다.
+        return _end_sound(inner) if inner is not None else None
     cmd = re.search(r"\\([A-Za-z]+)$", s)
     if cmd:
-        return "V" if cmd.group(1) in ("pi", "alpha", "beta", "sigma", "theta") else None
+        return "V" if cmd.group(1) in ("pi", "alpha", "beta", "sigma", "theta", "circ") else None
     ch = s[-1]
     if ch.isdigit():
         return _DIGIT_END[ch]
@@ -3028,7 +3070,9 @@ def _lin(a, b, var="x"):
 
 def _ang(a, b, var="x"):
     """각의 크기 (ax+b)° . a 가 0 이면 그냥 b° ."""
-    return f"{b}^\\circ" if a == 0 else f"({_lin(a, b, var)})^\\circ"
+    if a == 0:
+        return f"{b}^\\circ"
+    return f"{_lin(a, b, var)}^\\circ" if b == 0 else f"({_lin(a, b, var)})^\\circ"
 
 
 def _frac(n, d=1):
@@ -3188,6 +3232,8 @@ def f_mixed(target, level):
     n = level + 1
     while True:
         terms = [_mixed_term() for _ in range(n)]
+        if len({tex for tex, _ in terms}) < n:   # 2² - 2² 처럼 같은 덩어리가 반복되면 식이 시시하고 풀이 줄도 겹친다.
+            continue
         ops = ["+"] + [random.choice("+-") for _ in range(n - 1)]
         partial = sum(v if o == "+" else -v for o, (_, v) in zip(ops, terms))
         c = target - partial
@@ -3249,12 +3295,17 @@ def f_linexpr(target, level):
         f"식 ${expr}$을 계산하면 $x$의 계수는 $a$, 상수항은 $b$입니다. "
         "$a+b$의 값을 구하시오."
     )
-    gathered = f"{_coef(p)} {_sgn(s)} {_sgn(k)}".strip()
+    # 괄호를 푼 식 -> 동류항을 모은 식 -> 결과 순서로 보여 준다. (같은 줄은 한 번만 쓴다.)
+    parts = [_coef(ms[0] * a[0]), _sgn(ms[0] * b[0])]
+    for m_, x_, y_ in zip(ms[1:], a[1:], b[1:]):
+        parts += [_tx(m_ * x_), _sgn(m_ * y_)]
+    parts.append(_sgn(k))
+    steps = [" ".join(t for t in parts if t), " ".join(t for t in (_coef(p), _sgn(s), _sgn(k)) if t), _lin(p, s + k)]
+    shown = [t for i, t in enumerate(steps) if i == 0 or t != steps[i - 1]]
     exp = (
         "분배법칙으로 괄호를 풀고 동류항끼리 모으면:\n\n"
-        f"$${gathered}$$\n\n"
-        f"$${_lin(p, s + k)}$$\n\n"
-        f"이므로 $a={p}$, $b={s + k}$이고 $a+b={target}$"
+        + "\n\n".join(f"$${t}$$" for t in shown)
+        + f"\n\n이므로 $a={p}$, $b={s + k}$이고 $a+b={target}$"
     )
     return q, exp, str(target)
 
@@ -4069,7 +4120,9 @@ def f_sys_word(target, level):
     exp = (
         f"시속 ${v1}$ km로 걸은 거리를 $x$ km, 시속 ${v2}$ km로 달린 거리를 $y$ km라 하면\n\n"
         f"$$\\begin{{cases}}x + y = {D}\\\\\\frac{{x}}{{{v1}}} + \\frac{{y}}{{{v2}}} = {T}\\end{{cases}}$$\n\n"
-        f"이 연립방정식을 풀면 $x={target}$, $y={y}$입니다."
+        f"둘째 식의 양변에 ${v1 * v2}$를 곱하면 ${v2}x + {v1}y = {T * v1 * v2}$이고, 첫째 식에서 $y={D}-x$이므로\n\n"
+        f"$${v2}x + {v1}({D}-x) = {T * v1 * v2}$$\n\n$${_coef(v2 - v1)} = {T * v1 * v2 - v1 * D}$$\n\n"
+        f"따라서 $x={target}$, $y={y}$입니다."
     )
     return q, exp, str(target)
 
@@ -4100,9 +4153,10 @@ def f_func_intercept(target, level):
             f"일차함수 $y={_lin(m, c)}$의 그래프의 $y$절편과 일차함수 $y={_coef(n)} + a$의 그래프의 "
             "$x$절편이 서로 같을 때, 상수 $a$의 값을 구하시오."
         )
+        xi = "-a" if n == 1 else ("a" if n == -1 else f"-\\frac{{a}}{{{n}}}")       # x절편 -a/n
         exp = (
             f"$y={_lin(m, c)}$의 $y$절편은 ${c}$입니다.\n\n"
-            f"$y={_coef(n)} + a$의 $x$절편은 $-\\frac{{a}}{{{n}}}$이므로 $-\\frac{{a}}{{{n}}}={c}$, 즉 $a={target}$"
+            f"$y={_coef(n)} + a$의 $x$절편은 ${xi}$이므로 ${xi}={c}$, 즉 $a={target}$"
         )
         return q, exp, str(target)
     # 기울기 a 와 y절편 b 를 둘 다 구해야 하는 문제. (기울기만 비교하면 끝나는 문제는 상이라 하기에 너무 쉽다.)
@@ -4118,7 +4172,7 @@ def f_func_intercept(target, level):
     exp = (
         f"평행이동한 그래프의 식은 $y=ax+b {_sgn(e)}$이고, 이 그래프가 $y={_lin(m, d)}$와 일치하므로\n\n"
         f"$a={m}$, $b {_sgn(e)}={d}$에서 $b={d - e}$입니다.\n\n"
-        f"따라서 $a+b={m}+({d - e})={target}$"
+        f"따라서 $a+b={m} {_sgn(d - e)}={target}$"
     )
     return q, exp, str(target)
 
@@ -4486,12 +4540,19 @@ def f_count_ways(target, level):
     """경우의 수에서 모르는 수 x 구하기 (하: 대표 2명, 중: 회장·부회장, 상: 합과 곱의 법칙)."""
     if level == 1 and target == 2:
         # x=2 이면 '2명 중 2명 뽑기'(1가지)처럼 뜻이 없어지므로 곱의 법칙 문제로 바꾼다.
-        if random.random() < 0.5:
+        pick = random.random()
+        if pick < 0.34:
             q = (
                 "서로 다른 동전 $x$개를 동시에 던질 때, 나올 수 있는 모든 경우의 수가 $4$가지일 때, "
                 "$x$의 값을 구하시오."
             )
             exp = "동전 한 개를 던질 때 나오는 경우는 2가지이므로 $x$개를 던지면 $2^x$가지입니다.\n\n$$2^x=4$$\n\n따라서 $x=2$"
+        elif pick < 0.67:
+            q = (
+                "서로 다른 주사위 $x$개를 동시에 던질 때, 나올 수 있는 모든 경우의 수가 $36$가지일 때, "
+                "$x$의 값을 구하시오."
+            )
+            exp = "주사위 한 개를 던질 때 나오는 경우는 6가지이므로 $x$개를 던지면 $6^x$가지입니다.\n\n$$6^x=36$$\n\n따라서 $x=2$"
         else:
             q = "서로 다른 $x$명을 한 줄로 세우는 방법이 모두 $2$가지일 때, $x$의 값을 구하시오."
             exp = (
@@ -4507,6 +4568,10 @@ def f_count_ways(target, level):
                 f"$x$명이 모두 서로 한 번씩 악수를 하였더니 악수를 모두 ${N}$번 하였다. $x$의 값을 구하시오.",
                 f"원 위에 $x$개의 점이 있다. 이 중 두 점을 이어서 만들 수 있는 선분이 모두 ${N}$개일 때, "
                 "$x$의 값을 구하시오.",
+                f"$x$개의 팀이 리그전으로 서로 한 번씩 경기를 하였더니 경기가 모두 ${N}$번 열렸다. $x$의 값을 구하시오.",
+                f"서로 다른 $x$가지 색 중에서 2가지를 골라 섞어 새로운 색을 만들 때, 만들 수 있는 색이 모두 ${N}$가지일 때, "
+                "$x$의 값을 구하시오.",
+                f"학생 $x$명 중에서 청소 당번 2명을 뽑는 경우의 수가 ${N}$가지일 때, $x$의 값을 구하시오.",
             ]
         )
         exp = (
@@ -4522,6 +4587,9 @@ def f_count_ways(target, level):
             "$x$의 값을 구하시오.",
             f"$x$개의 팀이 있다. 각 팀이 다른 모든 팀과 홈 경기와 원정 경기를 한 번씩 치렀더니 경기가 "
             f"모두 ${N}$번 열렸다. $x$의 값을 구하시오.",
+            f"$x$명의 선수가 달리기 경주를 하여 1위와 2위를 가리는 경우의 수가 ${N}$가지일 때, $x$의 값을 구하시오.",
+            f"서로 다른 $x$개의 도시 중에서 출발 도시와 도착 도시를 정하여 만든 비행기 노선이 모두 ${N}$가지일 때, "
+            "$x$의 값을 구하시오.",
         ]
         if target == 2:
             del variants[1]  # 2권 중에서 2권을 고른다는 말이 되어 어색하다.
@@ -4819,10 +4887,12 @@ def f_quad_word(target, level):
         small = target if ask_small else target - step
         N = small * (small + step)
         who = "작은" if ask_small else "큰"
-        q = f"연속하는 두 {kind}의 곱이 ${N}$일 때, 두 수 중 {who} 수를 구하시오."
+        # 홀수·짝수는 음수도 있어서 (-17, -15) 같은 답이 또 생기므로 자연수라고 밝힌다.
+        note = "" if kind == "자연수" else " (단, 두 수는 자연수이다.)"
+        q = f"연속하는 두 {kind}의 곱이 ${N}$일 때, 두 수 중 {who} 수를 구하시오.{note}"
         exp = (
             f"작은 수를 $x$라 하면 큰 수는 $x+{step}$이므로 $x(x+{step})={N}$\n\n"
-            f"$x^2 {_tx(step)} - {N}=0$에서 $(x-{small})(x+{small + step})=0$이고 $x>0$이므로 $x={small}$\n\n"
+            f"$x^2 {_tx(step)} - {N}=0$에서 $(x-{small})(x+{small + step})=0$이고 $x$는 자연수이므로 $x={small}$\n\n"
             f"따라서 {who} 수는 ${target}$"
         )
         return q, exp, str(target)

@@ -372,6 +372,59 @@ def show_stopwatch():
 
 
 # ==========================================
+# 오답 벌칙 시간 (문제를 풀다가 틀릴 때마다 스톱워치에 시간을 더한다)
+#  - 문제 풀이 화면에서 "완료 ❯" 를 눌렀는데 정답이 아니면 WRONG_ANSWER_PENALTY_SECONDS 초가 더해진다.
+#    (같은 오답을 또 내도, 빈칸으로 눌러도 틀릴 때마다 더해진다.)
+#  - 스톱워치는 브라우저(앱 화면)에서 돌아가므로, 틀릴 때마다 아래 작은 스크립트를 담은 iframe 을 한 번 띄워
+#    window.parent.__sw.penalize() 를 부른다. 내용이 매번 달라야 iframe 이 새로 만들어지므로 틀린 횟수와
+#    세션 표식을 내용에 넣고, 같은 번호는 두 번 더하지 않게 앱 화면 쪽에도 기록해 둔다.
+#  - 시간을 바꾸려면 WRONG_ANSWER_PENALTY_SECONDS 만 고친다.
+# ==========================================
+WRONG_ANSWER_PENALTY_SECONDS = 5
+
+WRONG_ANSWER_PENALTY_HTML = r"""
+<script>
+(function () {
+  try {
+    var win = window.parent;
+    var key = "__NONCE__";
+    var done = win.__swPenaltyDone || (win.__swPenaltyDone = {});
+    if (!done[key] && win.__sw && typeof win.__sw.penalize === 'function') {
+      done[key] = true;
+      win.__sw.penalize(__PENALTY_MS__);
+    }
+  } catch (e) {}
+  // 이 스크립트를 담은 빈 iframe 이 화면에 간격을 만들지 않도록 접어 둔다. (스톱워치 iframe 과 같은 방식)
+  try {
+    var box = window.frameElement && window.frameElement.closest(
+      '[data-testid="stElementContainer"], [data-testid="element-container"], .stElementContainer, .element-container'
+    );
+    if (box) {
+      box.style.setProperty('position', 'absolute', 'important');
+      box.style.setProperty('width', '0', 'important');
+      box.style.setProperty('height', '0', 'important');
+      box.style.setProperty('overflow', 'hidden', 'important');
+      box.style.setProperty('margin', '0', 'important');
+    }
+  } catch (e) {}
+})();
+</script>
+"""
+
+
+def add_wrong_answer_penalty():
+    """문제를 틀렸을 때 한 번 부른다. 스톱워치에 WRONG_ANSWER_PENALTY_SECONDS 초를 더한다."""
+    if "wrong_answer_token" not in st.session_state:
+        st.session_state.wrong_answer_token = f"{random.getrandbits(40):010x}"
+    count = st.session_state.get("wrong_answer_count", 0) + 1
+    st.session_state.wrong_answer_count = count
+    html = WRONG_ANSWER_PENALTY_HTML.replace(
+        "__NONCE__", f"{st.session_state.wrong_answer_token}-{count}"
+    ).replace("__PENALTY_MS__", str(WRONG_ANSWER_PENALTY_SECONDS * 1000))
+    st.iframe(html, height=1)
+
+
+# ==========================================
 # 스토커 단서 (단서는 두 개: 녹색 장갑, 파란색 시계)
 #  - 문제 선택 화면에서는 두 단서 중 '한 개'만, 무작위로 뽑아서 보여 준다.
 #    (새 문제 세트를 시작할 때마다 다시 뽑는다. 어느 쪽인지는 select_clue 에 들어 있다.)
@@ -6357,7 +6410,8 @@ else:
                     st.session_state.step = "end"
                     st.rerun()
                 else:
-                    st.error("오답입니다. 다시 풀어보세요!")
+                    add_wrong_answer_penalty()
+                    st.error(f"오답입니다. 다시 풀어보세요! (+{WRONG_ANSWER_PENALTY_SECONDS}초)")
 
     # --- 화면 4: 완료 화면 ---
     elif st.session_state.step == "end":

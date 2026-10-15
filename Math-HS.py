@@ -36,6 +36,8 @@ APP_FONT_FAMILY = "'굴림', Gulim, sans-serif"
 #  - 인트로 화면 아래에 'N번째 방문자'로 보여 준다. 숨기려면 SHOW_VISITOR_COUNT 를 False 로 바꾼다.
 #  - TXT 파일 방식은 접속이 동시에 몰려도 숫자가 꼬이지 않게 잠금(lock)을 걸고, 쓰는 도중 꺼져도 파일이 깨지지 않게
 #    임시 파일에 쓴 뒤 바꿔치기(os.replace)한다. 저장에 실패해도(읽기 전용 폴더 등) 앱은 그대로 동작한다.
+#    (스크립트는 접속마다 처음부터 다시 실행되므로, 잠금은 st.cache_resource 로 서버에 하나만 만들어 모두가 함께 쓴다.)
+#    파일을 읽다가 일시적으로 실패하면 기록을 .broken 으로 옮기지 않고 그 방문만 세지 않는다.
 #  - 주의: Streamlit Community Cloud 처럼 재배포·재시작 때 파일이 초기화되는 곳에서는 TXT 파일 기록이 초기화된다.
 #    그런 곳에서는 Upstash 를 켜 두어야 숫자가 유지된다.
 # ==========================================
@@ -43,7 +45,15 @@ SHOW_VISITOR_COUNT = True
 VISITOR_COUNT_FILE = Path(
     os.environ.get("VISITOR_COUNT_FILE") or Path(__file__).resolve().parent / "visitor_count.txt"
 )
-_visitor_lock = threading.Lock()
+@st.cache_resource(show_spinner=False)
+def _get_visitor_lock():
+    """모든 접속이 함께 쓰는 잠금을 돌려준다.
+
+    Streamlit 은 접속(세션)마다, 그리고 버튼을 누를 때마다 이 파일을 처음부터 다시 실행한다.
+    그래서 잠금을 파일 맨 위에서 threading.Lock() 으로 만들면 매번 새 잠금이 생겨 동시 접속을 막지 못한다.
+    st.cache_resource 는 서버 프로세스 안에서 한 번만 만들고 계속 같은 것을 돌려준다.
+    """
+    return threading.Lock()
 
 
 def _load_visitor_total():
@@ -51,6 +61,7 @@ def _load_visitor_total():
 
     숫자가 아닌 내용이 들어 있으면(잘못 고쳤을 때 등) 기록을 덮어써서 날리지 않도록
     옆에 .broken 으로 보관해 두고 0 에서 새로 시작한다.
+    읽기만 일시적으로 막힌 경우(OSError)는 손상이 아니므로 그대로 올려 보낸다. (기록은 건드리지 않는다.)
     """
     try:
         # utf-8-sig: 메모장이 파일 맨 앞에 붙이는 BOM 이 있어도 읽을 수 있다.
@@ -64,7 +75,7 @@ def _load_visitor_total():
         return total
     except FileNotFoundError:
         return 0
-    except (ValueError, OSError):
+    except ValueError:
         try:
             os.replace(VISITOR_COUNT_FILE, f"{VISITOR_COUNT_FILE}.broken")
         except OSError:
@@ -116,16 +127,16 @@ def record_visit():
     if upstash is not None:
         # Upstash 를 켜 둔 경우: 실패해도 TXT 파일로 대신 세지 않는다. (두 숫자가 섞이면 번호가 뒤죽박죽이 된다.)
         return _upstash_incr(*upstash)
-    with _visitor_lock:
-        total = _load_visitor_total() + 1
+    with _get_visitor_lock():
         tmp_path = f"{VISITOR_COUNT_FILE}.tmp"
         try:
+            total = _load_visitor_total() + 1
             VISITOR_COUNT_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.write(f"{total}\n")
             os.replace(tmp_path, VISITOR_COUNT_FILE)
         except OSError as e:
-            print(f"[방문자 수] 저장하지 못했습니다: {e}")
+            print(f"[방문자 수] 읽거나 저장하지 못했습니다: {e}")
             return None
         return total
 

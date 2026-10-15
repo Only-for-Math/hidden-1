@@ -81,12 +81,12 @@ def record_visit():
 # ==========================================
 # 비밀의 방
 #  - 앱 안의 어떤 버튼이든(파이썬 화면의 모든 버튼 + 감옥 열쇠 퍼즐 화면의 모든 버튼)
-#    누를 때마다 딱 한 번씩 25만분의 1 확률로 주사위를 굴린다.
+#    누를 때마다 딱 한 번씩 2만분의 1 확률로 주사위를 굴린다.
 #  - 당첨되면 그 버튼의 원래 동작은 실행되지 않고 곧바로 비밀의 방으로 이동한다.
 #  - 동작을 확인해 보고 싶으면 SECRET_ROOM_ODDS 를 1 로 바꾸면 항상 이동한다.
 #    (감옥 퍼즐 화면 쪽 확률은 아래 PRISON_KEY_PUZZLE_HTML 안의 SECRET_ROOM_ODDS)
 # ==========================================
-SECRET_ROOM_ODDS = 250_000
+SECRET_ROOM_ODDS = 20_000
 _secret_rng = random.SystemRandom()
 
 
@@ -99,7 +99,7 @@ def go_secret_room():
 
 
 def lucky_button(label, *args, dg=None, **kwargs):
-    """st.button과 똑같이 쓰되, 클릭될 때마다 25만분의 1 확률로 비밀의 방으로 보낸다.
+    """st.button과 똑같이 쓰되, 클릭될 때마다 2만분의 1 확률로 비밀의 방으로 보낸다.
 
     dg에 st.columns의 칼럼 등을 넘기면 그 안에 버튼이 그려진다.
     """
@@ -937,7 +937,7 @@ PRISON_KEY_PUZZLE_HTML = """
     display:flex !important; align-items:center !important; justify-content:center !important;
   }
 
-  /* ---------- 비밀의 방 (아무 버튼이든 25만분의 1 확률로 열린다) ---------- */
+  /* ---------- 비밀의 방 (아무 버튼이든 2만분의 1 확률로 열린다) ---------- */
   #secretRoom{
     position:fixed; inset:0; z-index:2000;
     display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
@@ -1146,7 +1146,7 @@ PRISON_KEY_PUZZLE_HTML = """
 
 <div id="secretRoom" hidden>
   <div class="sr-title cinzel-font">비밀의 방</div>
-  <div class="sr-text">방금 누른 버튼이 25만분의 1의 확률을 뚫었다.<br>이곳에 도착한 것은 아주 드문 일이다.</div>
+  <div class="sr-text">방금 누른 버튼이 2만분의 1의 확률을 뚫었다.<br>이곳에 도착한 것은 아주 드문 일이다.</div>
   <button id="btnSecretBack" class="btn-gold px-8 py-3 rounded-xl font-bold text-sm">돌아가기</button>
 </div>
 
@@ -2080,10 +2080,10 @@ PRISON_KEY_PUZZLE_HTML = """
      초기화 및 이벤트 연결
   ======================================================== */
   /* ========================================================
-     비밀의 방: 이 화면의 어떤 버튼이든 누를 때마다 25만분의 1 확률로
+     비밀의 방: 이 화면의 어떤 버튼이든 누를 때마다 2만분의 1 확률로
      원래 동작 대신 비밀의 방이 열린다. (1 로 바꾸면 항상 열린다)
   ======================================================== */
-  const SECRET_ROOM_ODDS = 250000;
+  const SECRET_ROOM_ODDS = 20000;
   function rollSecretRoom(){
     const buf = new Uint32Array(1);
     const limit = Math.floor(4294967296 / SECRET_ROOM_ODDS) * SECRET_ROOM_ODDS;
@@ -4991,7 +4991,7 @@ elif st.session_state.step == "prison_key":
         ).replace("__PRISON_CLUE__", html_escape(prison_clue_text()))
     st.iframe(st.session_state.prison_key_html, height=900)
 
-# --- 비밀의 방: 어떤 버튼이든 25만분의 1 확률로 누르면 도착하는 화면 ---
+# --- 비밀의 방: 어떤 버튼이든 2만분의 1 확률로 누르면 도착하는 화면 ---
 elif st.session_state.step == "secret_room":
     st.markdown(
         f"""
@@ -5037,7 +5037,7 @@ elif st.session_state.step == "secret_room":
         <div class="secret-room">
             <div class="sr-title">비밀의 방</div>
             <div class="sr-text">
-                방금 누른 버튼이 25만분의 1의 확률을 뚫었습니다.<br>
+                방금 누른 버튼이 2만분의 1의 확률을 뚫었습니다.<br>
                 이곳에 도착한 것은 아주 드문 일입니다.
             </div>
         </div>

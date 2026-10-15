@@ -1,10 +1,13 @@
 import itertools
+import json
 import math
 import os
 import random
 import re
 import threading
 import time
+import urllib.parse
+import urllib.request
 from fractions import Fraction
 from html import escape as html_escape
 from pathlib import Path
@@ -17,17 +20,24 @@ TIMEMACHINE_ANIM_DURATION_MS = 4500
 APP_FONT_FAMILY = "'굴림', Gulim, sans-serif"
 
 # ==========================================
-# 방문자 수 기록 (외부 TXT 파일에 저장)
-#  - 누군가 앱에 접속할 때마다(새 세션이 열릴 때마다) 방문자 수를 1 늘려서 TXT 파일에 저장한다.
+# 방문자 수 기록 (Upstash Redis 또는 외부 TXT 파일에 저장)
+#  - 누군가 앱에 접속할 때마다(새 세션이 열릴 때마다) 방문자 수를 1 늘려서 저장한다.
 #  - 같은 사람이 버튼을 눌러 스크립트가 다시 실행돼도 늘지 않는다. (세션당 딱 한 번)
 #    페이지를 새로고침하거나 새 탭으로 열면 새 세션이라 1 늘어난다.
-#  - 저장 파일은 이 파일 옆의 visitor_count.txt 이고, 안에는 방문자 수 숫자 하나만 들어 있다.
+#  - Upstash Redis 를 쓰면 서버가 잠들었다 깨어나거나 다시 배포돼도 숫자가 유지된다.
+#    환경변수(Streamlit Cloud 는 앱 설정의 Secrets)에 UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN 을
+#    넣으면 켜진다. 저장 이름은 UPSTASH_COUNTER_KEY 로 바꿀 수 있다. (기본값: visitor_count_hs)
+#    숫자는 Upstash 콘솔에서 확인하거나 고친다. 숫자를 올리는 INCR 는 한 번에 처리돼서 동시 접속에도 꼬이지 않는다.
+#    Upstash 를 켰는데 호출에 실패하면 번호가 뒤섞이지 않도록 그 방문은 세지 않고, 숫자도 보여 주지 않는다.
+#  - Upstash 설정이 없으면(내 컴퓨터에서 실행할 때 등) TXT 파일에 저장한다.
+#    저장 파일은 이 파일 옆의 visitor_count.txt 이고, 안에는 방문자 수 숫자 하나만 들어 있다.
 #    메모장으로 열어 숫자를 확인하거나 고칠 수 있다. (예: 0 으로 바꾸면 처음부터 다시 센다)
 #    서버를 껐다 켜도 이어서 센다. 파일 위치는 환경변수 VISITOR_COUNT_FILE 로 바꿀 수 있다.
 #  - 인트로 화면 아래에 'N번째 방문자'로 보여 준다. 숨기려면 SHOW_VISITOR_COUNT 를 False 로 바꾼다.
-#  - 접속이 동시에 몰려도 숫자가 꼬이지 않게 잠금(lock)을 걸고, 쓰는 도중 꺼져도 파일이 깨지지 않게
+#  - TXT 파일 방식은 접속이 동시에 몰려도 숫자가 꼬이지 않게 잠금(lock)을 걸고, 쓰는 도중 꺼져도 파일이 깨지지 않게
 #    임시 파일에 쓴 뒤 바꿔치기(os.replace)한다. 저장에 실패해도(읽기 전용 폴더 등) 앱은 그대로 동작한다.
-#  - 주의: Streamlit Community Cloud 처럼 재배포·재시작 때 파일이 초기화되는 곳에서는 기록도 초기화된다.
+#  - 주의: Streamlit Community Cloud 처럼 재배포·재시작 때 파일이 초기화되는 곳에서는 TXT 파일 기록이 초기화된다.
+#    그런 곳에서는 Upstash 를 켜 두어야 숫자가 유지된다.
 # ==========================================
 SHOW_VISITOR_COUNT = True
 VISITOR_COUNT_FILE = Path(
@@ -62,8 +72,50 @@ def _load_visitor_total():
         return 0
 
 
+def _secret(name):
+    """환경변수에서 값을 읽고, 없으면 Streamlit Secrets 에서 읽는다. 둘 다 없으면 빈 문자열."""
+    value = os.environ.get(name)
+    if not value:
+        try:
+            value = st.secrets.get(name)
+        except Exception:  # secrets.toml 이 없는 곳(내 컴퓨터 등)에서는 못 읽어도 괜찮다.
+            value = None
+    return str(value).strip() if value else ""
+
+
+def _upstash_settings():
+    """Upstash 접속 정보 (주소, 토큰, 저장 이름)를 돌려준다. 주소나 토큰이 없으면 None."""
+    base = _secret("UPSTASH_REDIS_REST_URL").rstrip("/")
+    token = _secret("UPSTASH_REDIS_REST_TOKEN")
+    if not base or not token:
+        return None
+    if not base.startswith(("http://", "https://")):
+        base = "https://" + base  # 주소만 붙여 넣어도 동작하게 한다.
+    return base, token, _secret("UPSTASH_COUNTER_KEY") or "visitor_count_hs"
+
+
+def _upstash_incr(base, token, key):
+    """Upstash 에서 방문자 수를 1 올리고, 올린 뒤의 값을 돌려준다. 실패하면 None."""
+    req = urllib.request.Request(
+        f"{base}/incr/{urllib.parse.quote(key, safe='')}",
+        method="POST",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            total = int(json.load(resp)["result"])
+    except Exception as e:
+        print(f"[방문자 수] Upstash 호출에 실패했습니다: {e}")
+        return None
+    return total if total > 0 else None
+
+
 def record_visit():
-    """방문자 수를 1 늘려 TXT 파일에 저장하고, 이번 방문이 몇 번째인지 돌려준다. 저장에 실패하면 None."""
+    """방문자 수를 1 늘려 저장하고, 이번 방문이 몇 번째인지 돌려준다. 저장에 실패하면 None."""
+    upstash = _upstash_settings()
+    if upstash is not None:
+        # Upstash 를 켜 둔 경우: 실패해도 TXT 파일로 대신 세지 않는다. (두 숫자가 섞이면 번호가 뒤죽박죽이 된다.)
+        return _upstash_incr(*upstash)
     with _visitor_lock:
         total = _load_visitor_total() + 1
         tmp_path = f"{VISITOR_COUNT_FILE}.tmp"

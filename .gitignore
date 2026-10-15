@@ -4,6 +4,9 @@ visitor_count.txt
 visitor_count.txt.tmp
 visitor_count.txt.broken
 
+# Upstash 토큰이 들어 있는 Streamlit 비밀 설정 (절대 저장소에 올리지 않는다.)
+.streamlit/secrets.toml
+
 # 교과서 PDF (저작물이라 저장소에 올리지 않는다. 내 컴퓨터에만 둔다.)
 중1/
 중2/

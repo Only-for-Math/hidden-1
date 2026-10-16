@@ -33,7 +33,7 @@ APP_FONT_FAMILY = "'굴림', Gulim, sans-serif"
 #    저장 파일은 이 파일 옆의 visitor_count.txt 이고, 안에는 방문자 수 숫자 하나만 들어 있다.
 #    메모장으로 열어 숫자를 확인하거나 고칠 수 있다. (예: 0 으로 바꾸면 처음부터 다시 센다)
 #    서버를 껐다 켜도 이어서 센다. 파일 위치는 환경변수 VISITOR_COUNT_FILE 로 바꿀 수 있다.
-#  - 인트로 화면 아래에 'N번째 방문자'로 보여 준다. 숨기려면 SHOW_VISITOR_COUNT 를 False 로 바꾼다.
+#  - 인트로 화면의 사진 위쪽에 'N번째 방문자'로 보여 준다. 숨기려면 SHOW_VISITOR_COUNT 를 False 로 바꾼다.
 #  - TXT 파일 방식은 접속이 동시에 몰려도 숫자가 꼬이지 않게 잠금(lock)을 걸고, 쓰는 도중 꺼져도 파일이 깨지지 않게
 #    임시 파일에 쓴 뒤 바꿔치기(os.replace)한다. 저장에 실패해도(읽기 전용 폴더 등) 앱은 그대로 동작한다.
 #    (스크립트는 접속마다 처음부터 다시 실행되므로, 잠금은 st.cache_resource 로 서버에 하나만 만들어 모두가 함께 쓴다.)
@@ -173,13 +173,85 @@ def lucky_button(label, *args, dg=None, **kwargs):
     return clicked
 
 
-# 인트로·도착 화면의 오른쪽 아래 '다음으로' 버튼을 왼쪽으로 조금 옮긴다.
-# 폰처럼 좁은 화면(640px 이하)에서는 칼럼이 세로로 쌓여 버튼이 전체 너비를 쓰므로 옮기지 않는다.
-NEXT_BUTTON_SHIFT_CSS = """
-@media (min-width: 641px) {
-    div[data-testid="stButton"] {
-        transform: translateX(-1.5rem);
-    }
+# 인트로·도착 화면: 가로 사진(1024x572)을 세로로 돌려 화면 전체에 깔고, '다음으로' 버튼은 사진 아래쪽에 둔다.
+#  - 사진 카드(.photo-card)는 화면 전체를 덮고, 사진은 ::before 를 90도 돌려서 깐다. (돌린 사진은 9:16 에 가깝다.)
+#    화면이 9:16 보다 가로로 넓으면(PC 등) 카드는 9:16 세로 띠로 가운데에 두고, 양옆은 화면 배경색으로 둔다.
+#  - 사진 주소는 각 화면의 .xxx-card::before 에서 정한다. 사진 테두리를 잘라내고 싶으면 --photo-zoom 을 1 보다 크게 준다.
+#  - 카드 안의 글씨는 <span>, 방문자 수 표시(.visitor-count)는 <div> 로 넣는다.
+#  - 이 화면에는 버튼이 '다음으로' 하나뿐이므로 stButton 전체를 화면 아래 가운데에 붙인다. (폰의 홈 바 영역은 피해서 올린다.)
+FULLSCREEN_PHOTO_CSS = """
+/* 사진이 화면 전체를 덮으므로 스크롤 막대가 생기지 않게 한다. */
+.stApp, .stMain, [data-testid="stMain"], section.main {
+    overflow: hidden !important;
+}
+.photo-card {
+    --vh: 100vh;
+    --card-w: min(100vw, calc(var(--vh) * 0.5586));
+    position: fixed;
+    top: 0;
+    left: 50%;
+    z-index: 1;
+    width: var(--card-w);
+    height: var(--vh);
+    transform: translateX(-50%);
+    overflow: hidden;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 0 28px;
+    background-color: #000000;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.7);
+}
+@supports (height: 100dvh) {
+    .photo-card { --vh: 100dvh; }
+}
+.photo-card::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: var(--vh);
+    height: var(--card-w);
+    transform: translate(-50%, -50%) rotate(90deg) scale(var(--photo-zoom, 1));
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+.photo-card > span {
+    position: relative;
+    z-index: 1;
+}
+/* 방문자 수: 사진 위쪽 가운데에 뜨는 반투명 알약 */
+.photo-card .visitor-count {
+    position: absolute;
+    z-index: 1;
+    top: 5vh;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 3px 11px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.5);
+    color: #f1f1f1;
+    font-size: 10px !important;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+}
+.photo-card .visitor-count b {
+    margin-right: 1px;
+    color: #ffd27a;
+    font-size: 12px;
+}
+div[data-testid="stButton"] {
+    position: fixed !important;
+    left: 50%;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 7vh);
+    transform: translateX(-50%);
+    z-index: 2;
+    width: auto !important;
+}
+div[data-testid="stButton"] > button {
+    min-width: 168px;
 }
 """
 
@@ -637,7 +709,7 @@ div[data-testid="stAlert"] {
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
 
-/* 개발자 옵션 체크박스: 글씨 뒤에 흰색 상자 */
+/* 개발자 옵션 체크박스: 눈에 띄지 않게 매우 희미하게 보이도록 한다. (opacity 를 높이면 또렷해진다.) */
 div[data-testid="stCheckbox"] {
     width: fit-content !important;
     max-width: 100%;
@@ -647,6 +719,7 @@ div[data-testid="stCheckbox"] {
     border: 1px solid rgba(0, 0, 0, 0.12);
     border-radius: 12px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+    opacity: 0.15;
 }
 """
 
@@ -4571,7 +4644,20 @@ FAST_PASS_PROBLEM = (
 # ==========================================
 # Streamlit 메인 로직 및 GUI 구성
 # ==========================================
-st.set_page_config(page_title="중생대 문제", layout="centered")
+# 브라우저 탭(헤더) 제목: 학년 선택부터 타임머신까지 중생대 화면에서는 "현재 시대 : 중생대",
+# 그 밖의 화면(인트로·난이도 선택, 타임머신 도착 뒤의 조선시대)에서는 게임 이름을 보여 준다.
+MESOZOIC_STEPS = {
+    "select_grade", "select_problem", "solve", "end",
+    "stalker_clue", "secret_room", "timemachine",
+}
+st.set_page_config(
+    page_title=(
+        "현재 시대 : 중생대"
+        if st.session_state.get("step") in MESOZOIC_STEPS
+        else "인천수학축전 방탈출게임"
+    ),
+    layout="centered",
+)
 
 # 새로 접속한 세션이면 방문자 수를 1 올린다. (버튼을 눌러 스크립트가 다시 실행돼도 한 번만 센다.)
 if "visit_number" not in st.session_state:
@@ -4617,36 +4703,14 @@ if st.session_state.step == "intro":
         div[data-testid="stTextInput"] label {{
             display: none !important;
         }}
-        .intro-card {{
-            position: relative;
-            width: 90%;
-            max-width: 800px;
-            aspect-ratio: 16 / 9;
-            margin: 40px auto 20px auto;
+        .intro-card::before {{
             background-image: url("https://i.postimg.cc/657sHLjT/Agent-Image-A-plain-flat-gray-background-completely-filling-the-frame-overlaid-with-a-subtle-natu.png");
-            background-size: contain;
-            background-repeat: no-repeat;
-            background-position: center;
-            border-radius: 12px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 30px;
-            box-sizing: border-box;
-        }}
-        .visitor-count {{
-            margin-top: 28px;
-            text-align: center;
-            color: #7b8190;
-            font-size: 12px !important;
-            letter-spacing: 1px;
         }}
         .intro-text {{
             color: #1a1a1a !important;
-            font-size: 24px !important;
+            font-size: 18px !important;
             font-weight: bold !important;
-            letter-spacing: 2px;
+            letter-spacing: 1px;
             text-align: center;
             word-break: keep-all;
         }}
@@ -4666,11 +4730,16 @@ if st.session_state.step == "intro":
             color: #000000 !important;
             border-color: #999999 !important;
         }}
-        {NEXT_BUTTON_SHIFT_CSS}
+        {FULLSCREEN_PHOTO_CSS}
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+    # 이번 접속이 몇 번째 방문인지 사진 위쪽에 작게 보여 준다. (저장에 실패해 번호가 없으면 숨긴다.)
+    visitor_html = ""
+    if SHOW_VISITOR_COUNT and st.session_state.visit_number:
+        visitor_html = f"<div class='visitor-count'><b>{st.session_state.visit_number:,}</b>번째 방문자</div>"
 
     text_placeholder = st.empty()
     full_text = "임시 텍스트입니다"
@@ -4680,31 +4749,21 @@ if st.session_state.step == "intro":
         for char in full_text:
             current_text += char
             text_placeholder.markdown(
-                f"<div class='intro-card'><span class='intro-text'>{current_text}</span></div>",
+                f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{current_text}</span></div>",
                 unsafe_allow_html=True,
             )
             time.sleep(0.15)
         st.session_state.intro_text_done = True
     else:
         text_placeholder.markdown(
-            f"<div class='intro-card'><span class='intro-text'>{full_text}</span></div>",
+            f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{full_text}</span></div>",
             unsafe_allow_html=True,
         )
 
-    # 버튼 오른쪽 정렬을 위해 st.columns 사용
-    st.write("")
-    col1, col2, col3 = st.columns([6, 2, 2])
-    with col3:
-        if lucky_button("다음으로", use_container_width=True):
-            st.session_state.step = "select_difficulty"
-            st.rerun()
-
-    # 이번 접속이 몇 번째 방문인지 작게 보여 준다. (저장에 실패해 번호가 없으면 숨긴다.)
-    if SHOW_VISITOR_COUNT and st.session_state.visit_number:
-        st.markdown(
-            f"<div class='visitor-count'>{st.session_state.visit_number:,}번째 방문자</div>",
-            unsafe_allow_html=True,
-        )
+    # 버튼은 CSS 로 사진 아래쪽 가운데에 붙는다.
+    if lucky_button("다음으로"):
+        st.session_state.step = "select_difficulty"
+        st.rerun()
 
 # --- 화면 0-1: 난이도 선택 (인트로와 같은 검은 배경, 상·중·하 버튼 3개) ---
 #  - 스토커 단서는 문제 선택 화면에서 나온다. 시작 화면과 이 화면에서는 나오지 않는다.
@@ -4927,7 +4986,7 @@ elif st.session_state.step == "arrival":
     st.markdown(
         f"""
         <style>
-        /* 텍스트 창과 버튼은 조선시대 그림 위가 아니라 검은 배경 위에 둔다.
+        /* 한지 사진 카드는 조선시대 그림 위가 아니라 검은 배경 위에 둔다.
            (조선시대 그림은 타임머신 도착 애니메이션에서만 보인다.) */
         .stApp {{
             background-color: #000000 !important;
@@ -4940,28 +4999,17 @@ elif st.session_state.step == "arrival":
             display: none !important;
         }}
         .arrival-card {{
-            position: relative;
-            width: 90%;
-            max-width: 800px;
-            aspect-ratio: 16 / 9;
-            margin: 60px auto 20px auto;
-            background-image: url("https://i.postimg.cc/d7D5pjGh/Agent-Image-An-aged-weathered-sheet-of-thick-traditional-Korean-mulberry-paper-hanji-from-the-J.png");
-            background-size: contain;
-            background-repeat: no-repeat;
-            background-position: center;
-            border-radius: 12px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 30px;
-            box-sizing: border-box;
+            /* 1 이면 사진을 화면에 딱 맞추고, 1 보다 크면 그만큼 확대해 가장자리를 잘라낸다. */
+            --photo-zoom: 1;
+        }}
+        .arrival-card::before {{
+            background-image: url("https://i.postimg.cc/cJBPKDHB/Agent-Image-An-aged-weathered-sheet-of-thick-traditional-Korean-mulberry-paper-hanji-from-the-J.png");
         }}
         .arrival-text {{
             color: #000000 !important;
-            font-size: 24px !important;
+            font-size: 18px !important;
             font-weight: bold !important;
-            letter-spacing: 2px;
+            letter-spacing: 1px;
             text-align: center;
             word-break: keep-all;
         }}
@@ -4980,7 +5028,7 @@ elif st.session_state.step == "arrival":
             color: #000000 !important;
             border-color: #999999 !important;
         }}
-        {NEXT_BUTTON_SHIFT_CSS}
+        {FULLSCREEN_PHOTO_CSS}
         </style>
         """,
         unsafe_allow_html=True,
@@ -4994,24 +5042,22 @@ elif st.session_state.step == "arrival":
         for char in full_text:
             current_text += char
             text_placeholder.markdown(
-                f"<div class='arrival-card'><span class='arrival-text'>{current_text}</span></div>",
+                f"<div class='photo-card arrival-card'><span class='arrival-text'>{current_text}</span></div>",
                 unsafe_allow_html=True,
             )
             time.sleep(0.15)
         st.session_state.arrival_text_done = True
     else:
         text_placeholder.markdown(
-            f"<div class='arrival-card'><span class='arrival-text'>{full_text}</span></div>",
+            f"<div class='photo-card arrival-card'><span class='arrival-text'>{full_text}</span></div>",
             unsafe_allow_html=True,
         )
 
+    # 버튼은 CSS 로 사진 아래쪽 가운데에 붙는다.
     if st.session_state.arrival_text_done:
-        st.write("")
-        col1, col2, col3 = st.columns([6, 2, 2])
-        with col3:
-            if lucky_button("다음으로", use_container_width=True):
-                st.session_state.step = "prison_key"
-                st.rerun()
+        if lucky_button("다음으로"):
+            st.session_state.step = "prison_key"
+            st.rerun()
 
 # --- 화면 7: 감옥 열쇠 퍼즐 (파이프 퍼즐을 풀어야 열쇠를 시도할 수 있다) ---
 elif st.session_state.step == "prison_key":
@@ -5263,12 +5309,12 @@ else:
     # --- 화면 1: 학년 선택 ---
     if st.session_state.step == "select_grade":
         readable_box(
-            "<h2>중생대 문제</h2><p>문제를 풀 학년을 선택하세요.</p>",
+            "<h2>현재 시대 : 중생대</h2><p>학년을 선택해주세요.</p>",
             gap_below=True,
         )
 
         col1, col2, col3 = st.columns(3)
-        if lucky_button("고1 문제 선택", use_container_width=True, dg=col1):
+        if lucky_button("고1 문제", use_container_width=True, dg=col1):
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(1, st.session_state.difficulty)
             )
@@ -5276,7 +5322,7 @@ else:
             reset_stalker_clue()
             st.session_state.step = "select_problem"
             st.rerun()
-        if lucky_button("고2 문제 선택", use_container_width=True, dg=col2):
+        if lucky_button("고2 문제", use_container_width=True, dg=col2):
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(2, st.session_state.difficulty)
             )
@@ -5284,7 +5330,7 @@ else:
             reset_stalker_clue()
             st.session_state.step = "select_problem"
             st.rerun()
-        if lucky_button("고3 문제 선택", use_container_width=True, dg=col3):
+        if lucky_button("고3 문제", use_container_width=True, dg=col3):
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(3, st.session_state.difficulty)
             )

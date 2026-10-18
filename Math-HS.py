@@ -150,6 +150,9 @@ def record_visit():
 #    (감옥 퍼즐 화면 쪽 확률은 아래 PRISON_KEY_PUZZLE_HTML 안의 SECRET_ROOM_ODDS)
 # ==========================================
 SECRET_ROOM_ODDS = 20_000
+# 비밀의 방의 '돌아가기' 버튼은 이 비밀번호를 넣어야 눌린다. (운영팀만 풀 수 있게 잠가 둔다.)
+#  - 감옥 퍼즐 화면 쪽 비밀의 방은 아래 PRISON_KEY_PUZZLE_HTML 안의 SECRET_ROOM_PASSWORD 를 쓴다.
+SECRET_ROOM_PASSWORD = "0805"
 _secret_rng = random.SystemRandom()
 
 
@@ -1080,8 +1083,12 @@ PRISON_KEY_PUZZLE_HTML = """
     padding:24px; text-align:center; color:var(--parchment);
     background:radial-gradient(ellipse at 50% 30%, #4a2a12 0%, #1a0e07 55%, #0a0604 100%);
   }
-  #secretRoom .sr-title{ font-size:2rem; letter-spacing:.2em; color:var(--gold-bright); text-shadow:0 0 22px rgba(252,224,128,.55); }
+  #secretRoom .sr-title{ position:relative; top:-30px; font-size:2rem; letter-spacing:.2em; color:var(--gold-bright); text-shadow:0 0 22px rgba(252,224,128,.55); }
   #secretRoom .sr-text{ font-size:.95rem; line-height:1.8; word-break:keep-all; }
+  #secretRoom .sr-pass{ width:9rem; padding:6px 12px; border-radius:8px; text-align:center; font-size:.85rem; color:var(--parchment); background:rgba(255,255,255,.08); border:1px solid rgba(252,224,128,.35); outline:none; }
+  #secretRoom .sr-pass:focus{ border-color:var(--gold-bright); }
+  #secretRoom .sr-pass::placeholder{ color:rgba(243,233,220,.45); }
+  #secretRoom #btnSecretBack:disabled{ opacity:.35; cursor:not-allowed; transform:none !important; filter:none !important; }
 
   /* ---------- game screen ---------- */
   #gameView{ position:relative; min-height:100%; padding:20px 12px 28px; display:flex; flex-direction:column; align-items:center; }
@@ -1281,9 +1288,10 @@ PRISON_KEY_PUZZLE_HTML = """
 </div>
 
 <div id="secretRoom" hidden>
-  <div class="sr-title cinzel-font">비밀의 방</div>
-  <div class="sr-text">방금 누른 버튼이 2만분의 1의 확률을 뚫었다.<br>이곳에 도착한 것은 아주 드문 일이다.</div>
-  <button id="btnSecretBack" class="btn-gold px-8 py-3 rounded-xl font-bold text-sm">돌아가기</button>
+  <div class="sr-title cinzel-font">Lucky!</div>
+  <div class="sr-text">축하합니다. 당신은 1 / 20,000 (0.005%)을 뚫었습니다.<br>현재 부스에 있는 운영팀에게 이 사실을 알려주세요!</div>
+  <input id="srPassword" class="sr-pass" type="password" placeholder="비밀번호" autocomplete="off" inputmode="numeric">
+  <button id="btnSecretBack" class="btn-gold px-5 py-2 rounded-lg font-bold text-xs" disabled>🔒 돌아가기</button>
 </div>
 
 <div id="toast" role="status" aria-live="polite"></div>
@@ -1698,6 +1706,10 @@ PRISON_KEY_PUZZLE_HTML = """
     document.getElementById('finishView').hidden = name !== 'finish';
     document.getElementById('gameView').hidden = name !== 'game';
     fitFrameToParentViewport(); // 안내문을 숨기거나 보인 뒤(위치가 바뀐 뒤)에 맞춘다
+    if(name === 'finish'){
+      // 클리어 화면이 뜨면 브라우저 탭(헤더) 제목을 "클리어"로 바꾼다.
+      try{ window.parent.document.title = '클리어'; }catch(e){ /* 접근이 막히면 제목은 그대로 둔다 */ }
+    }
     if(name === 'game' && !opts.skipRegen){
       GAME_LEVELS[0] = generateLevelSafe(1, 8);
       loadLevel();
@@ -2238,7 +2250,17 @@ PRISON_KEY_PUZZLE_HTML = """
         room.hidden = false;
       }
     }, true);
-    document.getElementById('btnSecretBack').addEventListener('click', ()=>{ room.hidden = true; });
+    // 돌아가기 버튼은 비밀번호를 맞게 넣어야 눌린다. (운영팀만 풀 수 있게 잠가 둔다.)
+    const SECRET_ROOM_PASSWORD = '0805';
+    const pass = document.getElementById('srPassword');
+    const back = document.getElementById('btnSecretBack');
+    function syncSecretLock(){
+      const ok = pass.value === SECRET_ROOM_PASSWORD;
+      back.disabled = !ok;
+      back.textContent = ok ? '돌아가기' : '🔒 돌아가기';
+    }
+    pass.addEventListener('input', syncSecretLock);
+    back.addEventListener('click', ()=>{ room.hidden = true; pass.value = ''; syncSecretLock(); });
   }
 
   function boot(){
@@ -2325,7 +2347,7 @@ def get_timemachine_animation_html(
           transition: opacity 0.8s ease-out;
       ">
         <div id="tm-label" style="font-size:15px; color:#555555; font-weight:700; margin-bottom:10px; letter-spacing:1px;">
-          타임머신 가동 중...
+          조선시대로 이동 중<span id="tm-dots" style="display:inline-block; width:1.2em; text-align:left;">.</span>
         </div>
         <div id="tm-counter" style="font-size:clamp(26px, 9vw, 44px); font-weight:900; color:#111111; letter-spacing:1px; white-space:nowrap;">
           {start_value:,}
@@ -2383,6 +2405,28 @@ def get_timemachine_animation_html(
         var cardEl = document.getElementById('tm-card');
         var startTime = null;
 
+        // "이동 중" 뒤의 점이 . → .. → ... → . 순서로 계속 반복된다. (도착하면 멈춘다.)
+        // 브라우저 탭(헤더) 제목도 같은 문구로 바꾼다. 다른 쪽(Streamlit)이 제목을 바꾸면 더 이상 덮어쓰지 않는다.
+        var dotsEl = document.getElementById('tm-dots');
+        var parentDoc = null;
+        try {{ parentDoc = window.parent.document; }} catch (e) {{}}
+        var lastTitle = null;
+        var dotCount = 1;
+        function drawDots() {{
+          var dots = '.'.repeat(dotCount);
+          if (dotsEl) dotsEl.textContent = dots;
+          if (parentDoc) {{
+            if (lastTitle !== null && parentDoc.title !== lastTitle) {{ parentDoc = null; return; }}
+            lastTitle = '조선시대로 이동 중' + dots;
+            parentDoc.title = lastTitle;
+          }}
+        }}
+        drawDots();
+        var dotTimer = setInterval(function() {{
+          dotCount = dotCount % 3 + 1;
+          drawDots();
+        }}, 400);
+
         function easeOutExpo(t) {{
           return t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);
         }}
@@ -2405,6 +2449,10 @@ def get_timemachine_animation_html(
             requestAnimationFrame(step);
           }} else {{
             counterEl.textContent = String(end);
+            clearInterval(dotTimer);
+            if (parentDoc && (lastTitle === null || parentDoc.title === lastTitle)) {{
+              parentDoc.title = '현재 위치 : 조선시대';
+            }}
             labelEl.textContent = '도착';
             bgFadeEl.style.opacity = '1';
             
@@ -4645,15 +4693,21 @@ FAST_PASS_PROBLEM = (
 # Streamlit 메인 로직 및 GUI 구성
 # ==========================================
 # 브라우저 탭(헤더) 제목: 학년 선택부터 타임머신까지 중생대 화면에서는 "현재 시대 : 중생대",
-# 그 밖의 화면(인트로·난이도 선택, 타임머신 도착 뒤의 조선시대)에서는 게임 이름을 보여 준다.
+# 타임머신 도착 뒤의 조선시대 화면(한지 도착 화면·감옥)에서는 "현재 위치 : 조선시대",
+# 그 밖의 화면(인트로·난이도 선택)에서는 게임 이름을 보여 준다.
+# (타임머신이 움직이는 동안의 제목은 도착 애니메이션 안에서 따로 바꾼다.)
 MESOZOIC_STEPS = {
     "select_grade", "select_problem", "solve", "end",
     "stalker_clue", "secret_room", "timemachine",
 }
+JOSEON_STEPS = {"arrival", "prison_key"}
+_current_step = st.session_state.get("step")
 st.set_page_config(
     page_title=(
         "현재 시대 : 중생대"
-        if st.session_state.get("step") in MESOZOIC_STEPS
+        if _current_step in MESOZOIC_STEPS
+        else "현재 위치 : 조선시대"
+        if _current_step in JOSEON_STEPS
         else "인천수학축전 방탈출게임"
     ),
     layout="centered",
@@ -5125,6 +5179,9 @@ elif st.session_state.step == "secret_room":
             color: #fce080;
             text-shadow: 0 0 22px rgba(252, 224, 128, 0.55);
             margin-bottom: 18px;
+            /* 아래 글과의 간격은 그대로 두고, 제목만 위로 올린다. */
+            position: relative;
+            top: -30px;
         }}
         .secret-room .sr-text {{
             font-size: 17px;
@@ -5142,30 +5199,77 @@ elif st.session_state.step == "secret_room":
             background-color: #e0e0e0 !important;
             color: #000000 !important;
         }}
+        /* 돌아가기 버튼은 작게 만들고, 비밀번호를 맞게 넣기 전에는 흐리게 잠가 둔다. */
+        .st-key-secret_room_back {{
+            align-self: center;
+        }}
+        div[data-testid="stButton"] > button {{
+            width: auto !important;
+            min-width: 110px;
+            min-height: 32px !important;
+            padding: 4px 20px !important;
+            font-size: 14px !important;
+        }}
+        div[data-testid="stButton"] > button:disabled {{
+            opacity: 0.35 !important;
+            cursor: not-allowed !important;
+        }}
+        div[data-testid="stTextInput"] {{
+            width: 200px;
+            max-width: 100%;
+            margin: 0 auto;
+        }}
+        div[data-baseweb="input"] input {{
+            text-align: center;
+        }}
+        button[data-testid="stPasswordInputVisibilityButton"],
+        button[aria-label="View password"],
+        button[aria-label="Show password"],
+        button[aria-label="Hide password"] {{
+            display: none !important;
+        }}
         </style>
         <div class="secret-room">
-            <div class="sr-title">비밀의 방</div>
+            <div class="sr-title">Lucky!</div>
             <div class="sr-text">
-                방금 누른 버튼이 2만분의 1의 확률을 뚫었습니다.<br>
-                이곳에 도착한 것은 아주 드문 일입니다.
+                축하합니다. 당신은 1 / 20,000 (0.005%)을 뚫었습니다.<br>
+                현재 부스에 있는 운영팀에게 이 사실을 알려주세요!
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.balloons()
+    # 풍선은 도착했을 때 한 번만 날린다. (비밀번호를 넣을 때마다 스크립트가 다시 실행되기 때문)
+    if not st.session_state.get("secret_room_celebrated"):
+        st.balloons()
+        st.session_state.secret_room_celebrated = True
 
     # 감옥 퍼즐 화면에서 이곳으로 왔다면 돌아갈 때 게임이 새로 로드되므로, 그때의 스톱워치 값을 다시 만든다.
     st.session_state.pop("prison_key_html", None)
 
     # 비밀의 방 안의 버튼은 다시 주사위를 굴리지 않는 일반 버튼이다.
-    _, mid_col, _ = st.columns([1, 1, 1])
-    with mid_col:
-        if st.button("돌아가기", use_container_width=True):
-            st.session_state.step = st.session_state.get(
-                "secret_room_prev_step", "select_grade"
-            )
-            st.rerun()
+    # 돌아가기 버튼은 비밀번호를 맞게 넣어야 눌린다. (Enter 를 눌러야 입력이 반영된다.)
+    secret_pw = st.text_input(
+        "비밀번호",
+        type="password",
+        key="secret_room_pw",
+        label_visibility="collapsed",
+        placeholder="비밀번호",
+    )
+    secret_unlocked = secret_pw == SECRET_ROOM_PASSWORD
+    if secret_pw and not secret_unlocked:
+        st.error("비밀번호가 올바르지 않습니다.")
+    if st.button(
+        "돌아가기" if secret_unlocked else "🔒 돌아가기",
+        key="secret_room_back",
+        disabled=not secret_unlocked,
+    ):
+        del st.session_state["secret_room_pw"]
+        st.session_state.pop("secret_room_celebrated", None)
+        st.session_state.step = st.session_state.get(
+            "secret_room_prev_step", "select_grade"
+        )
+        st.rerun()
 
 # --- 단서 화면: 검은 화면에 단서(녹색 장갑 또는 파란색 시계)를 보여 준 뒤 원래 화면으로 자동 복귀 ---
 elif st.session_state.step == "stalker_clue":

@@ -150,7 +150,8 @@ def record_visit():
 # ==========================================
 SECRET_ROOM_ODDS = 20_000
 # 비밀의 방의 '돌아가기' 버튼은 이 비밀번호를 넣어야 눌린다. (운영팀만 풀 수 있게 잠가 둔다.)
-#  - 감옥 퍼즐 화면 쪽 비밀의 방은 아래 PRISON_KEY_PUZZLE_HTML 안의 SECRET_ROOM_PASSWORD 를 쓴다.
+#  - 감옥 퍼즐 화면 쪽 비밀의 방은 아래 PRISON_KEY_PUZZLE_HTML 안의 SECRET_ROOM_PASSWORD_HASH 를 쓴다.
+#    (비밀번호를 바꾸면 그 해시값도 다시 계산해 넣는다. 계산 방법은 그 줄의 주석에 적혀 있다.)
 SECRET_ROOM_PASSWORD = "0805"
 _secret_rng = random.SystemRandom()
 
@@ -945,9 +946,9 @@ PRISON_KEY_PUZZLE_HTML = """
 
   /* ---------- 용의자 화면 ---------- */
   #suspectsView{ position:fixed; inset:0; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  /* 제목은 '단서를 외워오셨나요?' 상자 바로 위에 붙여 둔다. */
   .suspects-title{
-    position:fixed; top:28px; left:50%; transform:translateX(-50%);
-    z-index:5; width:100%; max-width:500px; padding:0 20px;
+    width:100%; margin:0 0 14px; padding:0;
     font-size:1.5rem; line-height:1.4; letter-spacing:.02em; color:var(--gold-bright);
     text-shadow:0 3px 10px rgba(0,0,0,.7); text-align:center;
   }
@@ -1114,15 +1115,15 @@ PRISON_KEY_PUZZLE_HTML = """
     <div class="prison-quest">
       <p class="quest-story"><span>우물의 물길을 고친 뒤 정신을 차려보니, <b>낯선 감옥</b>에 갇혀 있다.</span><span>일곱 개의 열쇠가 걸려 있지만 아직은 만질 수조차 없다.</span></p>
       <ol class="quest-steps">
-        <li id="questStep1"><span class="step-no">1</span><span>게임 화면의 <b>파이프 퍼즐</b>을 끝까지 연결해 물길을 완성한다</span></li>
-        <li id="questStep2"><span class="step-no">2</span><span>그 상태로 감옥에 돌아와 <b>열쇠</b>를 시도해 본다</span></li>
+        <li id="questStep1"><span class="step-no">1</span><span>게임 화면의 <b>파이프 퍼즐</b>을 끝까지 연결해 물길을 완성하세요</span></li>
+        <li id="questStep2"><span class="step-no">2</span><span>그 상태로 감옥에 돌아와 <b>열쇠</b>를 시도해 보세요</span></li>
       </ol>
       <button id="btnGoGame" class="btn-gold go-game-btn">
         <span aria-hidden="true">🧩</span> 게임 하러 가기
       </button>
     </div>
 
-    <div class="rack-caption prison-sub" id="prisonSub">일곱 개의 열쇠 중 자물쇠를 여는 것은 단 하나뿐이다</div>
+    <div class="rack-caption prison-sub" id="prisonSub">일곱 개의 열쇠 중 자물쇠를 여는 열쇠는 단 하나뿐이에요</div>
     <div class="key-rack" id="keyRack"></div>
   </div>
 </div>
@@ -1133,8 +1134,8 @@ PRISON_KEY_PUZZLE_HTML = """
 <div id="suspectsView" hidden>
   <div class="prison-bg"></div>
   <div class="prison-vignette"></div>
-  <div class="suspects-title cinzel-font">용의자 3명 중<br>스토커를 찾아라</div>
   <div class="suspects-content">
+    <div class="suspects-title cinzel-font">용의자 3명 중<br>스토커를 찾아라</div>
     <div class="clue-box">
       <div class="clue-question">단서를 외워오셨나요?</div>
     </div>
@@ -1444,12 +1445,12 @@ PRISON_KEY_PUZZLE_HTML = """
       btn.addEventListener('click', ()=>{
         audio.init();
         if(!keysUnlocked){
-          showToast('아직 열쇠를 시도할 수 없다. 먼저 퍼즐을 풀어라', 'fail');
+          showToast('아직 열쇠를 시도할 수 없어요. 먼저 퍼즐을 풀어 보세요!', 'fail');
           audio.playBuzz();
           return;
         }
         if(i === 6){ playUnlockCelebration(); }
-        else { showToast('이 열쇠가 아닌 듯 하다..', 'fail'); audio.playBuzz(); }
+        else { showToast('이 열쇠는 아닌 것 같아요. 다른 열쇠를 시도해 보세요!', 'fail'); audio.playBuzz(); }
       });
       rack.appendChild(btn);
     }
@@ -1466,8 +1467,8 @@ PRISON_KEY_PUZZLE_HTML = """
     const sub = document.getElementById('prisonSub');
     if(sub){
       sub.textContent = keysUnlocked
-        ? '일곱 개의 열쇠 중 자물쇠를 여는 것은 단 하나뿐이다'
-        : '열쇠는 아직 잠겨 있다 — 먼저 퍼즐을 풀어 단서를 찾아라';
+        ? '일곱 개의 열쇠 중 자물쇠를 여는 열쇠는 단 하나뿐이에요'
+        : '열쇠는 아직 잠겨 있어요. 먼저 퍼즐을 풀어 단서를 찾아 보세요!';
     }
   }
 
@@ -1603,7 +1604,7 @@ PRISON_KEY_PUZZLE_HTML = """
           applyView('found'); // 스토커를 찾았다는 안내 화면으로 넘어간다
         }else{
           const penalized = addWrongSuspectPenalty(s.id);
-          showToast(penalized ? '아니다... 다른 사람이다 (+3분)' : '아니다... 다른 사람이다', 'fail');
+          showToast(penalized ? '스토커가 아니에요. 다른 용의자를 골라 보세요 (+3분)' : '스토커가 아니에요. 다른 용의자를 골라 보세요', 'fail');
           audio.playBuzz();
         }
       });
@@ -2247,11 +2248,18 @@ PRISON_KEY_PUZZLE_HTML = """
       }
     }, true);
     // 돌아가기 버튼은 비밀번호를 맞게 넣어야 눌린다. (운영팀만 풀 수 있게 잠가 둔다.)
-    const SECRET_ROOM_PASSWORD = '0805';
+    // 비밀번호는 소스에 그대로 적지 않고 해시값(FNV-1a 32비트, 'lucky:' + 비밀번호)만 둔다.
+    // (소스를 훑어봐도 바로 보이지 않게 하는 정도의 장치이다. 비밀번호를 바꾸면 이 값도 다시 계산해서 넣는다.)
+    const SECRET_ROOM_PASSWORD_HASH = 0x8230e4d4;
+    function secretHash(s){
+      let h = 0x811c9dc5;
+      for(let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+      return h >>> 0;
+    }
     const pass = document.getElementById('srPassword');
     const back = document.getElementById('btnSecretBack');
     function syncSecretLock(){
-      const ok = pass.value === SECRET_ROOM_PASSWORD;
+      const ok = secretHash('lucky:' + pass.value) === SECRET_ROOM_PASSWORD_HASH;
       back.disabled = !ok;
       back.textContent = ok ? '돌아가기' : '🔒 돌아가기';
     }
@@ -5707,10 +5715,13 @@ FAST_PASS_PROBLEM = (
 # (타임머신이 움직이는 동안의 제목은 도착 애니메이션 안에서 따로 바꾼다.)
 MESOZOIC_STEPS = {
     "select_grade", "select_problem", "solve", "end",
-    "stalker_clue", "secret_room", "timemachine",
+    "stalker_clue", "timemachine",
 }
 JOSEON_STEPS = {"arrival", "prison_key"}
 _current_step = st.session_state.get("step")
+if _current_step == "secret_room":
+    # 비밀의 방은 오기 직전 화면의 시대를 따른다. (조선시대 화면에서 왔다면 "현재 위치 : 조선시대")
+    _current_step = st.session_state.get("secret_room_prev_step", "select_grade")
 st.set_page_config(
     page_title=(
         "현재 시대 : 중생대"
@@ -6035,7 +6046,7 @@ elif st.session_state.step == "timemachine":
                     st.session_state.timemachine_success = True
                     st.rerun()
                 else:
-                    st.error("오답입니다. 정답을 다시 확인해보세요.")
+                    st.error("정답이 아니에요. 앞에서 본 정답을 다시 확인해 보세요!")
 
             st.write("")
             st.write("")
@@ -6224,7 +6235,7 @@ elif st.session_state.step == "secret_room":
             cursor: not-allowed !important;
         }}
         div[data-testid="stTextInput"] {{
-            width: 200px;
+            width: 240px;
             max-width: 100%;
             margin: 0 auto;
         }}
@@ -6263,11 +6274,11 @@ elif st.session_state.step == "secret_room":
         type="password",
         key="secret_room_pw",
         label_visibility="collapsed",
-        placeholder="비밀번호",
+        placeholder="비밀번호 입력 후 Enter",
     )
     secret_unlocked = secret_pw == SECRET_ROOM_PASSWORD
     if secret_pw and not secret_unlocked:
-        st.error("비밀번호가 올바르지 않습니다.")
+        st.error("비밀번호가 맞지 않아요. 운영팀에게 문의해 주세요.")
     if st.button(
         "돌아가기" if secret_unlocked else "🔒 돌아가기",
         key="secret_room_back",
@@ -6422,7 +6433,7 @@ else:
     # --- 화면 1: 학년 선택 ---
     if st.session_state.step == "select_grade":
         readable_box(
-            "<h2>현재 시대 : 중생대</h2><p>학년을 선택해주세요.</p>",
+            "<h2>현재 시대 : 중생대</h2><p>본인의 현재 학년을 선택해주세요.</p>",
             gap_below=True,
         )
 
@@ -6464,7 +6475,7 @@ else:
     elif st.session_state.step == "select_problem":
         readable_box(
             f"<h3>{html_escape(st.session_state.title)}</h3>"
-            "<p>풀고 싶은 문제를 고르세요.</p>"
+            "<p>3문제를 모두 풀거나, 매우 어려움 문제를 풀면 아래에 버튼이 생깁니다</p>"
         )
         st.markdown("---")
 
@@ -6593,7 +6604,7 @@ else:
                         f"▶ **정답:** {current_ans}\n\n▶ **풀이:**\n{current_exp}"
                     )
                 elif pw != "":
-                    st.error("암호가 올바르지 않습니다.")
+                    st.error("암호가 맞지 않아요. 다시 입력해 주세요.")
 
         st.write("")
         col1, col2, col3 = st.columns([6, 2, 2])
@@ -6624,7 +6635,7 @@ else:
                     st.rerun()
                 else:
                     add_wrong_answer_penalty()
-                    st.error(f"오답입니다. 다시 풀어보세요! (+{WRONG_ANSWER_PENALTY_SECONDS}초)")
+                    st.error(f"아쉽지만 정답이 아니에요. 다시 풀어 보세요! (+{WRONG_ANSWER_PENALTY_SECONDS}초)")
 
     # --- 화면 4: 완료 화면 ---
     elif st.session_state.step == "end":

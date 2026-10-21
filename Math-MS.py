@@ -256,7 +256,36 @@ div[data-testid="stButton"] {
 div[data-testid="stButton"] > button {
     min-width: 200px;
 }
+
+/* 안내 글씨(인트로·조선시대 도착 안내): 궁서체 + 무지개빛 네온.
+   - 네온: 무지개 여섯 색 그림자가 글자 둘레를 둥글게 돌며 번쩍인다. (여섯 그림자가 60도씩 떨어져 함께 돈다)
+     한 바퀴 도는 시간은 neon-orbit 의 4s, 도는 반지름은 --neon-r 이다.
+   - 글꼴: 컴퓨터에 깔린 궁서체를 쓴다. (윈도우 '궁서체', 맥 'Gungseo') 깔려 있지 않은 기기에서는 기본 명조체로 보인다. */
+@property --neon-a {
+    syntax: '<angle>';
+    inherits: true;
+    initial-value: 0deg;
+}
+@keyframes neon-orbit {
+    to { --neon-a: 360deg; }
+}
+.stApp .intro-text, .stApp .arrival-text {
+    font-family: '궁서체', '궁서', GungsuhChe, Gungsuh, Gungseo, serif !important;
+    --neon-r: 5px;
+    animation: neon-orbit 4s linear infinite;
+    text-shadow:
+        calc(cos(var(--neon-a)) * var(--neon-r)) calc(sin(var(--neon-a)) * var(--neon-r)) 5px #ff2a2a,
+        calc(cos(var(--neon-a) + 60deg) * var(--neon-r)) calc(sin(var(--neon-a) + 60deg) * var(--neon-r)) 5px #ff9a00,
+        calc(cos(var(--neon-a) + 120deg) * var(--neon-r)) calc(sin(var(--neon-a) + 120deg) * var(--neon-r)) 5px #ffe600,
+        calc(cos(var(--neon-a) + 180deg) * var(--neon-r)) calc(sin(var(--neon-a) + 180deg) * var(--neon-r)) 5px #22e06a,
+        calc(cos(var(--neon-a) + 240deg) * var(--neon-r)) calc(sin(var(--neon-a) + 240deg) * var(--neon-r)) 5px #1e90ff,
+        calc(cos(var(--neon-a) + 300deg) * var(--neon-r)) calc(sin(var(--neon-a) + 300deg) * var(--neon-r)) 5px #b44cff;
+}
 """
+
+
+# 인트로·조선시대 도착 안내의 글자 찍는 속도: 한 글자당 쉬는 시간(초). 예전 0.15초의 3.5배 빠르게. 숫자를 키우면 느려진다.
+TYPING_DELAY_SECONDS = 0.15 / 3.5
 
 
 # ==========================================
@@ -5850,14 +5879,8 @@ if st.session_state.step == "intro":
             color: #1a1a1a !important;
             font-size: 22px !important;
             font-weight: 900 !important;
-            /* 굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
+            /* 궁서체·굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
             -webkit-text-stroke: 0.6px #1a1a1a;
-            /* 네온 느낌: 주황빛이 글자 둘레에 번지도록 번짐 반경이 다른 그림자를 겹친다. (조선시대 도착 화면과 같은 색) */
-            text-shadow:
-                0 0 3px #ff7a1a,
-                0 0 8px #ff7a1a,
-                0 0 16px #ff5a00,
-                0 0 28px #ff3d00;
             letter-spacing: 1px;
             text-align: center;
             word-break: keep-all;
@@ -5906,7 +5929,7 @@ if st.session_state.step == "intro":
                 f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{shown_text}</span></div>",
                 unsafe_allow_html=True,
             )
-            time.sleep(0.15)
+            time.sleep(TYPING_DELAY_SECONDS)
         st.session_state.intro_text_done = True
     else:
         text_placeholder.markdown(
@@ -6163,14 +6186,8 @@ elif st.session_state.step == "arrival":
             color: #000000 !important;
             font-size: 22px !important;
             font-weight: 900 !important;
-            /* 굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
+            /* 궁서체·굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
             -webkit-text-stroke: 0.6px #000000;
-            /* 네온 느낌: 주황빛이 글자 둘레에 번지도록 번짐 반경이 다른 그림자를 겹친다. */
-            text-shadow:
-                0 0 3px #ff7a1a,
-                0 0 8px #ff7a1a,
-                0 0 16px #ff5a00,
-                0 0 28px #ff3d00;
             letter-spacing: 1px;
             text-align: center;
             word-break: keep-all;
@@ -6213,7 +6230,7 @@ elif st.session_state.step == "arrival":
                 f"<div class='photo-card arrival-card'><span class='arrival-text'>{shown_text}</span></div>",
                 unsafe_allow_html=True,
             )
-            time.sleep(0.15)
+            time.sleep(TYPING_DELAY_SECONDS)
         st.session_state.arrival_text_done = True
     else:
         text_placeholder.markdown(

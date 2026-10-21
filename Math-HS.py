@@ -255,7 +255,7 @@ div[data-testid="stButton"] {
     width: auto !important;
 }
 div[data-testid="stButton"] > button {
-    min-width: 168px;
+    min-width: 200px;
 }
 """
 
@@ -4848,8 +4848,8 @@ if st.session_state.step == "intro":
             color: #000000 !important;
             font-weight: bold !important;
             border: 1px solid #cccccc !important;
-            font-size: 13px !important;
-            padding: 6px 16px !important;
+            font-size: 17px !important;
+            padding: 10px 24px !important;
             border-radius: 15px !important;
             box-shadow: 0px 2px 6px rgba(0,0,0,0.4);
             width: auto !important;
@@ -5161,8 +5161,8 @@ elif st.session_state.step == "arrival":
             color: #000000 !important;
             font-weight: bold !important;
             border: 1px solid #cccccc !important;
-            font-size: 15px !important;
-            padding: 8px 22px !important;
+            font-size: 17px !important;
+            padding: 10px 24px !important;
             border-radius: 15px !important;
             box-shadow: 0px 2px 6px rgba(0,0,0,0.4);
         }}

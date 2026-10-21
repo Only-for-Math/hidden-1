@@ -851,7 +851,7 @@ def readable_markdown(md_text):
 
 
 # ==========================================
-# 타임머신 이후 화면에 삽입되는 미니게임: 5x5 나무 파이프 슬라이딩 퍼즐
+# 타임머신 이후 화면에 삽입되는 미니게임: 나무 파이프 슬라이딩 퍼즐 (난이도별 하 4x4 · 중 5x5 · 상 6x6)
 # (원본 게임의 버그 3건을 수정한 버전)
 #  1) 캔버스 리사이즈 시 ctx.scale 누적되던 문제 수정
 #  2) 더블클릭 시 회전이 3번 일어나던 문제 수정 (dblclick 리스너 제거)
@@ -1284,7 +1284,7 @@ PRISON_KEY_PUZZLE_HTML = """
       <div class="flex items-center space-x-2 sm:space-x-3">
         <div class="text-center">
           <span class="text-[10px] uppercase tracking-widest text-amber-500 font-bold block">난이도 / 레벨</span>
-          <span id="txtLevelNum" class="text-xs sm:text-base font-extrabold text-amber-100">5x5 - 스테이지 1</span>
+          <span id="txtLevelNum" class="text-xs sm:text-base font-extrabold text-amber-100">__GRID_SIZE__x__GRID_SIZE__ - 스테이지 1</span>
         </div>
         <div class="h-8 w-px bg-amber-900/50"></div>
         <div class="text-center">
@@ -1817,9 +1817,11 @@ PRISON_KEY_PUZZLE_HTML = """
   /* ========================================================
      파이프 퍼즐 게임 (원본 로직)
   ======================================================== */
+  // 한 변의 칸 수: 파이썬이 난이도에 맞춰 채워 준다. (하=4, 중=5, 상=6 / PIPE_PUZZLE_GRID_SIZE)
+  const PUZZLE_GRID_SIZE = Number('__GRID_SIZE__') || 4;
   let canvas, ctx;
   let boardGrid = [];
-  let boardSize = 5;
+  let boardSize = PUZZLE_GRID_SIZE;
   let totalMoves = 0;
   let interactionMode = 'slide';
   let moveHistory = [];
@@ -1941,7 +1943,7 @@ PRISON_KEY_PUZZLE_HTML = """
 
   function generateSolvableLevel(levelId, minMoves){
     levelId = levelId || 1; minMoves = minMoves || 8;
-    const GRID_SIZE = 5;
+    const GRID_SIZE = PUZZLE_GRID_SIZE;
     const totalCells = GRID_SIZE*GRID_SIZE;
 
     let grid = null;
@@ -1951,7 +1953,7 @@ PRISON_KEY_PUZZLE_HTML = """
       let shuffleAttempts = 0;
       let connected = true;
       do{
-        scrambleGrid(grid, GRID_SIZE, 50 + Math.floor(Math.random()*30));
+        scrambleGrid(grid, GRID_SIZE, Math.round(totalCells*2 + Math.random()*totalCells*1.2));
         connected = solvePipePath(grid, GRID_SIZE).isConnected;
         shuffleAttempts++;
       } while(connected && shuffleAttempts < 15);
@@ -1959,7 +1961,7 @@ PRISON_KEY_PUZZLE_HTML = """
       if(!connected) break;
     } while(rebuildAttempts < 40);
 
-    return { id:levelId, title:`5x5 퍼즐 - 스테이지 ${levelId}`, size:GRID_SIZE, minMoves, grid };
+    return { id:levelId, title:`${GRID_SIZE}x${GRID_SIZE} 퍼즐 - 스테이지 ${levelId}`, size:GRID_SIZE, minMoves, grid };
   }
 
   function getDirection(fromR,fromC,toR,toC){
@@ -2314,7 +2316,7 @@ PRISON_KEY_PUZZLE_HTML = """
     boardSize = levelData.size;
     boardGrid = JSON.parse(JSON.stringify(levelData.grid));
     totalMoves = 0; moveHistory = []; isLevelSolved = false;
-    document.getElementById('txtLevelNum').textContent = '5x5 - 스테이지 1';
+    document.getElementById('txtLevelNum').textContent = `${boardSize}x${boardSize} - 스테이지 1`;
     const banner = document.getElementById('waterStatusBanner');
     banner.classList.add('opacity-0','-translate-y-4'); banner.classList.remove('opacity-100','translate-y-0');
     document.getElementById('modalVictory').classList.add('hidden');
@@ -4753,6 +4755,8 @@ DIFFICULTY_LABELS = {1: "하", 2: "중", 3: "상"}
 # 난이도 선택 버튼에 적는 예상 플레이타임(분). 문제 푸는 시간이 난이도에 따라 늘어나는 것(하 1 : 중 1.5 : 상 2)을
 # 어림해서 잡았다. (문제 3개 약 6~12분 + 타임머신·퍼즐·용의자 지목 등 고정 구간 약 4분) 값만 바꾸면 화면에 반영된다.
 DIFFICULTY_PLAYTIME_MIN = {1: 10, 2: 15, 3: 20}
+# 물길 연결(파이프) 퍼즐 한 변의 칸 수: 하=4x4, 중=5x5, 상=6x6. (감옥 열쇠 퍼즐 화면이 난이도에 맞춰 쓴다)
+PIPE_PUZZLE_GRID_SIZE = {1: 4, 2: 5, 3: 6}
 
 
 def generate_grade_problems(grade, difficulty=1):
@@ -5333,9 +5337,10 @@ elif st.session_state.step == "prison_key":
     if "prison_key_html" not in st.session_state:
         started = st.session_state.get("stopwatch_start", time.monotonic())
         elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
+        grid_size = PIPE_PUZZLE_GRID_SIZE[st.session_state.get("difficulty", 1)]
         st.session_state.prison_key_html = PRISON_KEY_PUZZLE_HTML.replace(
             "__ELAPSED_BEFORE_MS__", str(elapsed_ms)
-        ).replace("__PRISON_CLUE__", html_escape(prison_clue_text()))
+        ).replace("__PRISON_CLUE__", html_escape(prison_clue_text())).replace("__GRID_SIZE__", str(grid_size))
     st.iframe(st.session_state.prison_key_html, height=900)
 
 # --- 비밀의 방: 어떤 버튼이든 2만분의 1 확률로 누르면 도착하는 화면 ---

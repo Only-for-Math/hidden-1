@@ -260,7 +260,7 @@ div[data-testid="stButton"] > button {
 /* 안내 글씨(인트로·조선시대 도착 안내): 궁서체 + 무지개빛 네온.
    - 네온: 무지개 여섯 색 그림자가 글자 둘레를 둥글게 돌며 번쩍인다. (여섯 그림자가 60도씩 떨어져 함께 돈다)
      한 바퀴 도는 시간은 neon-orbit 의 4s, 도는 반지름은 --neon-r 이다.
-     색의 진하기는 아래 여섯 색의 rgba 마지막 숫자(투명도 0.6)로 정한다. 1 에 가까울수록 진하고 0 에 가까울수록 희미하다.
+     색의 진하기는 아래 여섯 색의 rgba 마지막 숫자(투명도 0.4)로 정한다. 1 에 가까울수록 진하고 0 에 가까울수록 희미하다.
    - 글꼴: 컴퓨터에 깔린 궁서체를 쓴다. (윈도우 '궁서체', 맥 'Gungseo') 깔려 있지 않은 기기에서는 기본 명조체로 보인다. */
 @property --neon-a {
     syntax: '<angle>';
@@ -275,12 +275,12 @@ div[data-testid="stButton"] > button {
     --neon-r: 5px;
     animation: neon-orbit 4s linear infinite;
     text-shadow:
-        calc(cos(var(--neon-a)) * var(--neon-r)) calc(sin(var(--neon-a)) * var(--neon-r)) 5px rgba(255, 42, 42, 0.6),
-        calc(cos(var(--neon-a) + 60deg) * var(--neon-r)) calc(sin(var(--neon-a) + 60deg) * var(--neon-r)) 5px rgba(255, 154, 0, 0.6),
-        calc(cos(var(--neon-a) + 120deg) * var(--neon-r)) calc(sin(var(--neon-a) + 120deg) * var(--neon-r)) 5px rgba(255, 230, 0, 0.6),
-        calc(cos(var(--neon-a) + 180deg) * var(--neon-r)) calc(sin(var(--neon-a) + 180deg) * var(--neon-r)) 5px rgba(34, 224, 106, 0.6),
-        calc(cos(var(--neon-a) + 240deg) * var(--neon-r)) calc(sin(var(--neon-a) + 240deg) * var(--neon-r)) 5px rgba(30, 144, 255, 0.6),
-        calc(cos(var(--neon-a) + 300deg) * var(--neon-r)) calc(sin(var(--neon-a) + 300deg) * var(--neon-r)) 5px rgba(180, 76, 255, 0.6);
+        calc(cos(var(--neon-a)) * var(--neon-r)) calc(sin(var(--neon-a)) * var(--neon-r)) 5px rgba(255, 42, 42, 0.4),
+        calc(cos(var(--neon-a) + 60deg) * var(--neon-r)) calc(sin(var(--neon-a) + 60deg) * var(--neon-r)) 5px rgba(255, 154, 0, 0.4),
+        calc(cos(var(--neon-a) + 120deg) * var(--neon-r)) calc(sin(var(--neon-a) + 120deg) * var(--neon-r)) 5px rgba(255, 230, 0, 0.4),
+        calc(cos(var(--neon-a) + 180deg) * var(--neon-r)) calc(sin(var(--neon-a) + 180deg) * var(--neon-r)) 5px rgba(34, 224, 106, 0.4),
+        calc(cos(var(--neon-a) + 240deg) * var(--neon-r)) calc(sin(var(--neon-a) + 240deg) * var(--neon-r)) 5px rgba(30, 144, 255, 0.4),
+        calc(cos(var(--neon-a) + 300deg) * var(--neon-r)) calc(sin(var(--neon-a) + 300deg) * var(--neon-r)) 5px rgba(180, 76, 255, 0.4);
 }
 """
 

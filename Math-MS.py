@@ -1149,7 +1149,7 @@ PRISON_KEY_PUZZLE_HTML = """
         <li id="questStep2"><span class="step-no">2</span><span>그 상태로 감옥에 돌아와 <b>열쇠</b>를 시도해 보세요</span></li>
       </ol>
       <button id="btnGoGame" class="btn-gold go-game-btn">
-        <span aria-hidden="true">🧩</span> 게임 하러 가기
+        <span aria-hidden="true">🧩</span> 물길 연결 하기
       </button>
     </div>
 

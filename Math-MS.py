@@ -750,7 +750,7 @@ def readable_markdown(md_text):
 
 
 # ==========================================
-# 타임머신 이후 화면에 삽입되는 미니게임: 4x4 나무 파이프 슬라이딩 퍼즐
+# 타임머신 이후 화면에 삽입되는 미니게임: 5x5 나무 파이프 슬라이딩 퍼즐
 # (원본 게임의 버그 3건을 수정한 버전)
 #  1) 캔버스 리사이즈 시 ctx.scale 누적되던 문제 수정
 #  2) 더블클릭 시 회전이 3번 일어나던 문제 수정 (dblclick 리스너 제거)
@@ -1183,7 +1183,7 @@ PRISON_KEY_PUZZLE_HTML = """
       <div class="flex items-center space-x-2 sm:space-x-3">
         <div class="text-center">
           <span class="text-[10px] uppercase tracking-widest text-amber-500 font-bold block">난이도 / 레벨</span>
-          <span id="txtLevelNum" class="text-xs sm:text-base font-extrabold text-amber-100">4x4 - 스테이지 1</span>
+          <span id="txtLevelNum" class="text-xs sm:text-base font-extrabold text-amber-100">5x5 - 스테이지 1</span>
         </div>
         <div class="h-8 w-px bg-amber-900/50"></div>
         <div class="text-center">
@@ -1718,7 +1718,7 @@ PRISON_KEY_PUZZLE_HTML = """
   ======================================================== */
   let canvas, ctx;
   let boardGrid = [];
-  let boardSize = 4;
+  let boardSize = 5;
   let totalMoves = 0;
   let interactionMode = 'slide';
   let moveHistory = [];
@@ -1797,7 +1797,8 @@ PRISON_KEY_PUZZLE_HTML = """
       }
       currentPath.pop(); visited.delete(idx); return false;
     }
-    findPath(0,0,[]);
+    // 경로가 모든 칸을 지나가면 빈칸을 둘 자리가 없으므로(5x5 처럼 칸 수가 홀수일 때 생길 수 있다) 다시 찾는다.
+    do{ path = []; visited = new Set(); findPath(0,0,[]); }while(path.length >= totalCells);
 
     const grid = new Array(totalCells).fill(null);
 
@@ -1806,7 +1807,7 @@ PRISON_KEY_PUZZLE_HTML = """
     grid[0] = { type:startPipe.type, rot:startPipe.rot, movable:false, rotatable:false, isStart:true };
 
     const prevPathNode = path[path.length-2];
-    const endInDir = getDirection(3,3, prevPathNode.r, prevPathNode.c);
+    const endInDir = getDirection(GRID_SIZE-1,GRID_SIZE-1, prevPathNode.r, prevPathNode.c);
     const endPipe = getFittingPipeType(endInDir, 2);
     grid[totalCells-1] = { type:endPipe.type, rot:endPipe.rot, movable:false, rotatable:false, isEnd:true };
 
@@ -1837,9 +1838,9 @@ PRISON_KEY_PUZZLE_HTML = """
     return grid;
   }
 
-  function generateSolvable4x4Level(levelId, minMoves){
+  function generateSolvableLevel(levelId, minMoves){
     levelId = levelId || 1; minMoves = minMoves || 8;
-    const GRID_SIZE = 4;
+    const GRID_SIZE = 5;
     const totalCells = GRID_SIZE*GRID_SIZE;
 
     let grid = null;
@@ -1849,7 +1850,7 @@ PRISON_KEY_PUZZLE_HTML = """
       let shuffleAttempts = 0;
       let connected = true;
       do{
-        scrambleGrid(grid, GRID_SIZE, 30 + Math.floor(Math.random()*20));
+        scrambleGrid(grid, GRID_SIZE, 50 + Math.floor(Math.random()*30));
         connected = solvePipePath(grid, GRID_SIZE).isConnected;
         shuffleAttempts++;
       } while(connected && shuffleAttempts < 15);
@@ -1857,7 +1858,7 @@ PRISON_KEY_PUZZLE_HTML = """
       if(!connected) break;
     } while(rebuildAttempts < 40);
 
-    return { id:levelId, title:`4x4 퍼즐 - 스테이지 ${levelId}`, size:GRID_SIZE, minMoves, grid };
+    return { id:levelId, title:`5x5 퍼즐 - 스테이지 ${levelId}`, size:GRID_SIZE, minMoves, grid };
   }
 
   function getDirection(fromR,fromC,toR,toC){
@@ -1951,7 +1952,7 @@ PRISON_KEY_PUZZLE_HTML = """
   function generateLevelSafe(levelId, minMoves){
     let level;
     for(let attempt=0; attempt<60; attempt++){
-      level = generateSolvable4x4Level(levelId, minMoves);
+      level = generateSolvableLevel(levelId, minMoves);
       if(!solvePipePath(level.grid, level.size).isConnected) return level;
     }
     for(let i=0;i<level.grid.length;i++){
@@ -2212,7 +2213,7 @@ PRISON_KEY_PUZZLE_HTML = """
     boardSize = levelData.size;
     boardGrid = JSON.parse(JSON.stringify(levelData.grid));
     totalMoves = 0; moveHistory = []; isLevelSolved = false;
-    document.getElementById('txtLevelNum').textContent = '4x4 - 스테이지 1';
+    document.getElementById('txtLevelNum').textContent = '5x5 - 스테이지 1';
     const banner = document.getElementById('waterStatusBanner');
     banner.classList.add('opacity-0','-translate-y-4'); banner.classList.remove('opacity-100','translate-y-0');
     document.getElementById('modalVictory').classList.add('hidden');

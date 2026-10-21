@@ -6660,7 +6660,7 @@ else:
             st.write("")
             st.markdown("---")
             if lucky_button(
-                "🚀 타임머신 타러 가기", type="primary", use_container_width=True
+                "🚀 타임머신 작동자에게 가기", type="primary", use_container_width=True
             ):
                 st.session_state.step = "timemachine"
                 st.session_state.timemachine_success = False

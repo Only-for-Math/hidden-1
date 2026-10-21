@@ -445,6 +445,73 @@ def hide_streamlit_chrome():
 
 
 # ==========================================
+# 정답 입력칸의 자동 완성 끄기
+#  - 이전에 입력한 답이 키보드 위쪽에 '자동 완성' 칩으로 뜨는 것을 막는다. (입력한 글자는 그대로 보인다.)
+#  - Streamlit 의 autocomplete="off" 만으로는 안드로이드 크롬·삼성 키보드가 무시하는 경우가 있어서,
+#    Streamlit 이 따로 열어 주지 않는 속성(autocorrect·autocapitalize·spellcheck)도 스크립트로 끈다.
+#    이 네 가지가 모두 꺼져 있으면 크롬이 키보드에 '추천 단어 없음'을 알려 주어 추천 줄이 사라진다.
+#  - 자동 완성 기록은 입력칸의 name 을 열쇠로 모으므로, name 을 눌러 줄 때마다 새로 바꿔 이어지지 않게 한다.
+#  - 대상은 입력칸 위에 붙는 이름(aria-label)으로 찾는다. 정답 칸의 이름을 바꾸면 아래 SELECTOR 도 같이 바꾼다.
+# ==========================================
+NO_AUTOFILL_JS_HTML = r"""
+<script>
+(function () {
+  var SELECTOR = 'input[aria-label="정답을 입력하세요 (숫자만 입력):"], input[aria-label="정답 입력"]';
+
+  function freshName() { return 'a' + Math.random().toString(36).slice(2, 10); }
+
+  function patch(el) {
+    if (el.getAttribute('data-no-autofill')) return;
+    el.setAttribute('data-no-autofill', '1');
+    el.setAttribute('autocomplete', 'off');
+    el.setAttribute('autocorrect', 'off');
+    el.setAttribute('autocapitalize', 'off');
+    el.setAttribute('spellcheck', 'false');
+    el.setAttribute('data-lpignore', 'true');      // LastPass
+    el.setAttribute('data-1p-ignore', 'true');     // 1Password
+    el.setAttribute('data-bwignore', 'true');      // Bitwarden
+    el.setAttribute('data-form-type', 'other');    // Dashlane
+    el.setAttribute('name', freshName());
+    el.addEventListener('focus', function () { el.setAttribute('name', freshName()); });
+  }
+
+  function sweep(doc) {
+    try { doc.querySelectorAll(SELECTOR).forEach(patch); } catch (e) {}
+  }
+
+  function watch(doc) {
+    sweep(doc);
+    try {
+      new MutationObserver(function () { sweep(doc); }).observe(doc.documentElement, { childList: true, subtree: true });
+    } catch (e) {}
+  }
+
+  try { watch(window.parent.document); } catch (e) {}
+
+  // 이 스크립트를 담은 빈 iframe 이 화면에 간격을 만들지 않도록 접어 둔다. (스톱워치 iframe 과 같은 방식)
+  try {
+    var box = window.frameElement && window.frameElement.closest(
+      '[data-testid="stElementContainer"], [data-testid="element-container"], .stElementContainer, .element-container'
+    );
+    if (box) {
+      box.style.setProperty('position', 'absolute', 'important');
+      box.style.setProperty('width', '0', 'important');
+      box.style.setProperty('height', '0', 'important');
+      box.style.setProperty('overflow', 'hidden', 'important');
+      box.style.setProperty('margin', '0', 'important');
+    }
+  } catch (e) {}
+})();
+</script>
+"""
+
+
+def disable_answer_autofill():
+    """정답 입력칸에 이전 답이 자동 완성으로 뜨지 않게 한다. (모든 화면에서 한 번 부르면 된다.)"""
+    st.iframe(NO_AUTOFILL_JS_HTML, height=1)
+
+
+# ==========================================
 # 스톱워치 (난이도 선택 화면에서 난이도를 '선택'하면 시작해서, 이후 모든 화면 우측 상단에 작게 보여 준다)
 #  - 분:초.밀리초 (예: 03:25.417) 로 보여 주고, 마지막 화면의 "다음으로"를 누르면 그 시간에서 멈춘다.
 #  - 시작 시각은 서버(파이썬)가 기록하고, 화면은 브라우저에서 계속 올라간다. (버튼을 눌러 스크립트가 다시
@@ -4816,6 +4883,8 @@ if "visit_number" not in st.session_state:
 
 # 모든 화면에서 Streamlit 자체 버튼(상단 툴바·메뉴, Manage app 등)을 숨긴다.
 hide_streamlit_chrome()
+# 정답 입력칸에 이전에 쓴 답이 자동 완성으로 뜨지 않게 한다.
+disable_answer_autofill()
 # 스톱워치가 시작된 뒤(난이도를 고른 뒤)에는 모든 화면 우측 상단에 작게 보여 준다.
 show_stopwatch()
 
@@ -5119,10 +5188,10 @@ elif st.session_state.step == "timemachine":
                 unsafe_allow_html=True,
             )
 
-            # 비밀번호 칸으로 두어, 이전에 쓴 답이 키보드 위쪽 최근 기록(자동 완성)에 뜨지 않게 한다.
+            # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
             tm_answer = st.text_input(
                 "정답 입력",
-                type="password",
+                autocomplete="off",
                 key="tm_answer_input",
                 label_visibility="collapsed",
                 placeholder="숫자를 입력하세요",
@@ -5682,10 +5751,10 @@ else:
         )
         st.write("")
 
-        # 비밀번호 칸으로 두어, 이전에 쓴 답이 키보드 위쪽 최근 기록(자동 완성)에 뜨지 않게 한다.
+        # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
         user_answer = st.text_input(
             "정답을 입력하세요 (숫자만 입력):",
-            type="password",
+            autocomplete="off",
             key="user_answer",
             label_visibility="collapsed",
             placeholder="정답을 입력하세요 (숫자만 입력)",

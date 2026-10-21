@@ -4676,25 +4676,80 @@ def generate_grade_problems(grade, difficulty=1):
 
 
 # ==========================================
-# 빠른 통과 문제 (문제 선택 화면에 문제 번호 없이 빨간 '매우 어려움' 버튼으로 따로 둔 고3 미적분 문제)
+# 빠른 통과 문제 (문제 선택 화면에 문제 번호 없이 빨간 '매우 어려움' 버튼으로 따로 둔, 학년마다 다른 문제)
 #  - 정답이 곧 타임머신 암호 1592 다. 이 문제만 풀어도 타임머신으로 갈 수 있다.
 #  - 풀고 나면 다른 문제처럼 "정답을 기억하세요" 화면에서 정답을 보여 준다.
 #  - 들어가 보고 어려우면 풀이 화면의 "← 문제 목록으로 돌아가기"로 다시 문제 선택 화면에 갈 수 있다.
-#  - 문제를 바꾸려면 정답이 1592 가 되도록 맞춰야 한다. (f(x)=(e^x+1)^3+C, f(0)=600 에서 C=592, f(ln 9)=1000+592)
+#  - 학년(고1·고2·고3)을 고르면 고1은 공통수학1, 고2는 공통수학2, 고3은 미적분 문제가 나온다.
+#    (grade 는 학년 선택 버튼에서 저장한다.)
+#  - 문제를 바꾸려면 정답이 1592 가 되도록 맞춰야 한다. 정답이 곧 타임머신 암호이기 때문이다.
+#    (고1: g(49)=2401-809 / 고2: 798+794 / 고3: f(x)=(e^x+1)^3+C, f(0)=600 에서 C=592, f(ln 9)=1000+592)
+#    고3 미적분 문제는 처음 그대로 둔다.
 # ==========================================
 FAST_PASS_INDEX = 3
-FAST_PASS_TITLE = "[ 고등학교 3학년 수학 · 미적분 ]"
-FAST_PASS_PROBLEM = (
-    "함수 $f(x)$가 모든 실수 $x$에 대하여 다음을 만족시킨다.\n\n"
-    "$$f'(x)=3e^{x}(e^{x}+1)^{2}$$\n\n"
-    "$f(0)=600$일 때, $f(\\ln 9)$의 값을 구하시오.",
-    "*(미적분 · 치환적분 단원)*\n\n"
-    "$t=e^{x}+1$로 놓으면 $dt=e^{x}dx$이므로\n\n"
-    "$$\\int 3e^{x}(e^{x}+1)^{2}dx=\\int 3t^{2}dt=t^{3}+C=(e^{x}+1)^{3}+C$$\n\n"
-    "$f(0)=8+C=600$이므로 $C=592$입니다.\n\n"
-    "따라서 $f(\\ln 9)=(9+1)^{3}+592=1000+592=1592$",
-    "1592",
-)
+# 학년 → (제목, (문제, 풀이, 정답))
+FAST_PASS_BY_GRADE = {
+    1: (
+        "[ 고등학교 1학년 수학 · 공통수학1 ]",
+        (
+            "삼차방정식 $x^{3}-8x^{2}+ax-b=0$ ($a$, $b$는 상수)의 세 근 $\\alpha,\\ \\beta,\\ \\gamma$가 "
+            "$\\alpha^{2}+\\beta^{2}+\\gamma^{2}=48$, $\\alpha^{3}+\\beta^{3}+\\gamma^{3}=335$를 만족시킨다. "
+            "$\\alpha^{2},\\ \\beta^{2},\\ \\gamma^{2}$을 세 근으로 하고 최고차항의 계수가 $1$인 삼차식 $g(x)$에 대하여 "
+            "$g(49)$의 값을 구하시오.",
+            "*(방정식과 부등식 · 삼차방정식의 근과 계수의 관계)*\n\n"
+            "근과 계수의 관계에서 $\\alpha+\\beta+\\gamma=8$, $\\alpha\\beta+\\beta\\gamma+\\gamma\\alpha=a$, "
+            "$\\alpha\\beta\\gamma=b$입니다.\n\n"
+            "$\\alpha^{2}+\\beta^{2}+\\gamma^{2}=8^{2}-2a=48$에서 $a=8$\n\n"
+            "$\\alpha^{3}+\\beta^{3}+\\gamma^{3}=8^{3}-3\\times8\\times a+3b=512-192+3b=335$에서 $b=5$\n\n"
+            "이제 $\\alpha^{2},\\ \\beta^{2},\\ \\gamma^{2}$의 합, 두 개씩 곱한 것의 합, 곱을 구하면\n\n"
+            "$$\\alpha^{2}+\\beta^{2}+\\gamma^{2}=48$$\n\n"
+            "$$\\alpha^{2}\\beta^{2}+\\beta^{2}\\gamma^{2}+\\gamma^{2}\\alpha^{2}=a^{2}-2b\\times8=64-80=-16$$\n\n"
+            "$$\\alpha^{2}\\beta^{2}\\gamma^{2}=b^{2}=25$$\n\n"
+            "이므로 $g(x)=x^{3}-48x^{2}-16x-25$입니다.\n\n"
+            "$$g(49)=49^{2}(49-48)-16\\times49-25=2401-784-25=1592$$\n\n"
+            "(다른 풀이) $f(x)=x^{3}-8x^{2}+8x-5$라 하면 $g(x^{2})=-f(x)f(-x)$이므로 "
+            "$g(49)=-f(7)f(-7)=-2\\times(-796)=1592$",
+            "1592",
+        ),
+    ),
+    2: (
+        "[ 고등학교 2학년 수학 · 공통수학2 ]",
+        (
+            "함수 $f(x)=x^{2}-x-397$에 대하여 방정식 $f(f(x))=x$의 서로 다른 모든 실근의 제곱의 합을 구하시오.",
+            "*(함수 · 합성함수와 이차방정식)*\n\n"
+            "$f(x)=x^{2}-x-397$이므로 임의의 $u$, $v$에 대하여 $f(u)-f(v)=(u-v)(u+v-1)$입니다.\n\n"
+            "$u=f(x)$, $v=x$를 넣으면 $f(f(x))-f(x)=\\{f(x)-x\\}\\{f(x)+x-1\\}$이므로\n\n"
+            "$$f(f(x))-x=\\{f(f(x))-f(x)\\}+\\{f(x)-x\\}=\\{f(x)-x\\}\\{f(x)+x\\}$$\n\n"
+            "따라서 $f(f(x))=x$는 $f(x)=x$ 또는 $f(x)=-x$와 같습니다.\n\n"
+            "• $f(x)=x$, 즉 $x^{2}-2x-397=0$: 판별식 $\\dfrac{D}{4}=1+397=398>0$이므로 서로 다른 두 실근을 갖고, "
+            "근과 계수의 관계에서 두 근의 제곱의 합은 $2^{2}-2\\times(-397)=798$\n\n"
+            "• $f(x)=-x$, 즉 $x^{2}-397=0$: $x=\\pm\\sqrt{397}$이므로 두 근의 제곱의 합은 $397+397=794$\n\n"
+            "두 방정식에 공통인 근이 있다면 $x=-x$에서 $x=0$인데 $f(0)=-397\\ne0$이므로 공통인 근은 없습니다. "
+            "따라서 서로 다른 실근은 모두 $4$개이고\n\n"
+            "$$798+794=1592$$",
+            "1592",
+        ),
+    ),
+    3: (
+        "[ 고등학교 3학년 수학 · 미적분 ]",
+        (
+            "함수 $f(x)$가 모든 실수 $x$에 대하여 다음을 만족시킨다.\n\n"
+            "$$f'(x)=3e^{x}(e^{x}+1)^{2}$$\n\n"
+            "$f(0)=600$일 때, $f(\\ln 9)$의 값을 구하시오.",
+            "*(미적분 · 치환적분 단원)*\n\n"
+            "$t=e^{x}+1$로 놓으면 $dt=e^{x}dx$이므로\n\n"
+            "$$\\int 3e^{x}(e^{x}+1)^{2}dx=\\int 3t^{2}dt=t^{3}+C=(e^{x}+1)^{3}+C$$\n\n"
+            "$f(0)=8+C=600$이므로 $C=592$입니다.\n\n"
+            "따라서 $f(\\ln 9)=(9+1)^{3}+592=1000+592=1592$",
+            "1592",
+        ),
+    ),
+}
+
+
+def fast_pass_for_grade():
+    """지금 고른 학년의 '매우 어려움' 문제: (제목, (문제, 풀이, 정답)). 학년을 모르면 고3 미적분 문제를 쓴다."""
+    return FAST_PASS_BY_GRADE.get(st.session_state.get("grade"), FAST_PASS_BY_GRADE[3])
 
 
 # ==========================================
@@ -4774,7 +4829,15 @@ if st.session_state.step == "intro":
         .intro-text {{
             color: #1a1a1a !important;
             font-size: 18px !important;
-            font-weight: bold !important;
+            font-weight: 900 !important;
+            /* 굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
+            -webkit-text-stroke: 0.6px #1a1a1a;
+            /* 네온 느낌: 주황빛이 글자 둘레에 번지도록 번짐 반경이 다른 그림자를 겹친다. (조선시대 도착 화면과 같은 색) */
+            text-shadow:
+                0 0 3px #ff7a1a,
+                0 0 8px #ff7a1a,
+                0 0 16px #ff5a00,
+                0 0 28px #ff3d00;
             letter-spacing: 1px;
             text-align: center;
             word-break: keep-all;
@@ -4807,21 +4870,27 @@ if st.session_state.step == "intro":
         visitor_html = f"<div class='visitor-count'><b>{st.session_state.visit_number:,}</b>번째 방문자</div>"
 
     text_placeholder = st.empty()
-    full_text = "임시 텍스트입니다"
+    # 줄바꿈은 "\n" 으로 적고, 화면에는 <br> 로 바꿔 보여 준다. (글자를 하나씩 찍는 도중 <br> 태그가 반쯤 보이지 않게)
+    full_text = (
+        "공룡시대를 탈출하기 위해 세 가지 수학 문제를 해결해야 합니다. 모든 문제를 해결하면 타임머신을 작동할 수 있습니다.\n\n"
+        "문제를 푸는 도중 발견하는 용의자에 대한 단서를 잘 기억해 두세요."
+    )
+    full_html = full_text.replace("\n", "<br>")
 
     if not st.session_state.get("intro_text_done", False):
         current_text = ""
         for char in full_text:
             current_text += char
+            shown_text = current_text.replace("\n", "<br>")
             text_placeholder.markdown(
-                f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{current_text}</span></div>",
+                f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{shown_text}</span></div>",
                 unsafe_allow_html=True,
             )
             time.sleep(0.15)
         st.session_state.intro_text_done = True
     else:
         text_placeholder.markdown(
-            f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{full_text}</span></div>",
+            f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{full_html}</span></div>",
             unsafe_allow_html=True,
         )
 
@@ -5073,7 +5142,15 @@ elif st.session_state.step == "arrival":
         .arrival-text {{
             color: #000000 !important;
             font-size: 18px !important;
-            font-weight: bold !important;
+            font-weight: 900 !important;
+            /* 굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
+            -webkit-text-stroke: 0.6px #000000;
+            /* 네온 느낌: 주황빛이 글자 둘레에 번지도록 번짐 반경이 다른 그림자를 겹친다. */
+            text-shadow:
+                0 0 3px #ff7a1a,
+                0 0 8px #ff7a1a,
+                0 0 16px #ff5a00,
+                0 0 28px #ff3d00;
             letter-spacing: 1px;
             text-align: center;
             word-break: keep-all;
@@ -5100,21 +5177,27 @@ elif st.session_state.step == "arrival":
     )
 
     text_placeholder = st.empty()
-    full_text = "임시 텍스트입니다"
+    # 줄바꿈은 "\n" 으로 적고, 화면에는 <br> 로 바꿔 보여 준다. (글자를 하나씩 찍는 도중 <br> 태그가 반쯤 보이지 않게)
+    full_text = (
+        "여기는 조선시대입니다!\n\n"
+        "여러분은 시간여행 도중 이곳에 도착했지만, 우주 대스타와 함께 감옥에 갇혀 있습니다."
+    )
+    full_html = full_text.replace("\n", "<br>")
 
     if not st.session_state.get("arrival_text_done", False):
         current_text = ""
         for char in full_text:
             current_text += char
+            shown_text = current_text.replace("\n", "<br>")
             text_placeholder.markdown(
-                f"<div class='photo-card arrival-card'><span class='arrival-text'>{current_text}</span></div>",
+                f"<div class='photo-card arrival-card'><span class='arrival-text'>{shown_text}</span></div>",
                 unsafe_allow_html=True,
             )
             time.sleep(0.15)
         st.session_state.arrival_text_done = True
     else:
         text_placeholder.markdown(
-            f"<div class='photo-card arrival-card'><span class='arrival-text'>{full_text}</span></div>",
+            f"<div class='photo-card arrival-card'><span class='arrival-text'>{full_html}</span></div>",
             unsafe_allow_html=True,
         )
 
@@ -5430,6 +5513,7 @@ else:
 
         col1, col2, col3 = st.columns(3)
         if lucky_button("고1 문제", use_container_width=True, dg=col1):
+            st.session_state.grade = 1
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(1, st.session_state.difficulty)
             )
@@ -5438,6 +5522,7 @@ else:
             st.session_state.step = "select_problem"
             st.rerun()
         if lucky_button("고2 문제", use_container_width=True, dg=col2):
+            st.session_state.grade = 2
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(2, st.session_state.difficulty)
             )
@@ -5446,6 +5531,7 @@ else:
             st.session_state.step = "select_problem"
             st.rerun()
         if lucky_button("고3 문제", use_container_width=True, dg=col3):
+            st.session_state.grade = 3
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(3, st.session_state.difficulty)
             )
@@ -5470,11 +5556,12 @@ else:
         )
         st.markdown("---")
 
-        # 학년 문제(번호 0, 1, 2) + 따로 떨어진 빨간 '매우 어려움' 문제(고3 미적분, 번호 FAST_PASS_INDEX) 1개.
+        # 학년 문제(번호 0, 1, 2) + 따로 떨어진 빨간 '매우 어려움' 문제(고른 학년의 문제, 번호 FAST_PASS_INDEX) 1개.
         # (이 문제의 정답은 타임머신 암호 1592 다.) 학년 문제가 몇 개든 '매우 어려움' 번호는 그대로이다.
+        fast_title, fast_problem = fast_pass_for_grade()
         n_problems = min(3, len(st.session_state.problems))
         entries = dict(enumerate(st.session_state.problems[:3]))
-        entries[FAST_PASS_INDEX] = FAST_PASS_PROBLEM
+        entries[FAST_PASS_INDEX] = fast_problem
 
         def solved_card(label, ans, color):
             """풀고 난 문제 칸: 완료 표시와 정답을 보여 주는 흰 카드."""
@@ -5507,7 +5594,7 @@ else:
             st.session_state.current_problem = entries[i]
             st.session_state.current_problem_idx = i
             st.session_state.current_title = (
-                FAST_PASS_TITLE if i == FAST_PASS_INDEX else st.session_state.title
+                fast_title if i == FAST_PASS_INDEX else st.session_state.title
             )
             st.session_state.step = "solve"
             st.rerun()
@@ -5520,7 +5607,7 @@ else:
                 elif lucky_button(f"문제 {i+1} 📝", key=f"prob_btn_{i}", use_container_width=True):
                     open_problem(i)
 
-        # 고3 미적분 문제: 문제 번호 없이 빨간 '매우 어려움' 버튼으로 따로 둔다.
+        # 학년별 '매우 어려움' 문제: 문제 번호 없이 빨간 버튼으로 따로 둔다.
         st.markdown(
             """
             <style>
@@ -5546,7 +5633,7 @@ else:
         _, hard_col, _ = st.columns([1, 1, 1])
         with hard_col:
             if FAST_PASS_INDEX in st.session_state.solved_indices:
-                solved_card("매우 어려움", FAST_PASS_PROBLEM[2], "#c62828")
+                solved_card("매우 어려움", fast_problem[2], "#c62828")
             elif lucky_button("매우 어려움", key="fast_pass_btn", use_container_width=True):
                 open_problem(FAST_PASS_INDEX)
 

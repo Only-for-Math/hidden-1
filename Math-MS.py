@@ -5685,25 +5685,90 @@ def generate_grade_problems(grade, difficulty=1):
 
 
 # ==========================================
-# 빠른 통과 문제 (문제 선택 화면에 문제 번호 없이 빨간 '매우 어려움' 버튼으로 따로 둔 고3 미적분 문제)
+# 빠른 통과 문제 (문제 선택 화면에 문제 번호 없이 빨간 '매우 어려움' 버튼으로 따로 둔, 학년마다 다른 문제)
 #  - 정답이 곧 타임머신 암호 1592 다. 이 문제만 풀어도 타임머신으로 갈 수 있다.
 #  - 풀고 나면 다른 문제처럼 "정답을 기억하세요" 화면에서 정답을 보여 준다.
 #  - 들어가 보고 어려우면 풀이 화면의 "← 문제 목록으로 돌아가기"로 다시 문제 선택 화면에 갈 수 있다.
-#  - 문제를 바꾸려면 정답이 1592 가 되도록 맞춰야 한다. (f(x)=(e^x+1)^3+C, f(0)=600 에서 C=592, f(ln 9)=1000+592)
+#  - 학년(중1·중2·중3)을 고르면 그 학년 단원의 문제가 나온다. (grade 는 학년 선택 버튼에서 저장한다.)
+#  - 문제를 바꾸려면 정답이 1592 가 되도록 맞춰야 한다. 정답이 곧 타임머신 암호이기 때문이다.
+#    (중1: 92+120+1380 / 중2: 143+1408+41 / 중3: 976+324+136+104+36+16)
+#    검증 기준: 중1 은 최소공배수 2760 의 약수 32개 전체를 조사해 해가 하나뿐임을 확인했고
+#               (a<b<c 조건이 없으면 해가 3개), 중2 는 삼각형 내부 격자점을 하나씩 세어 확인했다.
 # ==========================================
 FAST_PASS_INDEX = 3
-FAST_PASS_TITLE = "[ 고등학교 3학년 수학 · 미적분 ]"
-FAST_PASS_PROBLEM = (
-    "함수 $f(x)$가 모든 실수 $x$에 대하여 다음을 만족시킨다.\n\n"
-    "$$f'(x)=3e^{x}(e^{x}+1)^{2}$$\n\n"
-    "$f(0)=600$일 때, $f(\\ln 9)$의 값을 구하시오.",
-    "*(미적분 · 치환적분 단원)*\n\n"
-    "$t=e^{x}+1$로 놓으면 $dt=e^{x}dx$이므로\n\n"
-    "$$\\int 3e^{x}(e^{x}+1)^{2}dx=\\int 3t^{2}dt=t^{3}+C=(e^{x}+1)^{3}+C$$\n\n"
-    "$f(0)=8+C=600$이므로 $C=592$입니다.\n\n"
-    "따라서 $f(\\ln 9)=(9+1)^{3}+592=1000+592=1592$",
-    "1592",
-)
+# 학년 → (제목, (문제, 풀이, 정답))
+FAST_PASS_BY_GRADE = {
+    1: (
+        "[ 중학교 1학년 수학 · 매우 어려움 ]",
+        (
+            "세 자연수 $a$, $b$, $c$가 다음 조건을 모두 만족시킨다.\n\n"
+            "(가) $a<b<c$\n\n"
+            "(나) $a$, $b$, $c$의 최소공배수는 $2760$이다.\n\n"
+            "(다) $a$와 $b$의 최대공약수는 $4$, $b$와 $c$의 최대공약수는 $60$, $c$와 $a$의 최대공약수는 $92$이다.\n\n"
+            "$a+b+c$의 값을 구하시오.",
+            "*(소인수분해 · 최대공약수와 최소공배수 단원)*\n\n"
+            "$2760=2^{3}\\times3\\times5\\times23$, $4=2^{2}$, $60=2^{2}\\times3\\times5$, $92=2^{2}\\times23$입니다. "
+            "소수마다 $a$, $b$, $c$ 안에 들어 있는 지수를 따로 생각합니다.\n\n"
+            "① 소수 $2$: 세 최대공약수가 모두 $2^{2}$을 포함하므로 $a$, $b$, $c$는 모두 $2^{2}$ 이상을 갖습니다. "
+            "그런데 어느 최대공약수에도 $2^{3}$은 없으므로 두 수가 동시에 $2^{3}$을 가질 수 없습니다. "
+            "최소공배수에 $2^{3}$이 있으므로 세 수 중 **정확히 한 수**만 $2^{3}$을 갖고 나머지 두 수는 $2^{2}$만 갖습니다.\n\n"
+            "② 소수 $3$: $b$와 $c$의 최대공약수에 $3$이 있으므로 $b$, $c$는 $3$을 갖습니다. "
+            "$a$와 $b$의 최대공약수에는 $3$이 없으므로 $a$는 $3$을 갖지 않습니다.\n\n"
+            "③ 소수 $5$: 같은 이유로 $b$, $c$는 $5$를 갖고 $a$는 갖지 않습니다.\n\n"
+            "④ 소수 $23$: $c$와 $a$의 최대공약수에 $23$이 있으므로 $c$, $a$는 $23$을 갖습니다. "
+            "$a$와 $b$의 최대공약수에는 $23$이 없으므로 $b$는 갖지 않습니다.\n\n"
+            "따라서 세 수가 모두 $2^{2}$만 가질 때의 값은 $a=4\\times23=92$, $b=4\\times15=60$, $c=4\\times345=1380$이고, "
+            "이 중 **한 수만 $2$배**가 됩니다.\n\n"
+            "• $a$가 $2$배: $(184,\\ 60,\\ 1380)$ → $a<b$가 아닙니다.\n\n"
+            "• $c$가 $2$배: $(92,\\ 60,\\ 2760)$ → $a<b$가 아닙니다.\n\n"
+            "• $b$가 $2$배: $(92,\\ 120,\\ 1380)$ → $a<b<c$를 만족합니다.\n\n"
+            "$$a+b+c=92+120+1380=1592$$",
+            "1592",
+        ),
+    ),
+    2: (
+        "[ 중학교 2학년 수학 · 매우 어려움 ]",
+        (
+            "좌표평면 위의 세 점 $\\mathrm{O}(0,\\,0)$, $\\mathrm{A}(78,\\,0)$, $\\mathrm{B}(8,\\,42)$를 꼭짓점으로 하는 "
+            "삼각형 $\\mathrm{OAB}$의 내부에 있는 점 중에서 $x$좌표와 $y$좌표가 모두 정수인 점의 개수를 구하시오. "
+            "(삼각형의 변 위의 점은 내부에 포함하지 않는다.)",
+            "*(일차함수와 그래프 · 도형의 성질 단원)*\n\n"
+            "점 $\\mathrm{B}$에서 $x$축에 내린 수선의 발을 $\\mathrm{H}(8,\\,0)$이라 하면, 삼각형 $\\mathrm{OAB}$는 "
+            "선분 $\\mathrm{BH}$에 의해 직각삼각형 $\\mathrm{OHB}$와 $\\mathrm{HAB}$로 나뉩니다.\n\n"
+            "① 선분 $\\mathrm{BH}$ 위(양 끝점 제외)에는 $(8,\\,1),\\ (8,\\,2),\\ \\cdots,\\ (8,\\,41)$의 $41$개의 점이 있습니다.\n\n"
+            "② 삼각형 $\\mathrm{OHB}$ (밑변 $8$, 높이 $42$): 이 삼각형을 반으로 하는 직사각형의 내부에는 정수점이 "
+            "$7\\times41=287$개 있고, 대각선 $\\mathrm{OB}$ 위에는 $8$과 $42$의 최대공약수가 $2$이므로 $2-1=1$개"
+            "($(4,\\,21)$)가 있습니다. 나머지 $286$개는 대각선 양쪽에 똑같이 나뉘므로 $\\dfrac{286}{2}=143$개입니다.\n\n"
+            "③ 삼각형 $\\mathrm{HAB}$ (밑변 $70$, 높이 $42$): 직사각형의 내부에는 정수점이 $69\\times41=2829$개 있고, "
+            "대각선 $\\mathrm{AB}$ 위에는 $70$과 $42$의 최대공약수가 $14$이므로 $14-1=13$개가 있습니다. "
+            "나머지 $2816$개를 반으로 나누어 $\\dfrac{2816}{2}=1408$개입니다.\n\n"
+            "$$143+1408+41=1592$$",
+            "1592",
+        ),
+    ),
+    3: (
+        "[ 중학교 3학년 수학 · 매우 어려움 ]",
+        (
+            "이차방정식 $x^{2}-2nx-1953=0$의 두 근이 모두 정수가 되도록 하는 모든 자연수 $n$의 값의 합을 구하시오.",
+            "*(이차방정식 · 다항식의 곱셈과 인수분해 단원)*\n\n"
+            "두 근을 $p$, $q$라 하면 근과 계수의 관계에서\n\n"
+            "$$p+q=2n,\\quad pq=-1953$$\n\n"
+            "곱이 음수이므로 두 근의 부호가 다릅니다. $p=e,\\ q=-d$ ($d$, $e$는 $de=1953$인 자연수, $d<e$)로 놓으면 "
+            "$2n=e-d$, 즉 $n=\\dfrac{e-d}{2}$입니다.\n\n"
+            "$1953=3^{2}\\times7\\times31$이므로 약수는 $1,\\ 3,\\ 7,\\ 9,\\ 21,\\ 31,\\ 63,\\ 93,\\ 217,\\ 279,\\ 651,\\ 1953$이고, "
+            "곱이 $1953$인 쌍 $(d,\\ e)$는\n\n"
+            "$$(1,\\ 1953),\\ (3,\\ 651),\\ (7,\\ 279),\\ (9,\\ 217),\\ (21,\\ 93),\\ (31,\\ 63)$$\n\n"
+            "입니다. 모두 $e-d$가 짝수이므로 $n=976,\\ 324,\\ 136,\\ 104,\\ 36,\\ 16$이고\n\n"
+            "$$976+324+136+104+36+16=1592$$",
+            "1592",
+        ),
+    ),
+}
+
+
+def fast_pass_for_grade():
+    """지금 고른 학년의 '매우 어려움' 문제: (제목, (문제, 풀이, 정답)). 학년을 모르면 중3 문제를 쓴다."""
+    return FAST_PASS_BY_GRADE.get(st.session_state.get("grade"), FAST_PASS_BY_GRADE[3])
 
 
 # ==========================================
@@ -5783,7 +5848,15 @@ if st.session_state.step == "intro":
         .intro-text {{
             color: #1a1a1a !important;
             font-size: 18px !important;
-            font-weight: bold !important;
+            font-weight: 900 !important;
+            /* 굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
+            -webkit-text-stroke: 0.6px #1a1a1a;
+            /* 네온 느낌: 주황빛이 글자 둘레에 번지도록 번짐 반경이 다른 그림자를 겹친다. (조선시대 도착 화면과 같은 색) */
+            text-shadow:
+                0 0 3px #ff7a1a,
+                0 0 8px #ff7a1a,
+                0 0 16px #ff5a00,
+                0 0 28px #ff3d00;
             letter-spacing: 1px;
             text-align: center;
             word-break: keep-all;
@@ -5816,21 +5889,27 @@ if st.session_state.step == "intro":
         visitor_html = f"<div class='visitor-count'><b>{st.session_state.visit_number:,}</b>번째 방문자</div>"
 
     text_placeholder = st.empty()
-    full_text = "임시 텍스트입니다"
+    # 줄바꿈은 "\n" 으로 적고, 화면에는 <br> 로 바꿔 보여 준다. (글자를 하나씩 찍는 도중 <br> 태그가 반쯤 보이지 않게)
+    full_text = (
+        "공룡시대를 탈출하기 위해 세 가지 수학 문제를 해결해야 합니다. 모든 문제를 해결하면 타임머신을 작동할 수 있습니다.\n\n"
+        "문제를 푸는 도중 발견하는 용의자에 대한 단서를 잘 기억해 두세요."
+    )
+    full_html = full_text.replace("\n", "<br>")
 
     if not st.session_state.get("intro_text_done", False):
         current_text = ""
         for char in full_text:
             current_text += char
+            shown_text = current_text.replace("\n", "<br>")
             text_placeholder.markdown(
-                f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{current_text}</span></div>",
+                f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{shown_text}</span></div>",
                 unsafe_allow_html=True,
             )
             time.sleep(0.15)
         st.session_state.intro_text_done = True
     else:
         text_placeholder.markdown(
-            f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{full_text}</span></div>",
+            f"<div class='photo-card intro-card'>{visitor_html}<span class='intro-text'>{full_html}</span></div>",
             unsafe_allow_html=True,
         )
 
@@ -6082,7 +6161,15 @@ elif st.session_state.step == "arrival":
         .arrival-text {{
             color: #000000 !important;
             font-size: 18px !important;
-            font-weight: bold !important;
+            font-weight: 900 !important;
+            /* 굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
+            -webkit-text-stroke: 0.6px #000000;
+            /* 네온 느낌: 주황빛이 글자 둘레에 번지도록 번짐 반경이 다른 그림자를 겹친다. */
+            text-shadow:
+                0 0 3px #ff7a1a,
+                0 0 8px #ff7a1a,
+                0 0 16px #ff5a00,
+                0 0 28px #ff3d00;
             letter-spacing: 1px;
             text-align: center;
             word-break: keep-all;
@@ -6109,21 +6196,27 @@ elif st.session_state.step == "arrival":
     )
 
     text_placeholder = st.empty()
-    full_text = "임시 텍스트입니다"
+    # 줄바꿈은 "\n" 으로 적고, 화면에는 <br> 로 바꿔 보여 준다. (글자를 하나씩 찍는 도중 <br> 태그가 반쯤 보이지 않게)
+    full_text = (
+        "여기는 조선시대입니다!\n\n"
+        "여러분은 시간여행 도중 이곳에 도착했지만, 우주 대스타와 함께 감옥에 갇혀 있습니다."
+    )
+    full_html = full_text.replace("\n", "<br>")
 
     if not st.session_state.get("arrival_text_done", False):
         current_text = ""
         for char in full_text:
             current_text += char
+            shown_text = current_text.replace("\n", "<br>")
             text_placeholder.markdown(
-                f"<div class='photo-card arrival-card'><span class='arrival-text'>{current_text}</span></div>",
+                f"<div class='photo-card arrival-card'><span class='arrival-text'>{shown_text}</span></div>",
                 unsafe_allow_html=True,
             )
             time.sleep(0.15)
         st.session_state.arrival_text_done = True
     else:
         text_placeholder.markdown(
-            f"<div class='photo-card arrival-card'><span class='arrival-text'>{full_text}</span></div>",
+            f"<div class='photo-card arrival-card'><span class='arrival-text'>{full_html}</span></div>",
             unsafe_allow_html=True,
         )
 
@@ -6439,6 +6532,7 @@ else:
 
         col1, col2, col3 = st.columns(3)
         if lucky_button("중1 문제", use_container_width=True, dg=col1):
+            st.session_state.grade = 1
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(1, st.session_state.difficulty)
             )
@@ -6447,6 +6541,7 @@ else:
             st.session_state.step = "select_problem"
             st.rerun()
         if lucky_button("중2 문제", use_container_width=True, dg=col2):
+            st.session_state.grade = 2
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(2, st.session_state.difficulty)
             )
@@ -6455,6 +6550,7 @@ else:
             st.session_state.step = "select_problem"
             st.rerun()
         if lucky_button("중3 문제", use_container_width=True, dg=col3):
+            st.session_state.grade = 3
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(3, st.session_state.difficulty)
             )
@@ -6479,8 +6575,9 @@ else:
         )
         st.markdown("---")
 
-        # 문제 3개 + 따로 떨어진 빨간 '매우 어려움' 문제(고3 미적분) 1개. (이 문제의 정답은 타임머신 암호 1592 다.)
-        entries = list(st.session_state.problems) + [FAST_PASS_PROBLEM]
+        # 문제 3개 + 따로 떨어진 빨간 '매우 어려움' 문제(고른 학년의 문제) 1개. (이 문제의 정답은 타임머신 암호 1592 다.)
+        fast_title, fast_problem = fast_pass_for_grade()
+        entries = list(st.session_state.problems) + [fast_problem]
 
         def solved_card(label, ans, color):
             """풀고 난 문제 칸: 완료 표시와 정답을 보여 주는 흰 카드."""
@@ -6513,7 +6610,7 @@ else:
             st.session_state.current_problem = entries[i]
             st.session_state.current_problem_idx = i
             st.session_state.current_title = (
-                FAST_PASS_TITLE if i == FAST_PASS_INDEX else st.session_state.title
+                fast_title if i == FAST_PASS_INDEX else st.session_state.title
             )
             st.session_state.step = "solve"
             st.rerun()
@@ -6526,7 +6623,7 @@ else:
                 elif lucky_button(f"문제 {i+1} 📝", key=f"prob_btn_{i}", use_container_width=True):
                     open_problem(i)
 
-        # 고3 미적분 문제: 문제 번호 없이 빨간 '매우 어려움' 버튼으로 따로 둔다.
+        # 학년별 '매우 어려움' 문제: 문제 번호 없이 빨간 버튼으로 따로 둔다.
         st.markdown(
             """
             <style>
@@ -6552,7 +6649,7 @@ else:
         _, hard_col, _ = st.columns([1, 1, 1])
         with hard_col:
             if FAST_PASS_INDEX in st.session_state.solved_indices:
-                solved_card("매우 어려움", FAST_PASS_PROBLEM[2], "#c62828")
+                solved_card("매우 어려움", fast_problem[2], "#c62828")
             elif lucky_button("매우 어려움", key="fast_pass_btn", use_container_width=True):
                 open_problem(FAST_PASS_INDEX)
 

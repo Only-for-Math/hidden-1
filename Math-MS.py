@@ -6138,8 +6138,10 @@ elif st.session_state.step == "timemachine":
                 unsafe_allow_html=True,
             )
 
+            # 비밀번호 칸으로 두어, 이전에 쓴 답이 키보드 위쪽 최근 기록(자동 완성)에 뜨지 않게 한다.
             tm_answer = st.text_input(
                 "정답 입력",
+                type="password",
                 key="tm_answer_input",
                 label_visibility="collapsed",
                 placeholder="숫자를 입력하세요",
@@ -6695,8 +6697,10 @@ else:
         )
         st.write("")
 
+        # 비밀번호 칸으로 두어, 이전에 쓴 답이 키보드 위쪽 최근 기록(자동 완성)에 뜨지 않게 한다.
         user_answer = st.text_input(
             "정답을 입력하세요 (숫자만 입력):",
+            type="password",
             key="user_answer",
             label_visibility="collapsed",
             placeholder="정답을 입력하세요 (숫자만 입력)",

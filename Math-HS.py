@@ -233,18 +233,18 @@ FULLSCREEN_PHOTO_CSS = """
     top: 5vh;
     left: 50%;
     transform: translateX(-50%);
-    padding: 3px 11px;
+    padding: 6px 18px;
     border-radius: 999px;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.55);
     color: #f1f1f1;
-    font-size: 10px !important;
+    font-size: 15px !important;
     letter-spacing: 0.06em;
     white-space: nowrap;
 }
 .photo-card .visitor-count b {
-    margin-right: 1px;
+    margin-right: 2px;
     color: #ffd27a;
-    font-size: 12px;
+    font-size: 22px;
 }
 div[data-testid="stButton"] {
     position: fixed !important;
@@ -4829,7 +4829,7 @@ if st.session_state.step == "intro":
         }}
         .intro-text {{
             color: #1a1a1a !important;
-            font-size: 18px !important;
+            font-size: 22px !important;
             font-weight: 900 !important;
             /* 굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
             -webkit-text-stroke: 0.6px #1a1a1a;
@@ -5142,7 +5142,7 @@ elif st.session_state.step == "arrival":
         }}
         .arrival-text {{
             color: #000000 !important;
-            font-size: 18px !important;
+            font-size: 22px !important;
             font-weight: 900 !important;
             /* 굴림체는 굵은 글자꼴이 없어 bold 만으로는 티가 안 나므로, 같은 색의 가는 테두리를 덧대 굵게 보이게 한다. */
             -webkit-text-stroke: 0.6px #000000;

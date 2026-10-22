@@ -7152,8 +7152,8 @@ def generate_grade_problems(grade, difficulty=1):
 #  - 풀고 나면 다른 문제처럼 "정답을 기억하세요" 화면에서 정답을 보여 준다.
 #  - 들어가 보고 어려우면 풀이 화면의 "← 문제 목록으로 돌아가기"로 다시 문제 선택 화면에 갈 수 있다.
 #  - 학년(고1·고2·고3)을 고르면 그 학년의 여러 단원 중에서 문제를 고른다. (grade 는 학년 선택 버튼에서 저장한다.)
-#    · 세 번에 두 번쯤: 단원 하나를 무작위로 고르고 그 단원의 문제(난이도 상, 그림 문제 포함)를 풀게 한 뒤
-#      "그 답에 p 를 곱하고 r 을 더한 값"을 묻는다. p 와 r 은 정답이 늘 1592 가 되도록 정한다. (make_fast_pass_from_units)
+#    · 세 번에 두 번쯤: 서로 다른 세 단원에서 난이도 '상' 문제(쉬운 계산 유형 제외, 그림 문제 포함)를 하나씩 뽑아
+#      (가)(나)(다)로 내고, 답이 차례로 15, 9, 2 이므로 "세 답을 이어 쓴 수"(=1592)를 묻는다. (make_fast_pass_from_units)
 #    · 세 번에 한 번쯤: 아래 FAST_PASS_BY_GRADE 에 손으로 만들어 둔 학년별 문제.
 #    · 한 번 정한 문제는 학년마다 세션 동안 그대로 쓰고, 학년 버튼을 다시 누르면 새로 정한다.
 #  - 문제를 바꾸려면 정답이 1592 가 되도록 맞춰야 한다. 정답이 곧 타임머신 암호이기 때문이다.
@@ -7225,35 +7225,65 @@ FAST_PASS_BY_GRADE = {
 # 빠른 통과 문제를 손으로 만든 문제(FAST_PASS_BY_GRADE)로 낼 확률. 나머지는 여러 단원에서 뽑아 만든다.
 FAST_PASS_FIXED_CHANCE = 1 / 3
 FAST_PASS_ANSWER = 1592
+# (가)(나)(다) 세 문제의 답. 차례로 이어 쓰면 1592 (15, 9, 2). 곱하거나 더하는 큰 수 없이 정답이 1592 가 된다.
+FAST_PASS_TARGETS = (15, 9, 2)
+# 매우 어려움 문제로는 쓰지 않는 쉬운 유형: 난이도 '상'이어도 계산만 하면 되는 문제들이다.
+FAST_PASS_EASY = {
+    "f_intsum", "f_mixed", "g1_expr", "f_linexpr", "f_freq_table", "f_relative",
+    "g2_exp", "f_poly_coef", "g3_sqrt", "g3_advanced", "g3_trigo", "g1_stat", "f_center_value", "f_variance", "f_expand_coef",
+    "h_expand_coef", "h_count_multiples", "h_dice", "h_set_count",
+}
+# 매우 어려움 문제에 나오는 수가 이보다 커지면 (예: 최소공배수가 33264) 그 문제는 버리고 다시 뽑는다.
+FAST_PASS_MAX_NUMBER = 1500
+
+
+def _fast_pass_part(families, target):
+    """한 단원의 문제 하나: (문제, 풀이). 정답이 target 이고 문제 글에 나오는 수가 FAST_PASS_MAX_NUMBER 이하인 것만 쓴다."""
+    for _ in range(30):
+        question, explanation, answer = random.choice(families)(target, 3)
+        text = re.sub(r"<img[^>]*>", "", question).replace(",", "")
+        if str(answer) == str(target) and max([int(n) for n in re.findall(r"\d+", text)] or [0]) <= FAST_PASS_MAX_NUMBER:
+            return question, explanation
+    return None
 
 
 def make_fast_pass_from_units(grade):
     """'매우 어려움' 문제를 여러 단원에서 뽑아 만든다.
-    학년의 단원 중 하나를 무작위로 고르고, 그 단원의 문제(난이도 상)를 풀게 한 뒤 "그 답에 p 를 곱하고 r 을 더한 값"을 묻는다.
-    곱하는 수 p 와 더하는 수 r 은 정답이 늘 1592 가 되도록 정한다. 그림이 있는 문제도 절반쯤 나오도록 그림 문제를 먼저 찾아본다."""
-    units = UNIT_FAMILIES[grade if grade in (1, 2) else 3]
-    want_figure = random.random() < 0.5
+    학년에서 서로 다른 세 단원을 무작위로 고르고, 단원마다 난이도 '상' 문제 하나(쉬운 계산 유형은 뺀다)를 뽑아 (가)(나)(다)로 낸다.
+    답이 차례로 15, 9, 2 가 되게 만들어 두고 "세 문제의 답을 차례로 이어 쓴 수"를 물으므로 정답은 늘 1592 이다.
+    숫자가 커지지 않고, 세 문제를 모두 풀어야 하므로 어렵다. 그림이 있는 문제가 하나 이상 들어가게 여러 번 뽑아 본다."""
+    units = []
+    for unit, families in UNIT_FAMILIES[grade if grade in (1, 2) else 3]:
+        hard = [f for f in families if getattr(f, "__name__", "") not in FAST_PASS_EASY]
+        if hard:
+            units.append((unit, hard))
     best = None
     for _ in range(60):
-        unit, families = random.choice(units)
-        target = random.choice([15, 9, 2])
-        question, explanation, answer = random.choice(families)(target, 3)
-        if str(answer) != str(target):
-            continue
-        best = (unit, target, question, explanation)
-        if not want_figure or "<img" in question:
-            break
+        parts = []
+        for (unit, families), target in zip(random.sample(units, 3), FAST_PASS_TARGETS):
+            part = _fast_pass_part(families, target)
+            if part is None:
+                break
+            parts.append((unit, *part))
+        else:
+            best = best or parts
+            if any("<img" in question for _, question, _ in parts):
+                best = parts
+                break
     if best is None:
-        raise ValueError("뽑은 문제의 정답이 맞지 않는다")
-    unit, target, question, explanation = best
-    lo, hi = {15: (60, 100), 9: (100, 170), 2: (300, 780)}[target]
-    p = random.randint(lo, hi)
-    r = FAST_PASS_ANSWER - p * target
-    question = _ea_aids(_tidy_math(_fix_josa(question)))
-    question += f"\n\n위 문제의 답에 {_ea_pj(str(p), '을/를')} 곱한 뒤 {_ea_pj(str(r), '을/를')} 더한 값을 구하시오."
-    explanation = (
-        f"*({unit} 단원)*\n\n{_tidy_math(_fix_josa(explanation))}\n\n"
-        f"위 문제의 답이 ${target}$이므로 구하는 값은\n\n$${target}\\times{p}+{r}={FAST_PASS_ANSWER}$$"
+        raise ValueError("알맞은 문제를 뽑지 못했다")
+    labels = ("(가)", "(나)", "(다)")
+    questions = [f"**{lab}**\n\n{_ea_aids(_tidy_math(_fix_josa(q)))}" for lab, (_, q, _) in zip(labels, best)]
+    question = (
+        "다음 세 문제 (가), (나), (다)의 답을 각각 구한 뒤, 차례로 이어 쓴 수를 구하시오.\n\n"
+        "(예: 세 문제의 답이 7, 12, 3이면 7123)\n\n" + "\n\n".join(questions)
+    )
+    explanations = [
+        f"**{lab}** *({unit} 단원)*\n\n{_tidy_math(_fix_josa(e))}" for lab, (unit, _, e) in zip(labels, best)
+    ]
+    a, b, c = FAST_PASS_TARGETS
+    explanation = "\n\n".join(explanations) + (
+        f"\n\n(가), (나), (다)의 답이 차례로 ${a}$, ${b}$, ${c}$이므로 이어 쓰면 ${FAST_PASS_ANSWER}$입니다."
     )
     return f"[ {GRADE_TITLES[grade]} · 매우 어려움 ]", (question, explanation, str(FAST_PASS_ANSWER))
 

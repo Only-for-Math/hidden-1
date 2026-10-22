@@ -866,6 +866,55 @@ def readable_markdown(md_text):
     )
 
 
+# 객관식 번호 고르기: 둥근 단추 1~5 중 하나를 고르고 "완료 ❯" 를 누르면 맞는지 확인한다.
+#  - 처음에는 아무 번호도 골라져 있지 않다. (st.radio 의 index=None)
+MC_CHOICE_CSS = """
+<style>
+.st-key-mc_choice {
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 12px;
+    padding: 12px 10px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.st-key-mc_choice [data-testid="stRadioGroup"] {
+    display: flex; flex-direction: column; flex-wrap: nowrap; align-items: flex-start; gap: 6px; width: 100%;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] {
+    display: flex; justify-content: flex-start; margin: 0; padding: 6px 12px; cursor: pointer;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div { align-items: center; gap: 8px; }
+/* 둥근 칸: 흰 바탕에 검은 테두리, 고르면 가운데가 검게 찬다. */
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child {
+    width: 22px !important; height: 22px !important; min-width: 22px;
+    border: 2px solid #000000 !important; background: #ffffff !important; border-radius: 50% !important;
+    box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child > div {
+    width: 10px !important; height: 10px !important; border-radius: 50% !important; background: transparent !important;
+}
+.st-key-mc_choice [data-testid="stRadioOption"][data-selected="true"] > div > div > div:first-child > div {
+    background: #000000 !important;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] p {
+    font-size: 1.2rem !important; font-weight: 900 !important; color: #000000 !important; margin: 0;
+}
+</style>
+"""
+
+
+def mc_choice_input(count):
+    """둥근 단추 1~count 를 보여 주고 고른 번호(없으면 None)를 돌려준다."""
+    st.markdown(MC_CHOICE_CSS, unsafe_allow_html=True)
+    return st.radio(
+        "번호를 고르세요",
+        options=list(range(1, count + 1)),
+        index=None,
+        horizontal=False,
+        key="mc_choice",
+        label_visibility="collapsed",
+    )
+
+
 # ==========================================
 # 타임머신 이후 화면에 삽입되는 미니게임: 나무 파이프 슬라이딩 퍼즐 (난이도별 하 4x4 · 중 5x5 · 상 6x6)
 # (원본 게임의 버그 3건을 수정한 버전)
@@ -9061,7 +9110,43 @@ def generate_grade_problems(grade, difficulty=1):
         explanation = _tidy_math(_fix_josa(explanation))
         problems.append((question, f"*({unit} 단원)*\n\n{explanation}", answer))
 
+    # 1~2문제는 객관식으로 섞는다. (나머지는 숫자를 직접 쓰는 주관식)
+    for i in random.sample(range(len(problems)), random.choice([1, 2])):
+        question, explanation, answer = problems[i]
+        choices = make_choices(answer)
+        if choices:
+            problems[i] = (add_choices_to_question(question, choices), explanation, answer, choices)
+
     return title, problems
+
+
+# ==========================================
+# 객관식 문제 섞기
+#  - 문제 3개 중 1~2개는 보기 5개 중에서 번호를 고르는 객관식으로 낸다. 풀이 화면에서는 둥근 단추 1~5 중 하나를 고르고 완료를 누른다.
+#  - 보기는 정답과 가까운 수 4개를 오답으로 섞어 작은 수부터 늘어놓는다. 그래서 정답 번호는 문제마다 달라진다.
+#  - 객관식 문제 묶음은 (문제, 풀이, 정답, 보기) 이고, 문제 글 끝에 보기가 붙는다. 정답은 번호가 아니라 값 그대로라서
+#    '정답을 기억하세요' 화면과 푼 문제 칸에는 번호 없이 값만 나온다.
+# ==========================================
+MC_CHOICE_COUNT = 5
+
+
+def make_choices(answer):
+    """객관식 보기 5개: 정답과 가까운 오답 4개를 섞어 작은 수부터 늘어놓은 글자 목록. 정답이 자연수가 아니면 None."""
+    if not str(answer).isdigit():
+        return None
+    t = int(answer)
+    lower = [t - d for d in (1, 2, 3, 4) if t - d >= 0]
+    higher = [t + d for d in (1, 2, 3, 4)]
+    # 정답보다 작은 오답을 몇 개 둘지(= 정답이 몇 번째에 놓일지)를 고르게 뽑아, 정답 번호가 한쪽으로 쏠리지 않게 한다.
+    below = random.choice([k for k in range(MC_CHOICE_COUNT) if k <= len(lower) and MC_CHOICE_COUNT - 1 - k <= len(higher)])
+    wrong = random.sample(lower, below) + random.sample(higher, MC_CHOICE_COUNT - 1 - below)
+    return [str(v) for v in sorted(wrong + [t])]
+
+
+def add_choices_to_question(question, choices):
+    """문제 글 끝에 보기를 (1) 11  (2) 13 … 꼴로 붙인다."""
+    line = "&emsp;".join(f"({i}) {c}" for i, c in enumerate(choices, 1))
+    return f"{question}\n\n{line}"
 
 
 # ==========================================
@@ -10133,7 +10218,8 @@ else:
 
     # --- 화면 3: 문제 풀이 ---
     elif st.session_state.step == "solve":
-        current_q, current_exp, current_ans = st.session_state.current_problem
+        current_q, current_exp, current_ans = st.session_state.current_problem[:3]
+        choices = st.session_state.current_problem[3] if len(st.session_state.current_problem) > 3 else None   # 객관식이면 보기
 
         # 제목 · 구분선 · 문제(수식 포함)를 흰 상자 하나에 담는다.
         readable_markdown(
@@ -10141,14 +10227,19 @@ else:
         )
         st.write("")
 
-        # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
-        user_answer = st.text_input(
-            "정답을 입력하세요 (숫자만 입력):",
-            autocomplete="off",
-            key="user_answer",
-            label_visibility="collapsed",
-            placeholder="정답을 입력하세요 (숫자만 입력)",
-        )
+        if choices:
+            # 객관식: 둥근 단추 1~5 중 번호를 고르고 완료를 누른다.
+            picked = mc_choice_input(len(choices))
+            user_answer = choices[picked - 1] if picked else ""
+        else:
+            # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
+            user_answer = st.text_input(
+                "정답을 입력하세요 (숫자만 입력):",
+                autocomplete="off",
+                key="user_answer",
+                label_visibility="collapsed",
+                placeholder="정답을 입력하세요 (숫자만 입력)",
+            )
         st.markdown("---")
 
         if st.session_state.is_dev_mode:
@@ -10164,8 +10255,9 @@ else:
                 )
                 if pw == "0805":
                     st.success("암호가 확인되었습니다.")
+                    ans_label = f"{current_ans} ({choices.index(current_ans) + 1}번)" if choices else current_ans
                     readable_markdown(
-                        f"▶ **정답:** {current_ans}\n\n▶ **풀이:**\n{current_exp}"
+                        f"▶ **정답:** {ans_label}\n\n▶ **풀이:**\n{current_exp}"
                     )
                 elif pw != "":
                     st.error("암호가 맞지 않아요. 다시 입력해 주세요.")
@@ -10187,7 +10279,9 @@ else:
             if lucky_button(
                 "완료 ❯", type="primary", use_container_width=True
             ):
-                if user_answer.strip() == current_ans:
+                if choices and not user_answer:
+                    st.warning("번호를 먼저 골라 주세요.")     # 아무것도 고르지 않았을 때는 벌점 없이 안내만 한다.
+                elif user_answer.strip() == current_ans:
                     if "pw_single" in st.session_state:
                         del st.session_state["pw_single"]
                     st.session_state.dev_panel_open = False

@@ -870,6 +870,55 @@ def readable_markdown(md_text):
     )
 
 
+# 객관식 번호 고르기: 둥근 단추 1~5 중 하나를 고르고 "완료 ❯" 를 누르면 맞는지 확인한다.
+#  - 처음에는 아무 번호도 골라져 있지 않다. (st.radio 의 index=None)
+MC_CHOICE_CSS = """
+<style>
+.st-key-mc_choice {
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 12px;
+    padding: 12px 10px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.st-key-mc_choice [data-testid="stRadioGroup"] {
+    display: flex; flex-direction: column; flex-wrap: nowrap; align-items: flex-start; gap: 6px; width: 100%;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] {
+    display: flex; justify-content: flex-start; margin: 0; padding: 6px 12px; cursor: pointer;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div { align-items: center; gap: 8px; }
+/* 둥근 칸: 흰 바탕에 검은 테두리, 고르면 가운데가 검게 찬다. */
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child {
+    width: 22px !important; height: 22px !important; min-width: 22px;
+    border: 2px solid #000000 !important; background: #ffffff !important; border-radius: 50% !important;
+    box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child > div {
+    width: 10px !important; height: 10px !important; border-radius: 50% !important; background: transparent !important;
+}
+.st-key-mc_choice [data-testid="stRadioOption"][data-selected="true"] > div > div > div:first-child > div {
+    background: #000000 !important;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] p {
+    font-size: 1.2rem !important; font-weight: 900 !important; color: #000000 !important; margin: 0;
+}
+</style>
+"""
+
+
+def mc_choice_input(count):
+    """둥근 단추 1~count 를 보여 주고 고른 번호(없으면 None)를 돌려준다."""
+    st.markdown(MC_CHOICE_CSS, unsafe_allow_html=True)
+    return st.radio(
+        "번호를 고르세요",
+        options=list(range(1, count + 1)),
+        index=None,
+        horizontal=False,
+        key="mc_choice",
+        label_visibility="collapsed",
+    )
+
+
 # ==========================================
 # 타임머신 이후 화면에 삽입되는 미니게임: 나무 파이프 슬라이딩 퍼즐 (난이도별 하 4x4 · 중 5x5 · 상 6x6)
 # (원본 게임의 버그 3건을 수정한 버전)
@@ -3593,6 +3642,201 @@ def fig_inverse(kind, a, b, k=None):
     return f.svg()
 
 
+# ---------- 함수 문제 그림: 합성함수·역함수의 경로, 로그·지수·삼각함수의 그래프 ----------
+#  - 문제에 주어진 값만 눈금으로 적는다. 구해야 하는 값(답이나 답을 구하는 중간값)은 글자로만 적는다.
+_FIG_SUB = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def _sup(n):
+    """정수를 윗첨자 숫자 글자로. 12 -> '¹²'"""
+    return str(n).translate(_FIG_SUP)
+
+
+def _label_spot(fn, x0, x1, y0, y1, frac=0.14):
+    """곡선 y=fn(x) 가 그림 안쪽(위아래 frac 만큼 여유)에 있는 곳 중 오른쪽 끝에 가장 가까운 점 (x, y). 없으면 None."""
+    lo, hi = y0 + (y1 - y0) * frac, y1 - (y1 - y0) * frac
+    for i in range(200, -1, -1):
+        x = x0 + (x1 - x0) * i / 200
+        try:
+            y = fn(x)
+        except (ValueError, ZeroDivisionError, OverflowError):
+            continue
+        if y == y and lo <= y <= hi:
+            return x, y
+    return None
+
+
+def _curve_name(F, fn, x0, x1, y0, y1, text, color, dy=-9):
+    spot = _label_spot(fn, x0, x1, y0, y1)
+    if spot:
+        F.text(spot, text, dx=-6, dy=dy, anchor="end", italic=False, size=13, color=color)
+
+
+def fig_comp_path(first, second, k, names, end_text):
+    """합성함수 (second∘first)(k) 의 길: x=k 에서 y=first(x) 까지 올라가, y=x 에서 옆으로 꺾고, 다시 y=second(x) 까지 간다.
+    그래프 두 개와 점선 y=x, 길(초록 점선)을 그린다. 중간값과 답은 적지 않고 x=k 만 눈금으로 적는다."""
+    v = first(k)
+    w = second(v)
+    path = [(k, 0), (k, v), (v, v), (v, w)]
+    x0, x1, y0, y1 = _view_pts(path, 3.0, 3.0)
+    F = _Fig(x0, x1, y0, y1, width=340, equal=False, height=290)
+    F.axes()
+    F.clipped_line((0, 0), (1, 1), color=_FIG_GRAY, w=1.4, dash="5 4")
+    F.curve(first, x0, x1, color=_FIG_BLUE, w=2.1)
+    F.curve(second, x0, x1, color=_FIG_RED, w=2.1)
+    F.poly(path, stroke=_FIG_GREEN, w=1.7, close=False, dash="5 3")
+    for p in path[1:]:
+        F.dot(p, color=_FIG_GREEN, r=3.2)
+    F.xtick(k, _tx_num(k))
+    _curve_name(F, first, x0, x1, y0, y1, names[0], _FIG_BLUE)
+    _curve_name(F, second, x0, x1, y0, y1, names[1], _FIG_RED)
+    F.text(path[-1], end_text, dx=9, dy=-9, anchor="start", italic=False, size=13, color=_FIG_GREEN)
+    return F.svg()
+
+
+def fig_inverse_path(f, finv, g, k, names):
+    """(f⁻¹∘g)(k) 의 길: x=k 에서 y=g(x) 까지 올라가, 옆으로 가서 y=f(x) 와 만나고, 아래로 x축까지 내려온다. 끝점은 '?' 로 적는다."""
+    w = g(k)
+    m = finv(w)
+    path = [(k, 0), (k, w), (m, w), (m, 0)]
+    x0, x1, y0, y1 = _view_pts(path, 3.0, 3.0)
+    F = _Fig(x0, x1, y0, y1, width=340, equal=False, height=290)
+    F.axes()
+    F.clipped_line((0, 0), (1, 1), color=_FIG_GRAY, w=1.4, dash="5 4")
+    F.curve(f, x0, x1, color=_FIG_BLUE, w=2.1)
+    F.curve(g, x0, x1, color=_FIG_RED, w=2.1)
+    F.poly(path, stroke=_FIG_GREEN, w=1.7, close=False, dash="5 3")
+    for p in path[1:]:
+        F.dot(p, color=_FIG_GREEN, r=3.2)
+    F.xtick(k, _tx_num(k))
+    F.text((m, 0), "?", dx=0, dy=20, italic=False, size=14, color=_FIG_GREEN)
+    _curve_name(F, f, x0, x1, y0, y1, names[0], _FIG_BLUE)
+    _curve_name(F, g, x0, x1, y0, y1, names[1], _FIG_RED)
+    return F.svg()
+
+
+def fig_line_diag(p, q, name):
+    """직선 y=px+q (식은 문제에 주어졌다)와 점선 y=x. y절편을 눈금으로 적는다."""
+    x0, x1, y0, y1 = _view_pts([(0, q), (-q / p, 0)], 3.0, 3.0)
+    F = _Fig(x0, x1, y0, y1, width=340, equal=False, height=290)
+    F.axes()
+    F.clipped_line((0, 0), (1, 1), color=_FIG_GRAY, w=1.4, dash="5 4")
+    seg = F.clipped_line((0, q), (1, p + q), color=_FIG_BLUE, w=2.2)
+    _line_label(F, seg, name, _FIG_BLUE, side="top")
+    F.dot((0, q), color=_FIG_RED)
+    F.ytick(q, _tx_num(q))
+    return F.svg()
+
+
+def fig_log_curves(curves, xmax, points=(), ymin=-2.6):
+    """로그함수의 그래프. curves = [(밑, 글자, 색)], points = [(x, 눈금 글자)] 는 첫 곡선 위의 점이다. (점의 y값은 적지 않는다.)"""
+    ymax = max(math.log(xmax, b) for b, _, _ in curves) + 0.8
+    F = _Fig(-0.04 * xmax, xmax, ymin, ymax, width=340, equal=False, height=250)
+    F.axes()
+    # 곡선이 여러 개면 글자끼리 겹치지 않게, 위쪽 곡선부터 차례로 위·아래로 엇갈려 적는다.
+    for n, (b, text, color) in enumerate(sorted(curves, key=lambda c: c[0])):
+        fn = lambda x, b=b: math.log(x, b)
+        F.curve(fn, xmax * 0.012, xmax, color=color, w=2.2, ylo=ymin)
+        _curve_name(F, fn, xmax * 0.012, xmax, ymin, ymax, text, color, dy=(-9, 17, 31)[min(n, 2)])
+    base0 = curves[0][0]
+    last = -1e9
+    for x, text in sorted(points):
+        y = math.log(x, base0)
+        F.line((x, 0), (x, y), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+        F.dot((x, y), color=_FIG_RED)
+        if F.X(x) - last >= 22:
+            F.xtick(x, text)
+            last = F.X(x)
+    return F.svg()
+
+
+def fig_log_equation(b, p, qv, m, root):
+    """로그방정식 log_b(x+p)+log_b(x-qv)=m: 왼쪽 식의 그래프와 수평선 y=m. 교점의 x 는 'x' 로만 적는다."""
+    bound = max(qv, -p)
+    fn = lambda x: math.log((x + p) * (x - qv), b)
+    x0, x1 = bound + 0.25, root + 3.0
+    ylo = max(fn(x0), -3.0) - 0.6
+    F = _Fig(min(x0, 0) - 0.4, x1, min(ylo, 0) - 0.3, m + 1.4, width=340, equal=False, height=250)
+    F.axes()
+    F.curve(fn, x0, x1, color=_FIG_BLUE, w=2.3)
+    F.line((F.x0, m), (x1, m), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    F.line((root, 0), (root, m), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    F.dot((root, m), color=_FIG_RED)
+    F.ytick(m, str(m))
+    F.xtick(root, "x")
+    F.line((bound, F.y0), (bound, F.y1), color=_FIG_GRAY, w=1.1, dash="2 4", cap="butt")
+    return F.svg()
+
+
+def fig_exp_schematic(curve_text, line_text):
+    """지수방정식 그림(개략도): 지수함수의 그래프와 수평선의 교점에서 x 의 위치를 점선으로 내린다. 교점의 x 는 'x' 로만 적는다."""
+    fn = lambda x: 0.45 * 2 ** x
+    root, height = 2.9, 3.4
+    F = _Fig(-1.2, 5.4, -0.9, 5.2, width=340, equal=False, height=240)
+    F.axes()
+    F.curve(fn, -1.2, 5.4, color=_FIG_BLUE, w=2.3)
+    F.line((-1.2, height), (5.4, height), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    F.line((root, 0), (root, height), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    F.dot((root, height), color=_FIG_RED)
+    F.xtick(root, "x")
+    F.text((-1.2, height), line_text, dx=6, dy=-8, anchor="start", italic=False, size=13, color=_FIG_AXIS)
+    F.text((4.4, fn(4.4)), curve_text, dx=-8, dy=4, anchor="end", italic=False, size=13, color=_FIG_BLUE)
+    return F.svg()
+
+
+def fig_exp_quadratic(fn, a, i, j):
+    """4^(x-a) - S·2^(x-a) + P 의 그래프. x축과 만나는 두 점은 α, β 로만 적는다."""
+    x0, x1 = a - 1.0, a + j + 0.6
+    yl, yh = _auto_view(fn, x0, x1, pts=[(a + i, 0), (a + j, 0)])
+    F = _Fig(x0 - 0.3, x1, yl, yh, width=340, equal=False, height=250)
+    F.axes()
+    F.curve(fn, x0, x1, color=_FIG_BLUE, w=2.3)
+    for x, name in ((a + i, "α"), (a + j, "β")):
+        F.dot((x, 0), color=_FIG_RED)
+        F.xtick(x, name)
+    return F.svg()
+
+
+def fig_trig_points(items):
+    """삼각함수 값 문제의 그림. items = [(종류 'sin'/'cos'/'tan', 각(라디안), 각 글자)]. 그 그래프와, 각에 해당하는 점을 찍는다. (값은 적지 않는다.)"""
+    kinds = []
+    for kind, _, _ in items:
+        if kind not in kinds:
+            kinds.append(kind)
+    fns = {"sin": math.sin, "cos": math.cos, "tan": math.tan}
+    colors = {"sin": _FIG_BLUE, "cos": _FIG_RED, "tan": _FIG_GREEN}
+    top = 2.4 if "tan" in kinds else 1.5
+    F = _Fig(-0.5, 2 * math.pi + 0.6, -top, top, width=350, equal=False, height=230)
+    F.axes()
+    F.ytick(1, "1")
+    F.ytick(-1, "−1")
+    for kind in kinds:
+        F.curve(fns[kind], -0.5, 2 * math.pi + 0.6, n=500, color=colors[kind], w=2.2)
+    for kind, ang, text in items:
+        F.line((ang, 0), (ang, fns[kind](ang)), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+        F.dot((ang, fns[kind](ang)), color=_FIG_INK)
+        F.xtick(ang, text)
+    for n, kind in enumerate(kinds):
+        F.text((2 * math.pi + 0.55, top), f"y = {kind} x", dx=-6, dy=16 + 16 * n, anchor="end", italic=False, size=13, color=colors[kind])
+    return F.svg()
+
+
+def fig_trig_roots(kind, k, big_l, rv):
+    """구간 [0, Lπ) 에서 y=sin kx (또는 cos kx) 의 그래프와 수평선 y=rv. 오른쪽 끝은 속이 빈 점으로 나타낸다."""
+    fn = (lambda x: math.sin(k * x)) if kind == "sin" else (lambda x: math.cos(k * x))
+    end = big_l * math.pi
+    F = _Fig(-0.4, end + 0.9, -1.7, 1.7, width=350, equal=False, height=210)
+    F.axes()
+    F.line((-0.4, rv), (end + 0.9, rv), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    F.curve(fn, 0, end, n=max(600, 40 * k * big_l), color=_FIG_BLUE, w=1.8)
+    F.dot((end, fn(end)), ring=True)
+    F.ytick(1, "1")
+    F.ytick(-1, "−1")
+    F.xtick(end, "π" if big_l == 1 else "2π")
+    F.text((end + 0.85, 1.7), f"y = {kind} {k}x", dx=0, dy=16, anchor="end", italic=False, size=13, color=_FIG_BLUE)
+    return F.svg()
+
+
 def fig_normal(m, sigma, shades, ticks):
     """정규분포 곡선(평균 m, 표준편차 sigma). shades = [(왼쪽 끝, 오른쪽 끝)] 구간을 색칠하고, ticks = [(x, 글자)] 를 x축에 적는다."""
     xs = [t[0] for t in ticks] + [m - 3.2 * sigma, m + 3.2 * sigma]
@@ -6062,7 +6306,8 @@ def h_composite(target, level):
             f"$f({k})={a}\\times{_p(k)} {_sgn(b)}={v}$이므로\n\n"
             f"$(g\\circ f)({k})=g(f({k}))=g({v})={c}\\times{_p(v)} {_sgn(d)}={target}$"
         )
-        return q, exp, str(target)
+        fig = fig_comp_path(lambda x: a * x + b, lambda x: c * x + d, k, ("y = f(x)", "y = g(x)"), f"g(f({_tx_num(k)}))")
+        return q + fig_md(fig), exp, str(target)
     if level == 2:
         while True:
             c, d, k = _nonzero(-3, 3), random.randint(-5, 5), random.randint(-2, 3)
@@ -6080,7 +6325,8 @@ def h_composite(target, level):
             + _j(f"{_p(v)}^{{2}}", f"{'+' if a > 0 else '-'} {abs(a)}\\times{_p(v)}", _sgn(b))
             + f"={target}$"
         )
-        return q, exp, str(target)
+        fig = fig_comp_path(lambda x: c * x + d, lambda x: x * x + a * x + b, k, ("y = g(x)", "y = f(x)"), f"f(g({_tx_num(k)}))")
+        return q + fig_md(fig), exp, str(target)
     while True:
         a, k = random.choice([2, 3]), random.randint(1, 5)
         b = target - a * k
@@ -6096,7 +6342,7 @@ def h_composite(target, level):
         f"$a^{{2}}={px}$, $(a+1)b={qx}$입니다. $a>0$이므로 $a={a}$, $b={b}$입니다.\n\n"
         f"따라서 $f({k})={a}\\times{k} {_sgn(b)}={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_line_diag(px, qx, "y = f(f(x))")), exp, str(target)
 
 
 def h_inverse(target, level):
@@ -6142,7 +6388,8 @@ def h_inverse(target, level):
         f"$g({k})={k}^{{2}}-1={k * k - 1}$이므로 $(f^{{-1}}\\circ g)({k})=f^{{-1}}({k * k - 1})$입니다.\n\n"
         f"$f^{{-1}}({k * k - 1})=m$이라 하면 $f(m)={k * k - 1}$이므로 ${_lin(a, b, 'm')}={k * k - 1}$, 즉 $m={target}$"
     )
-    return q, exp, str(target)
+    fig = fig_inverse_path(lambda x: a * x + b, lambda y: (y - b) / a, lambda x: x * x - 1, k, ("y = f(x)", "y = g(x)"))
+    return q + fig_md(fig), exp, str(target)
 
 
 def h_rational(target, level):
@@ -6243,7 +6490,9 @@ def s_log(target, level):
             "로그의 성질 $\\log_{a}x+\\log_{a}y=\\log_{a}xy$에 의하여\n\n"
             f"$$\\log_{{{B}}}({prod})=\\log_{{{B}}}{B}^{{{target}}}={target}$$"
         )
-        return q, exp, str(target)
+        fig = fig_log_curves([(B, f"y = log{str(B).translate(_FIG_SUB)} x", _FIG_BLUE)], max(args) * 1.2,
+                             points=[(v, str(v)) for v in sorted(set(args))])
+        return q + fig_md(fig), exp, str(target)
     if level == 2:
         if random.random() < 0.5:
             B, k = random.choice([2, 3]), random.choice([2, 3])
@@ -6252,7 +6501,9 @@ def s_log(target, level):
             exp = (
                 f"$\\log_{{{B ** k}}}{B}^{{{m}}}=\\log_{{{B}^{{{k}}}}}{B}^{{{m}}}=\\frac{{{m}}}{{{k}}}\\log_{{{B}}}{B}={target}$"
             )
-            return q, exp, str(target)
+            fig = fig_log_curves([(B ** k, f"y = log{str(B ** k).translate(_FIG_SUB)} x", _FIG_BLUE)], B ** k * 1.6,
+                                 points=[(B ** k, str(B ** k))])
+            return q + fig_md(fig), exp, str(target)
         a, b, c = random.sample([2, 3, 5, 7], 3)
         q = f"$\\log_{{{a}}} {b}\\times\\log_{{{b}}} {c}\\times\\log_{{{c}}} {a}^{{{target}}}$의 값을 구하시오."
         exp = (
@@ -6260,7 +6511,9 @@ def s_log(target, level):
             f"$$\\log_{{{a}}}{b}\\times\\log_{{{b}}}{c}\\times\\log_{{{c}}}{a}^{{{target}}}"
             f"=\\log_{{{a}}}{a}^{{{target}}}={target}$$"
         )
-        return q, exp, str(target)
+        sub = lambda n: str(n).translate(_FIG_SUB)
+        fig = fig_log_curves([(a, f"log{sub(a)} x", _FIG_BLUE), (b, f"log{sub(b)} x", _FIG_RED), (c, f"log{sub(c)} x", _FIG_GREEN)], 10.0)
+        return q + fig_md(fig), exp, str(target)
 
     def make():
         return random.choice([2, 3, 5]), random.randint(2, 4), random.randint(-8, 10), random.randint(-3, 14)
@@ -6292,7 +6545,7 @@ def s_log(target, level):
         f"정리하면 ${_fprod(_lin(1, -target), _lin(1, -other))}=0$이므로 $x={target}$ 또는 $x={other}$이고, "
         f"진수의 조건을 만족시키는 해는 $x={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_log_equation(b, p, qv, m, target)), exp, str(target)
 
 
 def s_exp(target, level):
@@ -6308,7 +6561,9 @@ def s_exp(target, level):
         exp = (
             f"${pw(m)}\\times {pw(n)}=2^{{{m + n}}}$이므로 ${_lin(1, -p)}={m + n}$\n\n따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        sp2 = lambda e: "2" if e == 1 else "2" + _sup(e)
+        fig = fig_exp_schematic(f"y = 2^({_plain(_lin(1, -p))})", f"y = {sp2(m)} × {sp2(n)}")
+        return q + " (단, 그림은 개략적인 모양이다.)" + fig_md(fig), exp, str(target)
     if level == 2:
         # (2^α)^(x-p) = (2^β)^s  =>  α(x-p) = βs.  좌변·우변의 밑을 2 의 거듭제곱으로 서로 다르게 준다.
         while True:
@@ -6326,7 +6581,8 @@ def s_exp(target, level):
             f"$$2^{{{al}{_fac(_lin(1, -p))}}}=2^{{{be}\\times {s}}}$$\n\n"
             f"${al}{_fac(_lin(1, -p))}={be * s}$이므로 $x={target}$"
         )
-        return q, exp, str(target)
+        fig = fig_exp_schematic(f"y = {base(al)}^({_plain(_lin(1, -p))})", f"y = {base(be)}{_sup(s)}")
+        return q + " (단, 그림은 개략적인 모양이다.)" + fig_md(fig), exp, str(target)
     # 상: 2^(x-a) = t 로 치환하면 t^2 - (2^i + 2^j) t + 2^(i+j) = 0.  두 근은 x = a+i, a+j 이므로
     # 두 근의 합 = 2a + i + j = target.  (큰 거듭제곱이 나오지 않도록 평행이동 a 를 쓴다.)
     while True:
@@ -6346,7 +6602,8 @@ def s_exp(target, level):
         f"$\\alpha={a + i}$, $\\beta={a + j}$입니다.\n\n"
         f"따라서 $\\alpha+\\beta={target}$"
     )
-    return q, exp, str(target)
+    fig = fig_exp_quadratic(lambda x: 4.0 ** (x - a) - S * 2.0 ** (x - a) + P, a, i, j)
+    return q + fig_md(fig), exp, str(target)
 
 
 # ---------- 삼각함수 ----------
@@ -6382,7 +6639,13 @@ def s_trig(target, level):
             f"${t1}={f1}$, ${t2}={f2}$이므로\n\n"
             f"$${a}\\times({f1}) {sign} {abs(b)}\\times({f2})={target}$$"
         )
-        return q, exp, str(target)
+        meta = {
+            r"\sin\frac{\pi}{6}": ("sin", math.pi / 6, "π/6"), r"\cos\frac{\pi}{3}": ("cos", math.pi / 3, "π/3"),
+            r"\sin\frac{\pi}{2}": ("sin", math.pi / 2, "π/2"), r"\cos\pi": ("cos", math.pi, "π"),
+            r"\tan\frac{\pi}{4}": ("tan", math.pi / 4, "π/4"), r"\cos 0": ("cos", 0.0, "0"),
+            r"\sin\frac{3\pi}{2}": ("sin", 3 * math.pi / 2, "3π/2"),
+        }
+        return q + fig_md(fig_trig_points([meta[t1], meta[t2]])), exp, str(target)
     if level == 2:
         while True:
             a, bq, c = random.randint(1, 8), random.choice([2, 3, 4]), random.randint(-6, 6)
@@ -6420,7 +6683,7 @@ def s_trig(target, level):
         f"$t={k}x$이고 $0\\le x<{big_l_tex}$이므로 $0\\le t<{top}\\pi$입니다.\n\n"
         f"이 범위에서 $t={sol}$인 $t$의 개수를 세면 {ns_}이므로 모두 ${target}$개"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_trig_roots(kind, k, big_l, rv)), exp, str(target)
 
 
 # ---------- 수열 ----------
@@ -7149,7 +7412,12 @@ def c_deriv(target, level):
             f"$x=0$을 대입하면 $f'(0)={pc}({qc}+a)+1={m}$이므로 ${pc}({qc}+a)={m - 1}$, "
             f"${qc}+a={qc + target}$입니다.\n\n따라서 $a={target}$"
         )
-        return q, exp, str(target)
+        fig = fig_curve_tangent(
+            lambda x: math.exp(p * x) * (math.sin(x) + qc * math.cos(x) + target), -2.4, 1.2 / p, 0, "",
+            dfn=lambda x: math.exp(p * x) * (p * (math.sin(x) + qc * math.cos(x) + target) + math.cos(x) - qc * math.sin(x)),
+            point_text="(0, f(0))",
+        )
+        return q + fig_md(fig), exp, str(target)
     if level == 2:
         p, u = random.choice([(1, 1), (1, 2), (2, 1), (1, 3), (3, 1), (2, 2)])
         w = target * (1 + p * u) + u
@@ -7236,7 +7504,9 @@ def c_integral(target, level):
             f"$f(1)=({c})^{{{m + 1}}}+C={c ** (m + 1)}+C={f0}$에서 $C={K}$이므로\n\n"
             f"$$f(e^{{{t}}})=({_j(str(t), _sgn(c))})^{{{m + 1}}}+C={(t + c) ** (m + 1)}+{_p(K)}={target}$$"
         )
-        return q, exp, str(target)
+        fig = fig_area_curve(lambda x: k * (math.log(x) + c) ** m / x, 0.8, math.e ** t + 0.8, 1, math.e ** t,
+                             ticks=[(1, "1"), (math.e ** t, "e" + _sup(t))], curve_text="y = f′(x)")
+        return q + fig_md(fig), exp, str(target)
     c = random.choice([1, 2, 3])
     cc = "" if c == 1 else str(c)
     V = c * c * (target - 1)
@@ -7315,7 +7585,43 @@ def generate_grade_problems(grade, difficulty=1):
         explanation = _tidy_math(_fix_josa(explanation))
         problems.append((question, f"*({unit} 단원)*\n\n{explanation}", answer))
 
+    # 1~2문제는 객관식으로 섞는다. (나머지는 숫자를 직접 쓰는 주관식)
+    for i in random.sample(range(len(problems)), random.choice([1, 2])):
+        question, explanation, answer = problems[i]
+        choices = make_choices(answer)
+        if choices:
+            problems[i] = (add_choices_to_question(question, choices), explanation, answer, choices)
+
     return title, problems
+
+
+# ==========================================
+# 객관식 문제 섞기
+#  - 문제 3개 중 1~2개는 보기 5개 중에서 번호를 고르는 객관식으로 낸다. 풀이 화면에서는 둥근 단추 1~5 중 하나를 고르고 완료를 누른다.
+#  - 보기는 정답과 가까운 수 4개를 오답으로 섞어 작은 수부터 늘어놓는다. 그래서 정답 번호는 문제마다 달라진다.
+#  - 객관식 문제 묶음은 (문제, 풀이, 정답, 보기) 이고, 문제 글 끝에 보기가 붙는다. 정답은 번호가 아니라 값 그대로라서
+#    '정답을 기억하세요' 화면과 푼 문제 칸에는 번호 없이 값만 나온다.
+# ==========================================
+MC_CHOICE_COUNT = 5
+
+
+def make_choices(answer):
+    """객관식 보기 5개: 정답과 가까운 오답 4개를 섞어 작은 수부터 늘어놓은 글자 목록. 정답이 자연수가 아니면 None."""
+    if not str(answer).isdigit():
+        return None
+    t = int(answer)
+    lower = [t - d for d in (1, 2, 3, 4) if t - d >= 0]
+    higher = [t + d for d in (1, 2, 3, 4)]
+    # 정답보다 작은 오답을 몇 개 둘지(= 정답이 몇 번째에 놓일지)를 고르게 뽑아, 정답 번호가 한쪽으로 쏠리지 않게 한다.
+    below = random.choice([k for k in range(MC_CHOICE_COUNT) if k <= len(lower) and MC_CHOICE_COUNT - 1 - k <= len(higher)])
+    wrong = random.sample(lower, below) + random.sample(higher, MC_CHOICE_COUNT - 1 - below)
+    return [str(v) for v in sorted(wrong + [t])]
+
+
+def add_choices_to_question(question, choices):
+    """문제 글 끝에 보기를 (1) 11  (2) 13 … 꼴로 붙인다."""
+    line = "&emsp;".join(f"({i}) {c}" for i, c in enumerate(choices, 1))
+    return f"{question}\n\n{line}"
 
 
 # ==========================================
@@ -8653,7 +8959,8 @@ else:
 
     # --- 화면 3: 문제 풀이 ---
     elif st.session_state.step == "solve":
-        current_q, current_exp, current_ans = st.session_state.current_problem
+        current_q, current_exp, current_ans = st.session_state.current_problem[:3]
+        choices = st.session_state.current_problem[3] if len(st.session_state.current_problem) > 3 else None   # 객관식이면 보기
 
         # 제목 · 구분선 · 문제(수식 포함)를 흰 상자 하나에 담는다.
         readable_markdown(
@@ -8661,14 +8968,19 @@ else:
         )
         st.write("")
 
-        # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
-        user_answer = st.text_input(
-            "정답을 입력하세요 (숫자만 입력):",
-            autocomplete="off",
-            key="user_answer",
-            label_visibility="collapsed",
-            placeholder="정답을 입력하세요 (숫자만 입력)",
-        )
+        if choices:
+            # 객관식: 둥근 단추 1~5 중 번호를 고르고 완료를 누른다.
+            picked = mc_choice_input(len(choices))
+            user_answer = choices[picked - 1] if picked else ""
+        else:
+            # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
+            user_answer = st.text_input(
+                "정답을 입력하세요 (숫자만 입력):",
+                autocomplete="off",
+                key="user_answer",
+                label_visibility="collapsed",
+                placeholder="정답을 입력하세요 (숫자만 입력)",
+            )
         st.markdown("---")
 
         if st.session_state.is_dev_mode:
@@ -8684,8 +8996,9 @@ else:
                 )
                 if pw == "0805":
                     st.success("암호가 확인되었습니다.")
+                    ans_label = f"{current_ans} ({choices.index(current_ans) + 1}번)" if choices else current_ans
                     readable_markdown(
-                        f"▶ **정답:** {current_ans}\n\n▶ **풀이:**\n{current_exp}"
+                        f"▶ **정답:** {ans_label}\n\n▶ **풀이:**\n{current_exp}"
                     )
                 elif pw != "":
                     st.error("암호가 맞지 않아요. 다시 입력해 주세요.")
@@ -8707,7 +9020,9 @@ else:
             if lucky_button(
                 "완료 ❯", type="primary", use_container_width=True
             ):
-                if user_answer.strip() == current_ans:
+                if choices and not user_answer:
+                    st.warning("번호를 먼저 골라 주세요.")     # 아무것도 고르지 않았을 때는 벌점 없이 안내만 한다.
+                elif user_answer.strip() == current_ans:
                     if "pw_single" in st.session_state:
                         del st.session_state["pw_single"]
                     st.session_state.dev_panel_open = False

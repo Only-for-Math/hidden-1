@@ -3179,7 +3179,7 @@ class _Fig:
         def ev(x):
             try:
                 y = fn(x)
-                return y if y is not None and y == y and abs(y) < 1e9 else None
+                return y if y == y and abs(y) < 1e9 else None
             except (ZeroDivisionError, ValueError, OverflowError):
                 return None
 
@@ -4538,12 +4538,12 @@ def fig_two_squares(L, ap, lab_ab, names=("A", "P", "B")):
 
 
 # ==========================================
-# 방정식 풀어 쓰기(줄글) + 방정식 그림
-#  - 문제에 나오는 방정식·부등식·연립방정식을 (1) 말로 풀어 쓴 줄글과 (2) 그래프 그림으로 문제에 덧붙인다.
-#    수식($...$)이 깨져 보이는 기기에서도 문제를 알아볼 수 있도록 같은 내용을 글과 그림으로 한 번 더 보여 주는 것이다.
-#  - 수식을 작은 파서(_EaParser)로 읽어 식의 구조를 만든 뒤, 그 구조로 줄글(_ea_say)과 그림(fig_ea_graph·fig_ea_system)을 만든다.
+# 방정식 수식 그림(이미지 글자) + 풀어 쓰기(줄글)
+#  - 문제에 나오는 방정식·부등식·연립방정식을 (1) 수식을 그림(SVG)으로 그린 '이미지 글자'로 바꿔 보여 주고, (2) 말로 풀어 쓴 줄글을 덧붙인다.
+#    수식($...$)이 깨져 보이는 기기에서도 문제를 알아볼 수 있게 하려는 것이다. 그림으로 바꾼 수식은 원래의 수식 글을 따로 쓰지 않는다.
+#  - 수식을 작은 파서(_EaParser)로 읽어 식의 구조를 만든 뒤, 그 구조로 그림(_eb 계열 · _ea_math_img)과 줄글(_ea_say)을 만든다.
+#    그림의 글자는 글꼴이 아니라 글자 모양(SVG 경로)이라서 기기에 어떤 글꼴이 있든 똑같이 보인다.
 #    파서가 읽지 못하는 수식(행렬·집합·극한·적분 등)은 아무것도 덧붙이지 않고 그대로 둔다.
-#  - 그림에는 숫자 눈금을 쓰지 않는다. (그래프가 만나는 점의 값이 곧 정답이라, 값은 x·y 글자로만 가리킨다.)
 #  - 문제 하나를 만들 때 _ea_aids(문제 글) 한 번이면 된다. 어떤 오류가 나도 원래 문제 글을 그대로 돌려준다.
 # ==========================================
 class _EaErr(Exception):
@@ -4555,6 +4555,7 @@ _EA_SPACES = ("\\,", "\\;", "\\:", "\\!", "\\ ", "\\quad", "\\qquad", "\\display
 _EA_GREEK = {"\\pi": "π", "\\alpha": "α", "\\beta": "β", "\\theta": "θ", "\\sigma": "σ"}
 _EA_FUNCS = {"\\sin": "sin", "\\cos": "cos", "\\tan": "tan", "\\log": "log", "\\ln": "ln"}
 _EA_FRAC = ("\\frac", "\\dfrac", "\\tfrac")
+_EA_CALLS = ("f", "g", "h", "n", "E", "V", "P", "B", "N")      # f(x), n(A), E(X), P(X=1), B(9, 1/2) 처럼 이름 뒤에 괄호가 오면 함수 꼴
 
 
 def _ea_tokens(s):
@@ -4571,9 +4572,9 @@ def _ea_tokens(s):
             toks.append(("id", c))
             i += 1
         elif c == "\\":
-            m = re.match(r"\\(?:begin|end)\{cases\}", s[i:])
+            m = re.match(r"\\(begin|end)\{(cases|pmatrix)\}", s[i:])
             if m:
-                toks.append(("env", "begin" if "begin" in m.group(0) else "end"))
+                toks.append(("env", m.group(1) + ":" + m.group(2)))
                 i += m.end()
                 continue
             m = re.match(r"\\overline\{([A-Z]{2})\}|\\angle\s*([A-Z]{1,3})", s[i:])      # 선분 \overline{AB}, 각 \angle C
@@ -4592,7 +4593,7 @@ def _ea_tokens(s):
             if name in _EA_SPACES:
                 continue
             toks.append(("nl", name) if name == "\\\\" else ("cmd", name))
-        elif c in "+-*^_()[]{}|:=<>":
+        elif c in "+-*^_()[]{}|:=<>,&!'":
             toks.append(("op", c))
             i += 1
         elif c == "−":
@@ -4611,7 +4612,7 @@ class _EaParser:
     ('call', 'f', 인수) ('ratio', [e, ...]) ('rel', [e, ...], [관계 기호, ...]) ('cases', [rel, ...])"""
 
     def __init__(self, toks):
-        self.t, self.i, self.abs = toks, 0, 0
+        self.t, self.i, self.abs, self.int_depth = toks, 0, 0, 0
 
     def pk(self, k=0):
         j = self.i + k
@@ -4633,6 +4634,8 @@ class _EaParser:
 
     def starts_atom(self, no_func=False):
         k, v = self.pk()
+        if k == "id" and v == "d" and self.int_depth and self.pk(1)[0] == "id":
+            return False                      # 적분 끝의 dx 는 곱이 아니라 미분 기호
         if k in ("num", "id", "seg", "ang"):
             return True
         if k == "op":
@@ -4657,7 +4660,7 @@ class _EaParser:
             operands.append(self.side())
         if not ops:
             return operands[0]
-        if len(ops) > 2:
+        if len(ops) > 3:
             raise _EaErr("관계 기호가 너무 많다")
         if any(o[0] == "ratio" for o in operands) and not (ops == ["="] and all(o[0] == "ratio" for o in operands)):
             raise _EaErr("비의 쓰임")
@@ -4672,6 +4675,13 @@ class _EaParser:
 
     # ---- 식 ----
     def expr(self):
+        node = self._sum()
+        while self.pk() in (("cmd", "\\cap"), ("cmd", "\\cup")):
+            sym = "∩" if self.take()[1] == "\\cap" else "∪"
+            node = ("setop", sym, node, self._sum())
+        return node
+
+    def _sum(self):
         terms = [(1, self.term())]
         while self.pk()[0] == "op" and self.pk()[1] in ("+", "-"):
             sign = 1 if self.take()[1] == "+" else -1
@@ -4687,6 +4697,11 @@ class _EaParser:
                 self.take()
                 factors.append(self.unary())
                 flags.append(False)
+                after_div = False
+            elif tk == ("cmd", "\\circ"):          # f∘g 합성함수 (^\circ 는 power 에서 먼저 도수 기호로 읽힌다)
+                self.take()
+                factors.append(self.unary())
+                flags.append("∘")
                 after_div = False
             elif tk == ("cmd", "\\div"):
                 self.take()
@@ -4713,6 +4728,9 @@ class _EaParser:
 
     def power(self):
         base = self.atom()
+        if self.is_op("!"):
+            self.take()
+            base = ("fact", base)
         if self.is_op("^"):
             self.take()
             if self.pk() == ("cmd", "\\circ"):
@@ -4760,23 +4778,75 @@ class _EaParser:
         if k in ("seg", "ang"):
             return (k, v)
         if k == "id":
-            if v in ("f", "g", "h", "n", "E", "V", "P") and self.is_op("("):
+            primes = ""
+            while self.is_op("'"):
                 self.take()
-                arg = self.expr()
+                primes += "′"
+            if v in _EA_CALLS and self.is_op("("):
+                self.take()
+                args = [self.relation()]
+                while self.is_op(","):
+                    self.take()
+                    args.append(self.relation())
                 self.need("op", ")")
-                return ("call", v, arg)
+                return ("call", v + primes, args[0] if len(args) == 1 else ("tuple", args))
+            if primes:
+                return ("var", v + primes)
             if self.is_op("_"):
                 self.take()
-                return ("var", v + "_" + _ea_plain(self.script(), mk=False))
+                return ("var", v + "_" + _ea_plain(self.script()))
             return ("var", v)
         if k == "op" and v in ("(", "["):
-            e = self.expr()
+            e = self.relation()
             self.need("op", ")" if v == "(" else "]")
             return ("paren", e)
         if k == "op" and v == "{":
+            if self.is_op("}"):                       # {}_{n}C_{r} 꼴: 조합·순열
+                self.take()
+                self.need("op", "_")
+                sub1 = self.script()
+                letter = self.need("id")[1]
+                if letter not in ("C", "P", "H"):
+                    raise _EaErr("조합 기호")
+                self.need("op", "_")
+                return ("comb", letter, sub1, self.script())
             e = self.expr()
             self.need("op", "}")
             return e
+        if k == "env" and v == "begin:cases":
+            rows = []
+            while True:
+                cell = self.relation()
+                if self.is_op("&"):
+                    self.take()
+                    cell = ("crow", [cell, self.relation()])
+                rows.append(cell)
+                tk = self.take()
+                if tk[0] == "nl" and self.pk() == ("env", "end:cases"):
+                    self.take()
+                    break
+                if tk == ("env", "end:cases"):
+                    break
+                if tk[0] != "nl":
+                    raise _EaErr("연립방정식 모양")
+            return ("cases", rows)
+        if k == "env" and v == "begin:pmatrix":
+            rows, row = [], []
+            while True:
+                row.append(self.expr())
+                tk = self.take()
+                if tk == ("op", "&"):
+                    continue
+                rows.append(row)
+                row = []
+                if tk[0] == "nl" and self.pk() == ("env", "end:pmatrix"):
+                    self.take()
+                    break
+                if tk == ("env", "end:pmatrix"):
+                    break
+                if tk[0] != "nl":
+                    raise _EaErr("행렬 모양")
+            return ("matrix", rows)
         if k == "op" and v == "|":
             self.abs += 1
             e = self.expr()
@@ -4784,6 +4854,43 @@ class _EaParser:
             self.need("op", "|")
             return ("abs", e)
         if k == "cmd":
+            if v == "\\{":
+                elems = []
+                while self.pk() != ("cmd", "\\}"):
+                    if elems:
+                        self.need("op", ",")
+                    elems.append(self.atom() if self.pk()[0] == "cmd" and self.pk()[1] in ("\\cdots", "\\ldots") else self.expr())
+                self.take()
+                return ("set", elems)
+            if v in ("\\cdots", "\\ldots"):
+                return ("dots",)
+            if v in ("\\sum", "\\int"):
+                lower = upper = None
+                if self.is_op("_"):
+                    self.take()
+                    self.need("op", "{")
+                    lower = self.relation()
+                    self.need("op", "}")
+                if self.is_op("^"):
+                    self.take()
+                    upper = self.script()
+                if v == "\\sum":
+                    return ("sum", lower, upper, self.func_arg())
+                self.int_depth += 1
+                body = self.expr()
+                self.int_depth -= 1
+                if self.pk() != ("id", "d") or self.pk(1)[0] != "id":
+                    raise _EaErr("적분 변수")
+                self.take()
+                return ("int", lower, upper, body, self.take()[1])
+            if v == "\\lim":
+                self.need("op", "_")
+                self.need("op", "{")
+                var = self.expr()
+                self.need("cmd", "\\to")
+                to = self.expr()
+                self.need("op", "}")
+                return ("lim", var, to, self.term())
             if v in _EA_GREEK:
                 return ("var", _EA_GREEK[v])
             if v in _EA_FRAC:
@@ -4807,23 +4914,6 @@ class _EaParser:
 def _ea_parse(s):
     """수식 글 -> 식 구조. 읽을 수 없으면 _EaErr."""
     p = _EaParser(_ea_tokens(s))
-    if p.pk() == ("env", "begin"):
-        p.take()
-        rows = []
-        while True:
-            rows.append(p.relation())
-            tk = p.take()
-            if tk[0] == "nl":
-                if p.pk() == ("env", "end"):
-                    p.take()
-                    break
-            elif tk == ("env", "end"):
-                break
-            else:
-                raise _EaErr("연립방정식 모양")
-        if p.pk()[0] != "end" or not all(r[0] == "rel" for r in rows):
-            raise _EaErr("연립방정식 모양")
-        return ("cases", rows)
     node = p.relation()
     if p.pk()[0] != "end":
         raise _EaErr("끝에 남은 글자")
@@ -4831,146 +4921,101 @@ def _ea_parse(s):
 
 
 def _ea_nodes(n):
+    """식 구조에 든 모든 조각(자기 자신 포함)을 차례로 돌려준다."""
     yield n
     for c in n[1:]:
-        for item in (c if isinstance(c, list) else [c]):
-            if isinstance(item, tuple):
-                if item and isinstance(item[0], int):
-                    item = item[1]
-                yield from _ea_nodes(item)
+        yield from _ea_walk(c)
 
 
-def _ea_vars(n):
-    """식에 나오는 문자(변수). 함수 f(x) 는 '#f' 로 센다. π 는 상수라서 뺀다."""
-    out = set()
-    for m in _ea_nodes(n):
-        if m[0] == "var" and m[1] != "π":
-            out.add(m[1])
-        elif m[0] == "call":
-            out.add("#" + m[1])
-    return out
+def _ea_walk(c):
+    if isinstance(c, list):
+        for e in c:
+            yield from _ea_walk(e)
+    elif isinstance(c, tuple) and c:
+        if isinstance(c[0], int):         # (부호, 항)
+            yield from _ea_walk(c[1])
+        elif isinstance(c[0], str):
+            yield from _ea_nodes(c)
 
 
-# ---------- 식을 평범한 글로 (그림 안의 식 이름, 줄글 속 괄호 설명) ----------
-def _ea_plain(n, mk=True, prec=0):
-    """식 구조 -> 글. mk=True 면 위 첨자를 '^{2}' 표시로 두어 그림 글자에서 작게 올려 쓰게 하고, False 면 유니코드 위 첨자."""
+# ---------- 식을 평범한 글로 (그림의 대체 글, 줄글 속 괄호 설명) ----------
+def _ea_plain(n, prec=0):
+    """식 구조 -> 한 줄짜리 평범한 글. '3(x − 5) − 1', 'x²'. (그림이 안 보일 때 보이는 대체 글로도 쓴다.)"""
     k = n[0]
     if k in ("num", "var", "seg"):
         return n[1]
     if k == "ang":
         return "∠" + n[1]
     if k == "call":
-        return f"{n[1]}({_ea_plain(n[2], mk)})"
+        return f"{n[1]}({_ea_plain(n[2])})"
     if k == "paren":
-        return "(" + _ea_plain(n[1], mk) + ")"
+        return "(" + _ea_plain(n[1]) + ")"
     if k == "neg":
-        return "−" + _ea_plain(n[1], mk, 3)
+        return "−" + _ea_plain(n[1], 3)
     if k == "add":
-        s = _ea_plain(n[1][0][1], mk, 1)
+        s = _ea_plain(n[1][0][1], 1)
         for sign, t in n[1][1:]:
-            s += (" + " if sign > 0 else " − ") + _ea_plain(t, mk, 1)
+            s += (" + " if sign > 0 else " − ") + _ea_plain(t, 1)
         return f"({s})" if prec >= 2 else s
     if k == "mul":
-        s = _ea_plain(n[1][0], mk, 2)
+        s = _ea_plain(n[1][0], 2)
         for f, imp in zip(n[1][1:], n[2]):
-            s += ("" if imp else " × ") + _ea_plain(f, mk, 2)
+            s += (f" {imp} " if isinstance(imp, str) else "" if imp else " × ") + _ea_plain(f, 2)
         return f"({s})" if prec >= 3 else s
     if k == "div":
-        return f"{_ea_plain(n[1], mk, 2)} ÷ {_ea_plain(n[2], mk, 3)}"
+        return f"{_ea_plain(n[1], 2)} ÷ {_ea_plain(n[2], 3)}"
     if k == "frac":
-        a, b = _ea_plain(n[1], mk), _ea_plain(n[2], mk)
+        a, b = _ea_plain(n[1]), _ea_plain(n[2])
         return f"{a}/{b}" if n[1][0] in ("num", "var") and n[2][0] in ("num", "var") else f"({a})/({b})"
     if k == "pow":
-        base = _ea_plain(n[1], mk, 3 if n[1][0] in ("add", "mul", "neg", "div", "frac") else 0)
-        e = _ea_plain(n[2], mk)
-        if mk:
-            return f"{base}^{{{e}}}"
+        base = _ea_plain(n[1], 3 if n[1][0] in ("add", "mul", "neg", "div", "frac") else 0)
+        e = _ea_plain(n[2])
         return base + (e.translate(_FIG_SUP) if re.fullmatch(r"\d+", e) else f"^({e})")
     if k == "sqrt":
-        inner = _ea_plain(n[1], mk)
+        inner = _ea_plain(n[1])
         return "√" + (inner if n[1][0] in ("num", "var") else f"({inner})")
     if k == "abs":
-        return "|" + _ea_plain(n[1], mk) + "|"
+        return "|" + _ea_plain(n[1]) + "|"
     if k == "deg":
-        return _ea_plain(n[1], mk, 3) + "°"
+        return _ea_plain(n[1], 3) + "°"
     if k == "pct":
-        return _ea_plain(n[1], mk, 3) + "%"
+        return _ea_plain(n[1], 3) + "%"
     if k == "func":
-        name = n[1]
-        if n[3] is not None:
-            name += (f"_{{{_ea_plain(n[3], mk)}}}" if mk else _ea_plain(n[3], mk))
-        arg = _ea_plain(n[2], mk, 2)
-        return f"{name} {arg}"
+        name = n[1] + (f"_{_ea_plain(n[3])}" if n[3] is not None else "")
+        return f"{name} {_ea_plain(n[2], 2)}"
     if k == "ratio":
-        return " : ".join(_ea_plain(p, mk) for p in n[1])
+        return " : ".join(_ea_plain(p) for p in n[1])
     if k == "rel":
-        s = _ea_plain(n[1][0], mk)
+        s = _ea_plain(n[1][0])
         for op, e in zip(n[2], n[1][1:]):
-            s += f" {op} " + _ea_plain(e, mk)
+            s += f" {op} " + _ea_plain(e)
         return s
+    if k == "cases":
+        return ", ".join(_ea_plain(r) for r in n[1])
+    if k == "crow":
+        return f"{_ea_plain(n[1][0])} {_ea_plain(n[1][1])}"
+    if k == "tuple":
+        return ", ".join(_ea_plain(p) for p in n[1])
+    if k == "set":
+        return "{" + ", ".join(_ea_plain(e) for e in n[1]) + "}"
+    if k == "dots":
+        return "⋯"
+    if k == "setop":
+        return f"{_ea_plain(n[2], 2)}{n[1]}{_ea_plain(n[3], 2)}"
+    if k == "comb":
+        return f"{_ea_plain(n[2], 3)}{n[1]}{_ea_plain(n[3], 3)}"
+    if k == "fact":
+        return _ea_plain(n[1], 3) + "!"
+    if k == "sum":
+        lo = _ea_plain(n[1]) if n[1] else ""
+        return f"Σ({lo}~{_ea_plain(n[2]) if n[2] else ''}) {_ea_plain(n[3], 2)}"
+    if k == "lim":
+        return f"lim({_ea_plain(n[1])}→{_ea_plain(n[2])}) {_ea_plain(n[3], 2)}"
+    if k == "int":
+        return f"∫({_ea_plain(n[1]) if n[1] else ''}~{_ea_plain(n[2]) if n[2] else ''}) {_ea_plain(n[3])} d{n[4]}"
+    if k == "matrix":
+        return "[" + "; ".join(" ".join(_ea_plain(c) for c in row) for row in n[1]) + "]"
     raise _EaErr(k)
-
-
-# ---------- 식의 값 (그래프를 그리려고) ----------
-_EA_ENV = {
-    "__builtins__": {}, "abs": abs, "pi": math.pi, "_sqrt": math.sqrt, "_sin": math.sin, "_cos": math.cos,
-    "_tan": math.tan, "_ln": math.log, "_log": math.log, "_log10": math.log10, "_rad": math.radians,
-}
-
-
-def _ea_src(n, names):
-    """식 구조 -> 파이썬 식 글. 우리가 만든 구조에서 나온 글만 쓰므로 eval 해도 안전하다."""
-    k = n[0]
-    if k == "num":
-        return repr(float(n[1]))
-    if k == "var":
-        if n[1] == "π":
-            return "pi"
-        if n[1] in names:
-            return n[1]
-        raise _EaErr("모르는 문자 " + n[1])
-    if k == "paren":
-        return "(" + _ea_src(n[1], names) + ")"
-    if k == "neg":
-        return "(-" + _ea_src(n[1], names) + ")"
-    if k == "add":
-        return "(" + " ".join(("+" if s > 0 else "-") + "(" + _ea_src(t, names) + ")" for s, t in n[1]) + ")"
-    if k == "mul":
-        return "(" + "*".join("(" + _ea_src(f, names) + ")" for f in n[1]) + ")"
-    if k in ("div", "frac"):
-        return "((" + _ea_src(n[1], names) + ")/(" + _ea_src(n[2], names) + "))"
-    if k == "pow":
-        return "((" + _ea_src(n[1], names) + ")**(" + _ea_src(n[2], names) + "))"
-    if k == "sqrt":
-        return "_sqrt(" + _ea_src(n[1], names) + ")"
-    if k == "abs":
-        return "abs(" + _ea_src(n[1], names) + ")"
-    if k == "deg":
-        return "_rad(" + _ea_src(n[1], names) + ")"
-    if k == "pct":
-        return "((" + _ea_src(n[1], names) + ")/100.0)"
-    if k == "func":
-        name, arg, base = n[1], _ea_src(n[2], names), n[3]
-        if name in ("sin", "cos", "tan", "ln"):
-            return f"_{name}({arg})"
-        return f"_log({arg}, {_ea_src(base, names)})" if base is not None else f"_log10({arg})"
-    raise _EaErr(k)
-
-
-def _ea_compile(n, names=("x",)):
-    """식 구조 -> 값을 돌려주는 함수. 값이 없는 곳(0 으로 나눔·음수의 제곱근 등)에서는 None."""
-    f = eval(f"lambda {','.join(names)}: {_ea_src(n, names)}", dict(_EA_ENV))
-
-    def g(*a):
-        try:
-            v = f(*a)
-        except (ZeroDivisionError, ValueError, OverflowError, TypeError):
-            return None
-        if isinstance(v, complex) or v != v or abs(v) > 1e15:
-            return None
-        return float(v)
-
-    return g
 
 
 # ---------- 줄글 ----------
@@ -5056,7 +5101,7 @@ def _ea_say(n):
     if k == "ang":
         return f"각 {n[1]}의 크기"
     if k == "call":
-        return f"{n[1]}({_ea_plain(n[2], False)})"
+        return f"{n[1]}({_ea_plain(n[2])})"
     if k == "paren":
         return _ea_say(n[1])
     if k == "neg":
@@ -5076,6 +5121,8 @@ def _ea_say(n):
                 out += " " + tp
             out += " 더하고" if sign > 0 else " 빼고"
         return out[:-len("더하고")] + "더한 수" if out.endswith("더하고") else out[:-len("빼고")] + "뺀 수"
+    if k == "mul" and any(isinstance(f, str) for f in n[2]):
+        raise _EaErr("합성함수는 줄글로 읽지 않는다")
     if k in ("mul", "div"):
         chain = _ea_chain(n)
         if len(chain) >= 3:
@@ -5105,7 +5152,7 @@ def _ea_say(n):
         elif e[0] == "var":
             tail = f"{e[1]}제곱"
         else:
-            tail = f"({_ea_plain(e, False)})제곱"
+            tail = f"({_ea_plain(e)})제곱"
         return f"{_ea_say(n[1])}의 {tail}"
     if k == "sqrt":
         return f"{_ea_say(n[1])}의 양의 제곱근"
@@ -5133,6 +5180,8 @@ _EA_CMP = {"<": "작다", ">": "크다", "≤": "작거나 같다", "≥": "크�
 def _ea_clause(rel):
     """관계식 -> 한 문장. 'x에서 5를 뺀 수는 3과 같다.'"""
     operands, ops = rel[1], rel[2]
+    if len(ops) > 2:
+        raise _EaErr("줄글로 읽지 않는 긴 관계")
     if len(ops) == 2:
         a, m, b = operands
         if all(o in ("<", "≤") for o in ops):
@@ -5166,320 +5215,6 @@ def _ea_worth(rel):
     if no_var(rel):
         return False
     return not all(_ea_atomic(o) or no_var(o) for o in rel[1])
-
-
-# ---------- 그림 ----------
-def _ea_markup(s):
-    """'x^{2} + 1' -> SVG <text> 안쪽 글. ^{..} 는 작게 올리고 _{..} 는 작게 내려 쓴다."""
-    out, i, reset = [], 0, 0
-    for m in re.finditer(r"([\^_])\{([^{}]*)\}", s):
-        chunk = html_escape(s[i:m.start()])
-        if chunk:
-            out.append(f'<tspan dy="{reset}">{chunk}</tspan>' if reset else chunk)
-            reset = 0
-        up = m.group(1) == "^"
-        shift = -4.5 if up else 3.5
-        out.append(f'<tspan dy="{shift}" font-size="68%">{html_escape(m.group(2))}</tspan>')
-        reset = -shift
-        i = m.end()
-    chunk = html_escape(s[i:])
-    if chunk:
-        out.append(f'<tspan dy="{reset}">{chunk}</tspan>' if reset else chunk)
-    return "".join(out)
-
-
-def _ea_textlen(s):
-    return len(re.sub(r"[\^_]\{([^{}]*)\}", r"\1", s))
-
-
-def _ea_legend(f, rows, size=14):
-    """그림 위쪽에 '색 선 + 식 이름' 줄들을 적는다. 식이 길면 글자를 줄인다."""
-    for i, (color, txt) in enumerate(rows):
-        y = 18 + i * 20
-        sz = size
-        while sz > 10 and 0.5 * sz * _ea_textlen(txt) > f.W - 52:
-            sz -= 1
-        f.add(f'<line x1="12" y1="{y - 4}" x2="36" y2="{y - 4}" stroke="{color}" stroke-width="3" stroke-linecap="round"/>')
-        f.add(f'<text x="44" y="{y}" font-size="{sz}" fill="{_FIG_INK}">{_ea_markup(txt)}</text>')
-
-
-def _ea_roots(d, lo=-200.0, hi=200.0, n=4000):
-    """d(x)=0 의 해들. 부호가 바뀌는 곳과 닿기만 하는 곳(중근)을 찾는다."""
-    xs = [lo + (hi - lo) * i / n for i in range(n + 1)]
-    ys = [d(x) for x in xs]
-    roots = []
-    for i in range(n):
-        a, b = ys[i], ys[i + 1]
-        if a is None or b is None:
-            continue
-        if a == 0:
-            roots.append(xs[i])
-        elif a * b < 0:
-            l, h = xs[i], xs[i + 1]
-            for _ in range(60):
-                m = (l + h) / 2
-                v = d(m)
-                if v is None:
-                    break
-                if (v < 0) == (a < 0):
-                    l = m
-                else:
-                    h = m
-            roots.append((l + h) / 2)
-    for i in range(1, n):
-        a, b, c = ys[i - 1], ys[i], ys[i + 1]
-        # 부호가 안 바뀌고 0 에 아주 가까이 내려왔다 올라가는 곳만 중근(접점) 후보로 본다.
-        if None in (a, b, c) or a * c < 0 or abs(b) > 0.3 * min(abs(a), abs(c)):
-            continue
-        lo_, hi_ = xs[i - 1], xs[i + 1]      # |d| 가 가장 작은 곳을 삼분탐색으로 좁혀 0 에 닿는지 본다
-        for _ in range(60):
-            m1, m2 = lo_ + (hi_ - lo_) / 3, hi_ - (hi_ - lo_) / 3
-            v1, v2 = d(m1), d(m2)
-            if v1 is None or v2 is None:
-                break
-            if abs(v1) < abs(v2):
-                hi_ = m2
-            else:
-                lo_ = m1
-        mid_ = (lo_ + hi_) / 2
-        v = d(mid_)
-        if v is not None and abs(v) < 1e-7 * (1 + max(abs(a), abs(c))):
-            roots.append(mid_)
-    roots.sort()
-    out = []
-    for r in roots:
-        if not out or r - out[-1] > 0.04:
-            out.append(r)
-    return out
-
-
-def _ea_diff(a, b):
-    return None if a is None or b is None else a - b
-
-
-def _ea_cross(a, b):
-    """비례식 a:b = c:d 를 '내항의 곱 = 외항의 곱'인 두 식으로 바꾼다."""
-    def wrap(n):
-        return ("paren", n) if n[0] in ("add", "neg") else n
-    (p, q), (r, s) = a[1], b[1]
-    return ("mul", [wrap(p), wrap(s)], [False]), ("mul", [wrap(q), wrap(r)], [False])
-
-
-def fig_ea_graph(rel):
-    """x 하나만 든 방정식·부등식 -> 양쪽 식의 그래프. 만나는 점(해)은 숫자 없이 x 로만 가리킨다. 그릴 수 없으면 None."""
-    operands, ops = rel[1], rel[2]
-    if len(ops) == 2:
-        mid, lo_, hi_ = operands[1], operands[0], operands[2]
-        sides = [mid, lo_, hi_]
-    elif operands[0][0] == "ratio":
-        if len(operands[0][1]) != 2 or len(operands[1][1]) != 2:
-            return None
-        sides = list(_ea_cross(operands[0], operands[1]))
-    else:
-        sides = list(operands)
-    if any(_ea_vars(s) - {"x"} for s in sides) or not any("x" in _ea_vars(s) for s in sides):
-        return None
-    fns = [_ea_compile(s) for s in sides]
-    zero_right = len(sides) == 2 and _ea_is_number(sides[1]) and fns[1](0.0) == 0
-    zero_left = len(sides) == 2 and _ea_is_number(sides[0]) and fns[0](0.0) == 0
-    if zero_left and not zero_right:
-        sides, fns = sides[::-1], fns[::-1]
-        ops = [{"<": ">", ">": "<", "≤": "≥", "≥": "≤"}.get(ops[0], ops[0])]
-        zero_right = True
-    # 해(경계)를 찾는다.
-    pairs = [(0, 1)] if len(sides) == 2 else [(0, 1), (0, 2)]
-    bounds = []
-    for i, j in pairs:
-        bounds += _ea_roots(lambda x, i=i, j=j: _ea_diff(fns[i](x), fns[j](x)))
-    bounds = sorted(set(round(b, 9) for b in bounds), key=lambda r: (abs(r), r))[:4]
-    bounds.sort()
-    if not bounds:
-        return None
-    lo_x, hi_x = min(0.0, bounds[0]), max(0.0, bounds[-1])
-    span = max(hi_x - lo_x, 1.0)
-    pad = max(1.0, 0.2 * span)
-    x0, x1 = lo_x - pad, hi_x + pad
-    # 값이 아주 큰 그래프(지수함수 등)는 세로로 줄여서 그린다. 눈금 숫자가 없으니 모양만 같으면 된다.
-    peak = max([abs(v) for fn in fns for v in (fn(r) for r in bounds + [0.0]) if v is not None] + [1.0])
-    if peak > 1e4:
-        k = peak / 40.0
-        fns = [(lambda xv, fn=fn: None if fn(xv) is None else fn(xv) / k) for fn in fns]
-    # 세로 범위: 해와 원점, 해 사이 구간 전체, 양 끝에서의 값 (끝 값이 너무 크면 버린다)
-    keys, inner, ends = [0.0], [], []
-    for fn in fns:
-        for xv in bounds + [0.0]:
-            v = fn(xv)
-            if v is not None:
-                keys.append(v)
-        for i in range(121):
-            v = fn(lo_x + (hi_x - lo_x) * i / 120)
-            if v is not None:
-                inner.append(v)
-        for xv in (x0, x1):
-            v = fn(xv)
-            if v is not None:
-                ends.append(v)
-    base = max(abs(v) for v in keys)
-    vals = keys + [v for v in inner if abs(v) <= 6.0 * base + 1.0] + [v for v in ends if abs(v) <= 3.0 * base + 1.0]
-    y0, y1 = min(vals), max(vals)
-    ym = max(0.14 * (y1 - y0), 0.5)
-    y0, y1 = min(y0, 0.0) - ym, max(y1, 0.0) + ym
-    ineq = ops[0] != "="
-    rows = [(_FIG_BLUE, "y = " + _ea_plain(sides[0]))]
-    if not zero_right:
-        rows.append((_FIG_RED, "y = " + _ea_plain(sides[1])))
-    if len(sides) == 3:
-        rows.append((_FIG_GREEN, "y = " + _ea_plain(sides[2])))
-    T = 12 + 20 * len(rows)
-    f = _Fig(x0, x1, y0, y1, width=340, height=T + 190, equal=False, pad=(18, 24, T, 24))
-    f.axes(origin=None if any(abs(r) < 0.06 * (x1 - x0) for r in bounds) else "O")
-    colors = [_FIG_BLUE, _FIG_RED, _FIG_GREEN]
-    for idx, fn in enumerate(fns):
-        if idx == 1 and zero_right:
-            continue
-        f.curve(lambda xv, fn=fn: fn(xv), x0, x1, color=colors[idx], w=2.4)
-    _ea_legend(f, rows)
-    if not ineq:
-        for n_, r in enumerate(bounds):
-            yr = fns[0](r)
-            if yr is None:
-                continue
-            if abs(yr) > 1e-9:
-                f.line((r, 0), (r, yr), color=_FIG_GRAY, w=1.3, dash="4 4", cap="butt")
-            f.dot((r, yr), r=4.2, color=_FIG_INK, ring=True)
-            name = "x" if len(bounds) == 1 else f"x_{{{n_ + 1}}}"
-            f.add(_ea_label(f, r, 0, name, up=yr < 0))
-    else:
-        _ea_shade(f, fns, ops, bounds, x0, x1)
-    return f.svg()
-
-
-def _ea_label(f, x, y, name, up=False):
-    sx, sy = f.P((x, y))
-    sx = min(max(sx, 14), f.W - 14)
-    return (
-        f'<text x="{_fn(sx)}" y="{_fn(sy + (-8 if up else 17))}" font-size="15" font-style="italic" text-anchor="middle" '
-        f'fill="{_FIG_INK}" stroke="#fff" stroke-width="3.6" stroke-linejoin="round" paint-order="stroke">{_ea_markup(name)}</text>'
-    )
-
-
-def _ea_shade(f, fns, ops, bounds, x0, x1):
-    """부등식의 해가 되는 x 의 범위를 x 축 위에 굵은 초록 선으로 칠한다. (끝점은 값 없이 동그라미만)"""
-    def holds(x):
-        v = [fn(x) for fn in fns]
-        if any(t is None for t in v):
-            return False
-        if len(ops) == 2:
-            m, a, b = v
-            return _ea_cmp(a, ops[0], m) and _ea_cmp(m, ops[1], b)
-        return _ea_cmp(v[0], ops[0], v[1])
-
-    n = 400
-    tol = 2.0 * (x1 - x0) / n
-    xs = [x0 + (x1 - x0) * i / n for i in range(n + 1)]
-    flags = [holds(x) for x in xs]
-    runs, start = [], None
-    for i, ok in enumerate(flags):
-        if ok and start is None:
-            start = i
-        if (not ok or i == n) and start is not None:
-            end = i if ok else i - 1
-            runs.append(tuple(next((r for r in bounds if abs(r - xs[j]) < tol), xs[j]) for j in (start, end)))
-            start = None
-    for a, b in runs:
-        f.line((a, 0), (b, 0), color=_FIG_GREEN, w=6, cap="butt")
-        if a <= x0 + 1e-9:
-            f.add(_ea_arrow(f, x0, -1))
-        if b >= x1 - 1e-9:
-            f.add(_ea_arrow(f, x1, 1))
-        mid = (a + b) / 2
-        if b >= x1 - 1e-9 and a > x0 + 1e-9:
-            mid = a + 0.3 * (b - a)
-        elif a <= x0 + 1e-9 and b < x1 - 1e-9:
-            mid = b - 0.3 * (b - a)
-        f.add(_ea_label(f, mid, 0, "x", up=any(v is not None and v < 0 for v in (fn(mid) for fn in fns))))
-    # 끝점: 지나가는 쪽이 아닌 경계에는 동그라미 (strict 는 속이 빈 동그라미)
-    strict = all(o in ("<", ">") for o in ops)
-    for r in bounds:
-        if any(abs(r - a) < 1e-9 or abs(r - b) < 1e-9 for a, b in runs):
-            f.dot((r, 0), r=4.6, color=_FIG_GREEN, ring=strict)
-
-
-def _ea_cmp(a, op, b):
-    return {"<": a < b, ">": a > b, "≤": a <= b + 1e-9, "≥": a >= b - 1e-9}[op]
-
-
-def _ea_arrow(f, x, direction):
-    sx, sy = f.P((x, 0))
-    return (
-        f'<polygon points="{_fn(sx + 3 * direction)},{_fn(sy)} {_fn(sx - 5 * direction)},{_fn(sy - 5)} '
-        f'{_fn(sx - 5 * direction)},{_fn(sy + 5)}" fill="{_FIG_GREEN}"/>'
-    )
-
-
-def fig_ea_system(cases):
-    """두 일차방정식으로 된 연립방정식 -> 두 직선과 만나는 점. 만나는 점의 값은 숫자 없이 (x, y) 로만 가리킨다."""
-    rels = cases[1]
-    if len(rels) != 2 or any(r[2] != ["="] or r[1][0][0] == "ratio" for r in rels):
-        return None
-    if any(_ea_vars(r) - {"x", "y"} for r in rels):
-        return None
-    lines = []
-    for r in rels:
-        fn = _ea_compile(("add", [(1, r[1][0]), (-1, ("paren", r[1][1]))]), names=("x", "y"))
-        c = fn(0.0, 0.0)
-        a, b = (fn(1.0, 0.0) or 0) - c, (fn(0.0, 1.0) or 0) - c
-        if c is None or abs(fn(2.0, 3.0) - (a * 2 + b * 3 + c)) > 1e-7 or abs(fn(-1.5, 4.0) - (-1.5 * a + 4 * b + c)) > 1e-7:
-            return None
-        if abs(a) < 1e-12 and abs(b) < 1e-12:
-            return None
-        lines.append((a, b, c))
-    (a1, b1, c1), (a2, b2, c2) = lines
-    det = a1 * b2 - a2 * b1
-    if abs(det) < 1e-9:
-        return None
-    sx_, sy_ = (b1 * c2 - b2 * c1) / det, (c1 * a2 - c2 * a1) / det
-    span = max(abs(sx_), abs(sy_), 1.0)
-    m = 0.4 * span + 1.0
-    x0, x1 = min(0.0, sx_) - m, max(0.0, sx_) + m
-    y0, y1 = min(0.0, sy_) - m, max(0.0, sy_) + m
-    rows = [(_FIG_BLUE, _ea_plain(rels[0])), (_FIG_RED, _ea_plain(rels[1]))]
-    T = 12 + 20 * len(rows)
-    f = _Fig(x0, x1, y0, y1, width=340, height=T + 250, equal=True, pad=(20, 24, T, 22))
-    f.axes()
-    for (a, b, c), color in zip(lines, (_FIG_BLUE, _FIG_RED)):
-        p = (0.0, -c / b) if abs(b) >= abs(a) else (-c / a, 0.0)
-        f.clipped_line(p, (p[0] + b, p[1] - a), color=color, w=2.4)
-    _ea_legend(f, rows)
-    if abs(sx_) > 1e-9 or abs(sy_) > 1e-9:
-        if abs(sy_) > 1e-9:
-            f.line((sx_, 0), (sx_, sy_), color=_FIG_GRAY, w=1.3, dash="4 4", cap="butt")
-        if abs(sx_) > 1e-9:
-            f.line((0, sy_), (sx_, sy_), color=_FIG_GRAY, w=1.3, dash="4 4", cap="butt")
-    f.dot((sx_, sy_), r=4.4, color=_FIG_INK, ring=True)
-    px_, py_ = f.P((sx_, sy_))
-
-    def gap(cx, cy):
-        """화면 점 (cx, cy) 에서 두 직선까지의 거리(픽셀) 중 작은 값."""
-        X, Y = f.x0 + (cx - f.ox) / f.sx, f.y1 - (cy - f.oy) / f.sy
-        return min(abs(a * X + b * Y + c) / math.hypot(a / f.sx, b / f.sy) for a, b, c in lines)
-
-    tw = 0.5 * 15 * 6
-    cands = []
-    for ax_ in (1, -1):
-        for ay_ in (1, -1):
-            cx, cy = px_ + ax_ * (12 + tw / 2), py_ - ay_ * 14
-            if tw / 2 + 3 <= cx <= f.W - tw / 2 - 3 and f.oy + 8 <= cy <= f.H - 6:
-                cands.append((min(gap(cx, cy), gap(cx - tw / 2.2, cy), gap(cx + tw / 2.2, cy)), ax_, ay_))
-    if cands:
-        _, ax_, ay_ = max(cands)
-        f.text((px_ + ax_ * 12, py_ - ay_ * 11), "(x, y)", raw=True, anchor="start" if ax_ > 0 else "end", italic=False)
-    if abs(sx_) > 1e-9:
-        f.add(_ea_label(f, sx_, 0, "x", up=sy_ < 0))
-    if abs(sy_) > 1e-9:
-        sxp, syp = f.P((0, sy_))
-        f.text((sxp, syp + 5), "y", raw=True, dx=-9 if sx_ >= 0 else 9, anchor="end" if sx_ >= 0 else "start", size=15)
-    return f.svg()
 
 
 # ---------- 문제 글에 덧붙이기 ----------
@@ -5534,11 +5269,11 @@ def _ea_items(q):
                 node = _ea_parse(piece)
                 if node[0] == "rel" and _ea_worth(node):
                     sents = [(f"조건 {cond.group(1)}: " if cond else "") + _ea_clause(node)]
-                elif node[0] == "cases" and all(_ea_worth(r) for r in node[1]):
+                elif node[0] == "cases" and all(r[0] == "rel" and _ea_worth(r) for r in node[1]):
                     sents = [_ea_clause(r) for r in node[1]]
                 else:
                     continue
-            except _EaErr:
+            except (_EaErr, ValueError, IndexError, KeyError, TypeError):
                 continue
             if tuple(sents) not in seen:
                 seen.add(tuple(sents))
@@ -5563,28 +5298,758 @@ def _ea_prose(items):
     return "\n\n**말로 풀면:**\n\n" + "\n".join(f"- {s}" for s in lines)
 
 
+# ---------- 수식 그림 (글꼴 없이 글자 모양을 직접 그린 SVG) ----------
+# 글자 모양(윤곽선)을 SVG 경로로 그려 넣기 때문에 기기에 어떤 글꼴이 있든 똑같이 보인다. 안티에일리어싱도 그림 전체에 걸린다.
+# 글자 모양은 KaTeX 수식 글꼴(KaTeX_Main-Regular · KaTeX_Math-Italic · KaTeX_Size2-Regular, SIL Open Font License 1.1)에서 필요한 글자만 뽑은 것이다.
+# 글자 하나가 [폭, 위쪽 끝, 아래쪽 끝, 경로] (단위: 1/1000 em) 이고, JSON 으로 묶어 zlib 으로 줄인 뒤 base64 로 적었다.
+_EA_GLYPH_BLOB = (
+    "eNrtvUmPbdn23fVVDn8JCcTdaK96LQuQqJ2GxIB5VJYb1AEcg48NAaRBsoRAD7kFHWjSwA2gAbgDbdy3v8P7JMzxG2ufiFtl"
+    "9TLf30ZW3twnbtyIc/Zea65ZjjnmX/6jP/O73/73f/Qn/myqtX5Y7fxw1Lj80bf9vK06H+WWb/1st/zSz3xv80ilPVI5Srrl"
+    "dfR1S/0o85br0dptHGnc0nnk/HLU837EX+rjqOk2c/zeeUulHinFG874/X6b6ajrFu/V8q2+HHnle7x/etRejl7KrfYWr/ER"
+    "R76dR78fLc8jbuNxHvHpKcW15nY7b7WtuM1Uxm3o+7f4ZqrjVvot+1Pju7c8bnEnI7/U83HEB8Rbx+3GXeqhWnzSGW/40Pvr"
+    "w/TIR+f/FZ+QtQz30m5lPeLtarzrmW4pHqLHh8Zzlvj8Fj/X+62csWg9fvTUvaVDT9L2NZ26tXqMEm9welHGvB/8XjxuvGd7"
+    "nLrd+Pz63R/9uQ/an/899qe1/iGVHvsze479SX0co6ZYi1qOFn/i0Y9yi8e6pXVkLYqusVU8eqx6S/qTzhp3Ft+bN336SLcy"
+    "5m2dtxZ/y7nGD8Qj5Xyb8XNxl1rLrJWLh09n/EvRI8e+pXNqoWMpWqxC1g/Hb/eqa3zOqU2P7xUWIDZ+al2z1vrQQsSfcdSs"
+    "a7zleRREKRbU13jbeIQSd3Vr4x4PFoIUb3PMELL40HiNH9Md6d3jGkt9hPgdJR8hllpo/cux4rslJCuELFa79pDS+CodK76q"
+    "sUwht/G8Rb+Wcrxz/HXVowyJ6RHyGQKiu5WonEsvlQ8aeqA4ArqWm56M9Ywbq7rGKahZVz1ZiMzbY8W1nmzrqT09zw+99w9x"
+    "H7Gjq9/abI+mgxHvUvQy9AYpVk2yFSsVCxM7PGPPjll0zfG5J/IbYpD1jSmBjrWfVcub0zGbrinpzlP8bshg/LC2J67xK/EJ"
+    "K9Yw/rSqvY6Tr8dI6btviwRxjUes4C2WSMISv6WNHFlrluMPS9v6MbXesRMpVR0gtlQbEt+UbjhjzW9SA3F6jqGHOnSE4rdi"
+    "heINsp4vvu5L1yoB0nNKJvUnvogfiW8k3aJ+M743OfX1xg/FD+j86PO05FnqJcXnJAlL0V2GoLL06d3SS9XV2JjQCbFf8btN"
+    "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"
+)
+_EA_GLYPHS = {}
+
+
+def _ea_glyphs():
+    if not _EA_GLYPHS:
+        import json
+        import zlib
+
+        _EA_GLYPHS.update(json.loads(zlib.decompress(base64.b64decode(_EA_GLYPH_BLOB)).decode("utf-8")))
+    return _EA_GLYPHS
+
+
+_EA_AXIS = 0.25            # 분수선·괄호의 가운데 높이(em)
+_EA_BIN = 0.222            # + − × ÷ 앞뒤 띄어쓰기
+_EA_REL = 0.278            # = < > ≤ ≥ : 앞뒤 띄어쓰기
+
+
+class _EaBox:
+    """수식 한 덩어리. 단위는 글자 크기(em). w=폭, h=기준선 위 높이, d=기준선 아래 깊이.
+    items 는 기준선이 y=0 이고 아래쪽이 +y 인 그림 조각: ('g', 글자 키, x, y, 배율) · ('p', 경로, x, y, 선 굵기, 끝 모양) · ('l', x1, y1, x2, y2, 선 굵기)"""
+
+    __slots__ = ("w", "h", "d", "items")
+
+    def __init__(self, w=0.0, h=0.0, d=0.0, items=None):
+        self.w, self.h, self.d, self.items = w, h, d, items if items is not None else []
+
+
+def _eb_glyph(key, sc=1.0):
+    g = _ea_glyphs().get(key)
+    if g is None:
+        raise _EaErr(f"글자 모양 없음 {key!r}")
+    return _EaBox(g[0] / 1000 * sc, max(g[1], 0) / 1000 * sc, max(-g[2], 0) / 1000 * sc, [("g", key, 0.0, 0.0, sc)])
+
+
+def _eb_move(items, dx, dy):
+    out = []
+    for it in items:
+        if it[0] == "l":
+            out.append(("l", it[1] + dx, it[2] + dy, it[3] + dx, it[4] + dy, it[5]))
+        else:
+            out.append((it[0], it[1], it[2] + dx, it[3] + dy) + tuple(it[4:]))
+    return out
+
+
+def _eb_row(boxes):
+    x, h, d, items = 0.0, 0.0, 0.0, []
+    for b in boxes:
+        items += _eb_move(b.items, x, 0.0)
+        x += b.w
+        h, d = max(h, b.h), max(d, b.d)
+    return _EaBox(x, h, d, items)
+
+
+def _eb_shift(b, dy):
+    """상자를 dy(em) 만큼 아래로 옮긴다. (위로는 음수)"""
+    return _EaBox(b.w, max(0.0, b.h - dy), max(0.0, b.d + dy), _eb_move(b.items, 0.0, dy))
+
+
+def _eb_gap(w):
+    return _EaBox(w)
+
+
+def _eb_bin(ch, sc):
+    """+ − × ÷ : 앞뒤로 중간 띄어쓰기."""
+    return _eb_row([_eb_gap(_EA_BIN * sc), _eb_glyph(ch, sc), _eb_gap(_EA_BIN * sc)])
+
+
+def _eb_relglyph(op, sc):
+    if op == "≠":
+        b = _eb_glyph("=", sc)
+        return _EaBox(b.w, b.h, b.d, b.items + [("l", 0.19 * sc, 0.2 * sc, 0.59 * sc, -0.72 * sc, 0.05 * sc)])
+    return _eb_glyph(op, sc)
+
+
+def _eb_delim(ch, h, d, sc):
+    """괄호 ( ) [ ] | {. 안쪽 높이에 맞춰 늘린다. 평범한 높이면 글꼴 글자를 그대로 쓴다."""
+    if ch in "()[]|" and h <= 0.78 * sc and d <= 0.27 * sc:
+        return _eb_glyph(ch, sc)
+    half = max(h - _EA_AXIS * sc, d + _EA_AXIS * sc) + 0.07 * sc
+    top, bot = -(_EA_AXIS * sc + half), half - _EA_AXIS * sc
+    mid, ht = (top + bot) / 2, bot - top
+    sw = 0.055 * sc
+    if ch == "(":
+        w = 0.36 * sc
+        path = f"M{0.9 * w:.3f} {top:.3f}Q{-0.6 * w:.3f} {mid:.3f} {0.9 * w:.3f} {bot:.3f}"
+    elif ch == ")":
+        w = 0.36 * sc
+        path = f"M{0.1 * w:.3f} {top:.3f}Q{1.6 * w:.3f} {mid:.3f} {0.1 * w:.3f} {bot:.3f}"
+    elif ch == "[":
+        w = 0.34 * sc
+        path = f"M{0.85 * w:.3f} {top:.3f}L{0.2 * w:.3f} {top:.3f}L{0.2 * w:.3f} {bot:.3f}L{0.85 * w:.3f} {bot:.3f}"
+    elif ch == "]":
+        w = 0.34 * sc
+        path = f"M{0.15 * w:.3f} {top:.3f}L{0.8 * w:.3f} {top:.3f}L{0.8 * w:.3f} {bot:.3f}L{0.15 * w:.3f} {bot:.3f}"
+    elif ch == "|":
+        w = 0.24 * sc
+        path = f"M{w / 2:.3f} {top:.3f}L{w / 2:.3f} {bot:.3f}"
+    elif ch == "}":
+        w = 0.5 * sc
+        q = 0.16 * ht
+        path = (
+            f"M{0.1 * w:.3f} {top:.3f}Q{0.5 * w:.3f} {top:.3f} {0.5 * w:.3f} {top + q:.3f}L{0.5 * w:.3f} {mid - 0.1 * ht:.3f}"
+            f"Q{0.5 * w:.3f} {mid:.3f} {0.9 * w:.3f} {mid:.3f}Q{0.5 * w:.3f} {mid:.3f} {0.5 * w:.3f} {mid + 0.1 * ht:.3f}"
+            f"L{0.5 * w:.3f} {bot - q:.3f}Q{0.5 * w:.3f} {bot:.3f} {0.1 * w:.3f} {bot:.3f}"
+        )
+    else:  # "{"
+        w = 0.5 * sc
+        q = 0.16 * ht
+        path = (
+            f"M{0.9 * w:.3f} {top:.3f}Q{0.5 * w:.3f} {top:.3f} {0.5 * w:.3f} {top + q:.3f}L{0.5 * w:.3f} {mid - 0.1 * ht:.3f}"
+            f"Q{0.5 * w:.3f} {mid:.3f} {0.1 * w:.3f} {mid:.3f}Q{0.5 * w:.3f} {mid:.3f} {0.5 * w:.3f} {mid + 0.1 * ht:.3f}"
+            f"L{0.5 * w:.3f} {bot - q:.3f}Q{0.5 * w:.3f} {bot:.3f} {0.9 * w:.3f} {bot:.3f}"
+        )
+    return _EaBox(w, -top, bot, [("p", path, 0.0, 0.0, sw, "round")])
+
+
+def _eb_name(name, sc):
+    """글자 이름(x, a_2, α) -> 기울인 글자. '_' 뒤는 아래 첨자."""
+    base, _, sub = name.partition("_")
+    parts = [_eb_shift(_eb_glyph("′", sc), -0.17 * sc) if ch == "′" else _eb_glyph("I" + ch, sc) for ch in base]
+    out = _eb_row(parts)
+    if sub:
+        sb = _eb_row([_eb_glyph(ch if ch.isdigit() else "I" + ch, sc * 0.7) for ch in sub])
+        out = _eb_row([out, _eb_shift(sb, 0.18 * sc)])
+    return out
+
+
+def _eb(n, sc=1.0):
+    """식 구조 -> 수식 상자. 읽을 수 없는 것이 있으면 _EaErr."""
+    k = n[0]
+    if k == "num":
+        return _eb_row([_eb_glyph(c, sc) for c in n[1]])
+    if k == "var":
+        return _eb_name(n[1], sc)
+    if k == "seg":
+        b = _eb_row([_eb_glyph("I" + c, sc) for c in n[1]])
+        y = -(0.76 * sc + 0.1 * sc)
+        return _EaBox(b.w, max(b.h, 0.9 * sc), b.d, b.items + [("l", 0.0, y, b.w, y, 0.045 * sc)])
+    if k == "ang":
+        return _eb_row([_eb_glyph("∠", sc)] + [_eb_glyph("I" + c, sc) for c in n[1]])
+    if k in ("paren", "abs"):
+        inner = _eb(n[1], sc)
+        lo, hi = ("(", ")") if k == "paren" else ("|", "|")
+        return _eb_row([_eb_delim(lo, inner.h, inner.d, sc), inner, _eb_delim(hi, inner.h, inner.d, sc)])
+    if k == "call":
+        inner = _eb(n[2], sc)
+        name = _eb_name(n[1], sc)
+        return _eb_row([name, _eb_delim("(", inner.h, inner.d, sc), inner, _eb_delim(")", inner.h, inner.d, sc)])
+    if k == "neg":
+        return _eb_row([_eb_glyph("−", sc), _eb(n[1], sc)])
+    if k == "add":
+        parts = [_eb(n[1][0][1], sc)]
+        for sign, t in n[1][1:]:
+            parts += [_eb_bin("+" if sign > 0 else "−", sc), _eb(t, sc)]
+        return _eb_row(parts)
+    if k == "mul":
+        parts = [_eb(n[1][0], sc)]
+        for f, imp in zip(n[1][1:], n[2]):
+            if imp is True:
+                parts.append(_eb(f, sc))
+            else:
+                parts += [_eb_bin("∘" if isinstance(imp, str) else "×", sc), _eb(f, sc)]
+        return _eb_row(parts)
+    if k == "div":
+        return _eb_row([_eb(n[1], sc), _eb_bin("÷", sc), _eb(n[2], sc)])
+    if k == "frac":
+        num, den = _eb(n[1], sc), _eb(n[2], sc)
+        rule, gap = 0.04 * sc, 0.1 * sc
+        w = max(num.w, den.w) + 0.2 * sc
+        yn = -(_EA_AXIS * sc + rule / 2 + gap + num.d)
+        yd = -_EA_AXIS * sc + rule / 2 + gap + den.h
+        items = _eb_move(num.items, (w - num.w) / 2, yn) + _eb_move(den.items, (w - den.w) / 2, yd)
+        items.append(("l", 0.05 * sc, -_EA_AXIS * sc, w - 0.05 * sc, -_EA_AXIS * sc, rule))
+        return _EaBox(w, -(yn - num.h), yd + den.d, items)
+    if k == "pow":
+        base, sup = _eb(n[1], sc), _eb(n[2], sc * 0.7)
+        up = max(0.38 * sc, base.h - 0.30 * sc)
+        return _eb_row([base, _eb_gap(0.03 * sc), _eb_shift(sup, -up)])
+    if k == "sqrt":
+        inner = _eb(n[1], sc)
+        rw = 0.62 * sc
+        top, bot = -(inner.h + 0.14 * sc), inner.d + 0.05 * sc
+        path = (
+            f"M{0.04 * sc:.3f} {-0.28 * sc:.3f}L{0.16 * sc:.3f} {-0.34 * sc:.3f}L{0.33 * sc:.3f} {bot:.3f}"
+            f"L{0.58 * sc:.3f} {top:.3f}L{rw + inner.w + 0.06 * sc:.3f} {top:.3f}"
+        )
+        items = [("p", path, 0.0, 0.0, 0.05 * sc, "butt")] + _eb_move(inner.items, rw, 0.0)
+        return _EaBox(rw + inner.w + 0.08 * sc, -top + 0.03 * sc, max(inner.d, bot), items)
+    if k == "deg":
+        return _eb_row([_eb(n[1], sc), _eb_glyph("°", sc)])
+    if k == "pct":
+        return _eb_row([_eb(n[1], sc), _eb_glyph("%", sc)])
+    if k == "func":
+        parts = [_eb_glyph("U" + c, sc) for c in n[1]]
+        if n[3] is not None:
+            parts.append(_eb_shift(_eb(n[3], sc * 0.7), 0.2 * sc))
+        parts += [_eb_gap(0.167 * sc), _eb(n[2], sc)]
+        return _eb_row(parts)
+    if k == "ratio":
+        parts = []
+        for i, p in enumerate(n[1]):
+            if i:
+                parts += [_eb_gap(_EA_REL * sc), _eb_glyph(":", sc), _eb_gap(_EA_REL * sc)]
+            parts.append(_eb(p, sc))
+        return _eb_row(parts)
+    if k == "rel":
+        parts = [_eb(n[1][0], sc)]
+        for op, e in zip(n[2], n[1][1:]):
+            parts += [_eb_gap(_EA_REL * sc), _eb_relglyph(op, sc), _eb_gap(_EA_REL * sc), _eb(e, sc)]
+        return _eb_row(parts)
+    if k in ("tuple", "set"):
+        parts = []
+        for i, e in enumerate(n[1]):
+            if i:
+                parts += [_eb_glyph(",", sc), _eb_gap(0.167 * sc)]
+            parts.append(_eb(e, sc))
+        inner = _eb_row(parts)
+        if k == "tuple":
+            return inner
+        return _eb_row([_eb_delim("{", inner.h, inner.d, sc), inner, _eb_delim("}", inner.h, inner.d, sc)])
+    if k == "dots":
+        return _eb_glyph("⋯", sc)
+    if k == "setop":
+        return _eb_row([_eb(n[2], sc), _eb_bin(n[1], sc), _eb(n[3], sc)])
+    if k == "comb":
+        return _eb_row([_eb_shift(_eb(n[2], sc * 0.7), 0.2 * sc), _eb_glyph("U" + n[1], sc), _eb_shift(_eb(n[3], sc * 0.7), 0.2 * sc)])
+    if k == "fact":
+        return _eb_row([_eb(n[1], sc), _eb_glyph("!", sc)])
+    if k == "sum":
+        lo = _eb(n[1], sc * 0.7) if n[1] else None
+        hi = _eb(n[2], sc * 0.7) if n[2] else None
+        return _eb_row([_eb_bigop(_eb_glyph("S∑", sc), lo, hi, sc), _eb_gap(0.167 * sc), _eb(n[3], sc)])
+    if k == "lim":
+        word = _eb_row([_eb_glyph("U" + c, sc) for c in "lim"])
+        s7 = sc * 0.7
+        under = _eb_row([_eb(n[1], s7), _eb_gap(0.15 * s7), _eb_glyph("→", s7), _eb_gap(0.15 * s7), _eb(n[2], s7)])
+        return _eb_row([_eb_bigop(word, under, None, sc), _eb_gap(0.167 * sc), _eb(n[3], sc)])
+    if k == "int":
+        g = _eb_glyph("S∫", sc)
+        lo = _eb(n[1], sc * 0.7) if n[1] else None
+        hi = _eb(n[2], sc * 0.7) if n[2] else None
+        items, w = list(g.items), g.w
+        if hi:
+            items += _eb_move(hi.items, 0.8 * sc, -g.h + hi.h)
+            w = max(w, 0.8 * sc + hi.w)
+        if lo:
+            items += _eb_move(lo.items, 0.42 * sc, g.d - lo.d)
+            w = max(w, 0.42 * sc + lo.w)
+        sign = _EaBox(w + 0.05 * sc, g.h, g.d, items)
+        return _eb_row([sign, _eb_gap(0.167 * sc), _eb(n[3], sc), _eb_gap(0.167 * sc), _eb_glyph("Ud", sc), _eb_glyph("I" + n[4], sc)])
+    if k == "matrix":
+        body = _eb_grid([[_eb(c, sc) for c in row] for row in n[1]], sc, 1.0 * sc, 0.35 * sc)
+        return _eb_row([_eb_delim("(", body.h, body.d, sc), body, _eb_delim(")", body.h, body.d, sc)])
+    if k == "cases":
+        return _eb_cases(n[1], sc, 60.0)
+    raise _EaErr(k)
+
+
+def _eb_bigop(base, lower, upper, sc):
+    """∑·lim 처럼 아래·위에 범위를 다는 큰 기호. 범위는 가운데 맞춤."""
+    w = max([base.w] + [b.w for b in (lower, upper) if b])
+    items, h, d = _eb_move(base.items, (w - base.w) / 2, 0.0), base.h, base.d
+    if upper:
+        items += _eb_move(upper.items, (w - upper.w) / 2, -(base.h + 0.12 * sc + upper.d))
+        h = base.h + 0.12 * sc + upper.d + upper.h
+    if lower:
+        items += _eb_move(lower.items, (w - lower.w) / 2, base.d + 0.12 * sc + lower.h)
+        d = base.d + 0.12 * sc + lower.h + lower.d
+    return _EaBox(w, h, d, items)
+
+
+def _eb_stack(rows, sc, gap):
+    """상자들을 왼쪽 맞춤으로 위아래로 쌓아, 가운데가 수식의 가운데 높이에 오도록 기준선을 잡는다."""
+    y, items, w = rows[0].h, [], 0.0
+    for i, r in enumerate(rows):
+        if i:
+            y += rows[i - 1].d + gap + r.h
+        items += _eb_move(r.items, 0.0, y)
+        w = max(w, r.w)
+    total = y + rows[-1].d
+    h = total / 2 + _EA_AXIS * sc
+    return _EaBox(w, h, total / 2 - _EA_AXIS * sc, _eb_move(items, 0.0, -h))
+
+
+def _eb_grid(cells, sc, gapx, gapy):
+    """행렬: 칸마다 가운데 맞춤."""
+    ncols = max(len(r) for r in cells)
+    colw = [max(r[j].w for r in cells if j < len(r)) for j in range(ncols)]
+    rows = []
+    for r in cells:
+        parts = []
+        for j, c in enumerate(r):
+            pad = (colw[j] - c.w) / 2
+            parts += [_eb_gap(pad), c, _eb_gap(pad + (gapx if j < ncols - 1 else 0.0))]
+        rows.append(_eb_row(parts))
+    return _eb_stack(rows, sc, gapy)
+
+
+def _eb_pieces(operand, sc):
+    """식을 줄바꿈할 수 있는 조각으로 나눈다: 합·차는 항마다, 곱·나눗셈 기호로 이어진 식은 기호마다. -> [(앞 띄어쓰기, 상자)]"""
+    if operand[0] == "add":
+        out = [(0.0, _eb(operand[1][0][1], sc))]
+        for sign, t in operand[1][1:]:
+            out.append((_EA_BIN * sc, _eb_row([_eb_glyph("+" if sign > 0 else "−", sc), _eb_gap(_EA_BIN * sc), _eb(t, sc)])))
+        return out
+    if operand[0] in ("mul", "div") and (operand[0] == "div" or not any(operand[2])):
+        chain = _ea_chain(operand)         # a × b ÷ c 처럼 기호로 이어진 식은 기호 앞에서
+        if len(chain) > 1:
+            out = [(0.0, _eb(chain[0][1], sc))]
+            for op, t in chain[1:]:
+                out.append((_EA_BIN * sc, _eb_row([_eb_glyph("\u00d7" if op == "×" else "\u00f7", sc), _eb_gap(_EA_BIN * sc), _eb(t, sc)])))
+            return out
+    return [(0.0, _eb(operand, sc))]
+
+
+def _eb_pack(toks, sc, maxw):
+    """(앞 띄어쓰기, 상자) 조각들을 폭 maxw(em)를 넘지 않게 줄마다 채운다. 둘째 줄부터는 안쪽으로 들여 쓴다."""
+    lines, cur, curw = [], [], 0.0
+    for lead, box in toks:
+        if cur and curw + lead + box.w > maxw:
+            lines.append(cur)
+            cur, curw = [], 0.0
+        lead = lead if cur else 0.0
+        cur.append((lead, box))
+        curw += lead + box.w
+    lines.append(cur)
+    rows = [_eb_row([part for lead, box in line for part in (_eb_gap(lead), box)]) for line in lines]
+    if len(rows) == 1:
+        return rows[0]
+    indent, items, y, w = 1.0 * sc, [], 0.0, 0.0
+    for i, r in enumerate(rows):
+        if i:
+            y += rows[i - 1].d + 0.3 * sc + r.h
+        x = indent if i else 0.0
+        items += _eb_move(r.items, x, y)
+        w = max(w, x + r.w)
+    return _EaBox(w, rows[0].h, y + rows[-1].d, items)
+
+
+def _eb_lines(n, sc, maxw):
+    """식 하나를 상자로. 폭이 maxw(em)를 넘으면 등호·덧셈·뺄셈·곱셈·나눗셈 기호 앞에서 줄을 바꾼다."""
+    if n[0] == "cases":
+        return _eb_cases(n[1], sc, maxw)
+    if n[0] != "rel":
+        return _eb_pack(_eb_pieces(n, sc), sc, maxw)
+    toks = []
+    for i, operand in enumerate(n[1]):
+        pieces = _eb_pieces(operand, sc)
+        if i:
+            glyph = _eb_relglyph(n[2][i - 1], sc)
+            toks.append((_EA_REL * sc, _eb_row([glyph, _eb_gap(_EA_REL * sc), pieces[0][1]])))
+            pieces = pieces[1:]
+        toks += pieces
+    return _eb_pack(toks, sc, maxw)
+
+
+def _eb_cases(rows, sc, maxw):
+    """연립방정식·조건 따라 달라지는 식: 왼쪽에 큰 중괄호, 식을 위아래로 쌓는다. ('식 & 조건' 두 칸짜리 줄은 칸을 맞춘다.)"""
+    brace_w = 0.5 * sc + 0.1 * sc
+    cells = [r[1] if r[0] == "crow" else None for r in rows]
+    left = [_eb_lines(c[0], sc, 60.0) if c else _eb_lines(r, sc, maxw - brace_w) for r, c in zip(rows, cells)]
+    colw = max([b.w for b, c in zip(left, cells) if c] or [0.0])
+    boxes = []
+    for b, c in zip(left, cells):
+        if c:
+            boxes.append(_eb_row([b, _eb_gap(colw - b.w + 1.0 * sc), _eb(c[1], sc)]))
+        else:
+            boxes.append(b)
+    body = _eb_stack(boxes, sc, 0.4 * sc)
+    return _eb_row([_eb_delim("{", body.h, body.d, sc), _eb_gap(0.1 * sc), body])
+
+
+_EA_IMG_UNIT = 40.0         # 그림 안 좌표에서 글자 크기. 화면에 보이는 크기는 em 으로 따로 정한다.
+_EA_IMG_PAD = 0.2           # 그림 둘레 여백(em)
+_EA_BLOCK_MAXW = 13.4       # 따로 한 줄로 쓴 수식의 최대 폭(em). 넘으면 기호 앞에서 줄을 바꾼다.
+_EA_BLOCK_SCALE = 1.3       # 따로 쓴 수식의 글자 크기 (둘레 글자의 몇 배)
+_EA_INLINE_SCALE = 1.15     # 문장 속 수식의 글자 크기 (둘레 글자의 몇 배)
+
+
+def _ea_svg(box, size=_EA_IMG_UNIT, pad=_EA_IMG_PAD * _EA_IMG_UNIT):
+    """수식 상자 -> SVG 글. 글자는 <defs> 에 한 번만 적고 <use> 로 되풀이해 쓴다.
+    앱의 글씨가 모두 굵은 글씨라서, 글자 윤곽에 얇은 테두리(0.03em)를 둘러 수식도 조금 굵게 보이게 한다."""
+    glyphs = _ea_glyphs()
+    ids, body = {}, []
+    ox, oy = pad, pad + box.h * size
+    for it in box.items:
+        if it[0] == "g":
+            _, key, x, y, sc = it
+            gid = ids.setdefault(key, f"g{len(ids)}")
+            k = size * sc / 1000
+            body.append(f'<use xlink:href="#{gid}" transform="translate({_fn(ox + x * size)} {_fn(oy + y * size)}) scale({k:.5f} {-k:.5f})"/>')
+        elif it[0] == "p":
+            _, d, x, y, sw, cap = it
+            body.append(
+                f'<path d="{d}" transform="translate({_fn(ox + x * size)} {_fn(oy + y * size)}) scale({size:g})" fill="none" '
+                f'stroke="currentColor" stroke-width="{sw:.4f}" stroke-linecap="{cap}" stroke-linejoin="{"miter" if cap == "butt" else "round"}"/>'
+            )
+        else:
+            _, x1, y1, x2, y2, sw = it
+            body.append(
+                f'<line x1="{_fn(ox + x1 * size)}" y1="{_fn(oy + y1 * size)}" x2="{_fn(ox + x2 * size)}" y2="{_fn(oy + y2 * size)}" '
+                f'stroke="currentColor" stroke-width="{_fn(sw * size)}"/>'
+            )
+    defs = "".join(f'<path id="{gid}" d="{glyphs[key][3]}"/>' for key, gid in ids.items())
+    w, h = box.w * size + 2 * pad, (box.h + box.d) * size + 2 * pad
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {_fn(w)} {_fn(h)}" '
+        f'width="{_fn(w)}" height="{_fn(h)}" shape-rendering="geometricPrecision" color="#111111" fill="#111111" stroke="#111111" stroke-width="30" stroke-linejoin="round">'
+        f"<defs>{defs}</defs>{''.join(body)}</svg>"
+    )
+
+
+def _ea_segment_box(body, maxw):
+    """수식($ 안의 글) 한 덩어리 -> (수식 상자, 대체 글). 쉼표로 이어 쓴 여러 식은 한 상자로 묶는다.
+    읽을 수 없는 조각이 하나라도 있으면 _EaErr. (그러면 그 수식은 그림으로 바꾸지 않고 그대로 둔다.)"""
+    boxes, alts = [], []
+    for piece in _ea_split(body):
+        cond = re.match(r"([pqr])\s*:\s*(.+)$", piece, re.S)        # '조건 p: 5x+9 ≤ 84'
+        node = _ea_parse(cond.group(2) if cond else piece)
+        box = _eb_lines(node, 1.0, maxw)
+        if cond:
+            box = _eb_row([_eb_glyph("I" + cond.group(1)), _eb_gap(0.1), _eb_glyph(":"), _eb_gap(0.3), box])
+        boxes.append(box)
+        try:
+            alt = _ea_plain(node)
+        except _EaErr:
+            alt = piece                           # 대체 글을 못 만들면 원래 수식 글을 쓴다
+        alts.append((cond.group(1) + ": " if cond else "") + alt)
+    if not boxes:
+        raise _EaErr("빈 수식")
+    if len(boxes) > 1:
+        toks = [(0.4 if i else 0.0, _eb_row([b, _eb_glyph(",")]) if i < len(boxes) - 1 else b) for i, b in enumerate(boxes)]
+        boxes = [_eb_pack(toks, 1.0, maxw)]
+    return boxes[0], ", ".join(alts)
+
+
+def _ea_math_img(body, display):
+    """수식 하나를 <img>(SVG 수식 그림)로 바꾼다. display=True 면 따로 한 줄(가운데), 아니면 문장 속 글자 크기로."""
+    box, alt = _ea_segment_box(body, _EA_BLOCK_MAXW if display else 60.0)
+    b64 = base64.b64encode(_ea_svg(box).encode("utf-8")).decode("ascii")
+    w_em, d_em = box.w + 2 * _EA_IMG_PAD, box.d + _EA_IMG_PAD
+    src = f'alt="{html_escape(alt, quote=True)}" src="data:image/svg+xml;base64,{b64}"'
+    if display:
+        f = _EA_BLOCK_SCALE
+        return f'\n\n<p style="text-align:center;margin:4px 0"><img {src} style="width:{w_em * f:.2f}em;max-width:100%;height:auto"></p>\n\n'
+    f = _EA_INLINE_SCALE
+    return f'<img {src} style="width:{w_em * f:.2f}em;max-width:100%;height:auto;vertical-align:-{d_em * f:.2f}em">'
+
+
+def _ea_math_repl(m):
+    """문제 글 속 수식($...$ · $$...$$) 하나를 그림으로 바꾼다. 따로 쓴 수식($$)은 모두, 문장 속 수식($)은 방정식·부등식만.
+    그림으로 못 바꾸는 수식(행렬·집합·극한·적분 등)은 그대로 둔다."""
+    display = m.group(1) is not None
+    body = m.group(1) if display else m.group(2)
+    if not display and not _EA_HAS_REL.search(body):
+        return m.group(0)
+    try:
+        return _ea_math_img(body, display)
+    except (_EaErr, ValueError, TypeError, KeyError, IndexError):
+        return m.group(0)
+
+
 def _ea_aids(q):
-    """문제 글 q 에 방정식을 말로 풀어 쓴 줄글과(그림이 아직 없으면) 방정식 그림을 덧붙여 돌려준다.
+    """문제 글 q 의 방정식·식을 수식 그림(이미지 글자)으로 바꾸고, 방정식을 말로 풀어 쓴 줄글을 문제 끝에 덧붙여 돌려준다.
+    수식은 그림으로 바꾸면 원래의 수식 글은 쓰지 않는다. (그림으로 못 바꾸는 수식만 그대로 남는다.)
 
     문제를 만드는 일이 이 덧붙임 때문에 멈추면 안 되므로, 어떤 오류가 나도 원래 글을 그대로 돌려준다."""
     try:
         items = _ea_items(q)
+        out = _EA_SEG.sub(_ea_math_repl, q)
         if not items:
-            return q
+            return out
         prose = _ea_prose(items)
-        at = q.find(_EA_FIG_MARK)
-        if at >= 0:
-            return q[:at] + prose + q[at:]
-        fig = ""
-        for node, _ in items:
-            try:
-                svg = fig_ea_system(node) if node[0] == "cases" else fig_ea_graph(node)
-            except (_EaErr, ValueError, TypeError, ZeroDivisionError, OverflowError):
-                svg = None
-            if svg:
-                fig = fig_md(svg, alt="방정식 그림")
-                break
-        return q + prose + fig
+        at = out.find(_EA_FIG_MARK)
+        if at >= 0:                        # 문제 그림이 이미 있으면 그 앞에 끼운다.
+            return out[:at] + prose + out[at:]
+        return out + prose
     except Exception:
         return q
 

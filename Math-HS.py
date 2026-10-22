@@ -2979,10 +2979,11 @@ class _Fig:
             off += abs(ux) * 0.26 * kw["size"] * len(s) + abs(uy) * kw["size"] * 0.5
         self.text((px_ + ux * off, py_ + uy * off + kw["size"] * 0.34), s, raw=True, **kw)
 
-    def dim(self, p, q, s, away, off=13, size=13, color=None, italic=None, top=False):
+    def dim(self, p, q, s, away, off=22, size=13, color=None, italic=None, top=False):
         """치수선: 선분 pq 의 길이가 s 임을 '어디서부터 어디까지'인지 보여 준다.
-        선분에서 away 의 반대쪽으로 off 픽셀 떨어진 곳에 양 끝에 화살촉이 달린 점선을 긋고, 선분의 두 끝에서 그 점선까지
-        가는 보조선을 잇는다. 길이 글자는 점선 가운데에 적는다. (선분이 짧아 글자가 안 들어가면 점선 바깥쪽에 적는다.)
+        선분의 두 끝에서 away 의 반대쪽(바깥)으로 뻗어 나갔다가 휘어 돌아오는 점선 곡선을 긋는다. 곡선의 양 끝이 선분의 두 끝 쪽으로
+        말려 들어온다. off 는 곡선이 선분에서 가장 멀리 떨어지는 거리(픽셀)이다.
+        길이 글자는 곡선의 가장 바깥쪽에 적는다. (글자가 선분을 가리거나 곡선이 짧으면 곡선 바깥쪽에 적는다.)
         top=False 면 그림의 맨 아래 층에 깔아 다른 선·글자가 그 위에 놓이게 한다. (면이 불투명한 입체 그림은 top=True)"""
         (ax, ay), (bx, by), (cx, cy) = self.P(p), self.P(q), self.P(away)
         L = math.hypot(bx - ax, by - ay)
@@ -2995,38 +2996,58 @@ class _Fig:
             nx, ny = -nx, -ny
         col = color or _FIG_AXIS
         layer = self.parts if top else self.under
-        a2, b2 = (ax + nx * off, ay + ny * off), (bx + nx * off, by + ny * off)
-        for x, y in ((ax, ay), (bx, by)):                                    # 보조선: 선분의 끝 -> 점선
-            layer.append(
-                f'<line x1="{_fn(x + nx * 2)}" y1="{_fn(y + ny * 2)}" x2="{_fn(x + nx * (off + 4))}" y2="{_fn(y + ny * (off + 4))}" '
-                f'stroke="{col}" stroke-width="1" stroke-opacity="0.75"/>'
+        k = off * 4 / 3                          # 3차 곡선의 조절점 거리: 한가운데가 선분에서 정확히 off 만큼 떨어진다
+        lean = 0.3 * k                           # 양 끝이 선분 쪽(가운데 방향)으로 살짝 기울어 말려 들어오게 한다
+        P = [(ax, ay), (ax + nx * k + ux * lean, ay + ny * k + uy * lean),
+             (bx + nx * k - ux * lean, by + ny * k - uy * lean), (bx, by)]
+        apex = (mx + nx * off, my + ny * off)
+
+        def at(t):
+            m = 1 - t
+            return tuple(m ** 3 * P[0][i] + 3 * m * m * t * P[1][i] + 3 * m * t * t * P[2][i] + t ** 3 * P[3][i] for i in (0, 1))
+
+        def piece(t0, t1):
+            """곡선의 t0~t1 구간을 같은 모양의 3차 곡선 하나로 (조절점을 다시 계산한다)."""
+            def split(Q, t):
+                a1 = [tuple(Q[i][j] * (1 - t) + Q[i + 1][j] * t for j in (0, 1)) for i in range(3)]
+                a2 = [tuple(a1[i][j] * (1 - t) + a1[i + 1][j] * t for j in (0, 1)) for i in range(2)]
+                a3 = tuple(a2[0][j] * (1 - t) + a2[1][j] * t for j in (0, 1))
+                return [Q[0], a1[0], a2[0], a3], [a3, a2[1], a1[2], Q[3]]
+            Q = P
+            if t1 < 1:
+                Q = split(Q, t1)[0]
+            if t0 > 0:
+                Q = split(Q, t0 / t1 if t1 else 0)[1]
+            return Q
+
+        def path(Q):
+            return (
+                f'<path d="M{_fn(Q[0][0])} {_fn(Q[0][1])}C{_fn(Q[1][0])} {_fn(Q[1][1])} {_fn(Q[2][0])} {_fn(Q[2][1])} {_fn(Q[3][0])} {_fn(Q[3][1])}" '
+                f'fill="none" stroke="{col}" stroke-width="1.5" stroke-dasharray="4 3" stroke-linecap="butt"/>'
             )
+
         tw, th = 0.52 * size * len(s), size                                  # 글자 상자의 대략적인 가로·세로
-        half = abs(ux) * tw / 2 + abs(uy) * th / 2 + 4                       # 글자가 점선 방향으로 차지하는 반쪽 길이
-        mid = (mx + nx * off, my + ny * off)
-        halfn = abs(nx) * tw / 2 + abs(ny) * th / 2 + 2                      # 글자 상자가 점선에서 선분 쪽·바깥쪽으로 뻗는 반쪽 두께
-        if halfn <= off - 2.5 and L >= 2 * half + 28:                        # 점선 한가운데에 글자를 앉힌다 (점선은 글자 자리만 비운다)
-            segs = [(a2, (mid[0] - ux * half, mid[1] - uy * half)), ((mid[0] + ux * half, mid[1] + uy * half), b2)]
-            tpos = mid
-        else:                                                                # 글자가 선분을 가리거나 점선이 짧으면 점선 바깥쪽에 적는다
-            segs = [(a2, b2)]
-            tpos = (mid[0] + nx * (halfn + 3), mid[1] + ny * (halfn + 3))
-        for (x1, y1), (x2, y2) in segs:
-            layer.append(
-                f'<line x1="{_fn(x1)}" y1="{_fn(y1)}" x2="{_fn(x2)}" y2="{_fn(y2)}" stroke="{col}" stroke-width="1.5" '
-                f'stroke-dasharray="4 3" stroke-linecap="butt"/>'
-            )
-        hl = min(7.0, L * 0.3)                                               # 화살촉 (끝이 보조선과 만나는 곳을 가리킨다)
-        for (x, y), d in ((a2, 1), (b2, -1)):
-            bx_, by_ = x + ux * hl * d, y + uy * hl * d
-            layer.append(
-                f'<polygon points="{_fn(x)},{_fn(y)} {_fn(bx_ + nx * 3)},{_fn(by_ + ny * 3)} {_fn(bx_ - nx * 3)},{_fn(by_ - ny * 3)}" fill="{col}"/>'
-            )
+        half = abs(ux) * tw / 2 + abs(uy) * th / 2 + 4                       # 글자가 곡선 방향으로 차지하는 반쪽 길이
+        halfn = abs(nx) * tw / 2 + abs(ny) * th / 2 + 2                      # 글자 상자가 곡선에서 선분 쪽·바깥쪽으로 뻗는 반쪽 두께
+        tl = tr = None
+        if halfn <= off - 2.5 and L >= 2 * half + 28:                        # 곡선 가장 바깥에 글자를 앉힌다 (그 자리만 비운다)
+            ts = [i / 400 for i in range(401)]
+            left = [t for t in ts if t <= 0.5 and (at(t)[0] - apex[0]) * ux + (at(t)[1] - apex[1]) * uy <= -half]
+            right = [t for t in ts if t >= 0.5 and (at(t)[0] - apex[0]) * ux + (at(t)[1] - apex[1]) * uy >= half]
+            if left and right:
+                tl, tr = max(left), min(right)
+        if tl is not None:
+            layer.append(path(piece(0.0, tl)))
+            layer.append(path(piece(tr, 1.0)))
+            tpos = apex
+        else:
+            layer.append(path(P))
+            tpos = (apex[0] + nx * (halfn + 3), apex[1] + ny * (halfn + 3))
         self.text((tpos[0], tpos[1] + size * 0.34), s, raw=True, size=size, color=color or _FIG_INK, italic=italic)
 
     def side_label(self, p, q, s, away, off=12, **kw):
-        """선분 pq 의 길이 s 를 치수선(점선 화살표)과 함께 적는다. away 의 반대쪽에 선분과 off 픽셀 떨어져 그린다."""
-        self.dim(p, q, s, away, off=max(off, 12), size=kw.get("size", 13), color=kw.get("color"), italic=kw.get("italic"))
+        """선분 pq 의 길이 s 를 치수선(끝이 말린 점선 곡선)과 함께 적는다. away 의 반대쪽, 곧 바깥쪽에 되도록 멀리 그린다."""
+        self.dim(p, q, s, away, off=max(off, 20), size=kw.get("size", 13), color=kw.get("color"), italic=kw.get("italic"))
 
     def tickmark(self, p, q, n=1, size=4.5, color=_FIG_INK):
         """선분 pq 의 가운데에 같은 길이 표시(짧은 선 n 개)."""
@@ -7130,8 +7151,11 @@ def generate_grade_problems(grade, difficulty=1):
 #  - 정답이 곧 타임머신 암호 1592 다. 이 문제만 풀어도 타임머신으로 갈 수 있다.
 #  - 풀고 나면 다른 문제처럼 "정답을 기억하세요" 화면에서 정답을 보여 준다.
 #  - 들어가 보고 어려우면 풀이 화면의 "← 문제 목록으로 돌아가기"로 다시 문제 선택 화면에 갈 수 있다.
-#  - 학년(고1·고2·고3)을 고르면 고1은 공통수학1, 고2는 공통수학2, 고3은 미적분 문제가 나온다.
-#    (grade 는 학년 선택 버튼에서 저장한다.)
+#  - 학년(고1·고2·고3)을 고르면 그 학년의 여러 단원 중에서 문제를 고른다. (grade 는 학년 선택 버튼에서 저장한다.)
+#    · 세 번에 두 번쯤: 단원 하나를 무작위로 고르고 그 단원의 문제(난이도 상, 그림 문제 포함)를 풀게 한 뒤
+#      "그 답에 p 를 곱하고 r 을 더한 값"을 묻는다. p 와 r 은 정답이 늘 1592 가 되도록 정한다. (make_fast_pass_from_units)
+#    · 세 번에 한 번쯤: 아래 FAST_PASS_BY_GRADE 에 손으로 만들어 둔 학년별 문제.
+#    · 한 번 정한 문제는 학년마다 세션 동안 그대로 쓰고, 학년 버튼을 다시 누르면 새로 정한다.
 #  - 문제를 바꾸려면 정답이 1592 가 되도록 맞춰야 한다. 정답이 곧 타임머신 암호이기 때문이다.
 #    (고1: g(49)=2401-809 / 고2: 798+794 / 고3: f(x)=(e^x+1)^3+C, f(0)=600 에서 C=592, f(ln 9)=1000+592)
 #    고3 미적분 문제는 처음 그대로 둔다.
@@ -7198,9 +7222,63 @@ FAST_PASS_BY_GRADE = {
 }
 
 
+# 빠른 통과 문제를 손으로 만든 문제(FAST_PASS_BY_GRADE)로 낼 확률. 나머지는 여러 단원에서 뽑아 만든다.
+FAST_PASS_FIXED_CHANCE = 1 / 3
+FAST_PASS_ANSWER = 1592
+
+
+def make_fast_pass_from_units(grade):
+    """'매우 어려움' 문제를 여러 단원에서 뽑아 만든다.
+    학년의 단원 중 하나를 무작위로 고르고, 그 단원의 문제(난이도 상)를 풀게 한 뒤 "그 답에 p 를 곱하고 r 을 더한 값"을 묻는다.
+    곱하는 수 p 와 더하는 수 r 은 정답이 늘 1592 가 되도록 정한다. 그림이 있는 문제도 절반쯤 나오도록 그림 문제를 먼저 찾아본다."""
+    units = UNIT_FAMILIES[grade if grade in (1, 2) else 3]
+    want_figure = random.random() < 0.5
+    best = None
+    for _ in range(60):
+        unit, families = random.choice(units)
+        target = random.choice([15, 9, 2])
+        question, explanation, answer = random.choice(families)(target, 3)
+        if str(answer) != str(target):
+            continue
+        best = (unit, target, question, explanation)
+        if not want_figure or "<img" in question:
+            break
+    if best is None:
+        raise ValueError("뽑은 문제의 정답이 맞지 않는다")
+    unit, target, question, explanation = best
+    lo, hi = {15: (60, 100), 9: (100, 170), 2: (300, 780)}[target]
+    p = random.randint(lo, hi)
+    r = FAST_PASS_ANSWER - p * target
+    question = _ea_aids(_tidy_math(_fix_josa(question)))
+    question += f"\n\n위 문제의 답에 {_ea_pj(str(p), '을/를')} 곱한 뒤 {_ea_pj(str(r), '을/를')} 더한 값을 구하시오."
+    explanation = (
+        f"*({unit} 단원)*\n\n{_tidy_math(_fix_josa(explanation))}\n\n"
+        f"위 문제의 답이 ${target}$이므로 구하는 값은\n\n$${target}\\times{p}+{r}={FAST_PASS_ANSWER}$$"
+    )
+    return f"[ {GRADE_TITLES[grade]} · 매우 어려움 ]", (question, explanation, str(FAST_PASS_ANSWER))
+
+
+def make_fast_pass(grade):
+    """'매우 어려움' 문제 하나: (제목, (문제, 풀이, 정답)). 여러 단원에서 뽑아 만들고, 가끔 손으로 만든 학년별 문제를 낸다."""
+    grade = grade if grade in (1, 2, 3) else 3
+    if random.random() >= FAST_PASS_FIXED_CHANCE:
+        try:
+            return make_fast_pass_from_units(grade)
+        except Exception:
+            pass                                  # 만들다가 어떤 문제가 생겨도 게임이 멈추지 않도록 손으로 만든 문제를 쓴다.
+    title, (question, explanation, answer) = FAST_PASS_BY_GRADE[grade]
+    return title, (_ea_aids(question), explanation, answer)
+
+
 def fast_pass_for_grade():
-    """지금 고른 학년의 '매우 어려움' 문제: (제목, (문제, 풀이, 정답)). 학년을 모르면 고3 미적분 문제를 쓴다."""
-    return FAST_PASS_BY_GRADE.get(st.session_state.get("grade"), FAST_PASS_BY_GRADE[3])
+    """지금 고른 학년의 '매우 어려움' 문제: (제목, (문제, 풀이, 정답)). 학년을 모르면 3학년으로 본다.
+    한 번 정한 문제는 학년마다 세션 동안 그대로 쓴다. (화면이 다시 그려질 때마다 문제가 바뀌면 안 된다.)"""
+    grade = st.session_state.get("grade")
+    grade = grade if grade in (1, 2, 3) else 3
+    cache = st.session_state.setdefault("fast_pass_cache", {})
+    if grade not in cache:
+        cache[grade] = make_fast_pass(grade)
+    return cache[grade]
 
 
 # ==========================================
@@ -7958,6 +8036,7 @@ else:
         col1, col2, col3 = st.columns(3)
         if lucky_button("고1 문제", use_container_width=True, dg=col1):
             st.session_state.grade = 1
+            st.session_state.pop("fast_pass_cache", None)
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(1, st.session_state.difficulty)
             )
@@ -7967,6 +8046,7 @@ else:
             st.rerun()
         if lucky_button("고2 문제", use_container_width=True, dg=col2):
             st.session_state.grade = 2
+            st.session_state.pop("fast_pass_cache", None)
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(2, st.session_state.difficulty)
             )
@@ -7976,6 +8056,7 @@ else:
             st.rerun()
         if lucky_button("고3 문제", use_container_width=True, dg=col3):
             st.session_state.grade = 3
+            st.session_state.pop("fast_pass_cache", None)
             st.session_state.title, st.session_state.problems = (
                 generate_grade_problems(3, st.session_state.difficulty)
             )

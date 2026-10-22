@@ -2947,6 +2947,10 @@ _FIG_GRAY = "#9ca3af"
 _FIG_FONT = "'Times New Roman','Noto Serif KR','Noto Serif',Georgia,serif"
 
 
+# 그림 속 모든 글자(식·눈금·이름)를 이 배수만큼 키워서 굵게 쓴다. 더 크게 하려면 이 값만 올린다.
+FIG_TEXT_SCALE = 1.25
+
+
 _FIG_SUP = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 
@@ -3084,21 +3088,22 @@ class _Fig:
     def text(self, p, s, dx=0, dy=0, size=15, anchor="middle", italic=None, color=_FIG_INK, bold=False, raw=False):
         """글자. p 는 수학 좌표(raw=True 면 화면 좌표), dx, dy 는 화면 픽셀 어긋남. 글자 둘레에 흰 테두리를 둘러 선과 겹쳐도 읽힌다."""
         x, y = (p if raw else self.P(p))
+        # 그림 속 글자는 수식 그림 글자처럼 두껍고 또렷하게 보이도록 굵게 쓰고 조금 키운다. (bold 인자와 상관없이 늘 굵게)
+        fs = round(size * FIG_TEXT_SCALE, 1)
         # 글자가 그림 틀 밖으로 잘리지 않게 안쪽으로 밀어 넣는다. (글자 폭은 어림한다)
-        w = 0.52 * size * len(s)
+        w = 0.6 * fs * len(s)
         left = x + dx - (w if anchor == "end" else w / 2 if anchor == "middle" else 0)
         if left < 2:
             dx += 2 - left
         elif left + w > self.W - 2:
             dx -= left + w - (self.W - 2)
-        dy = min(max(dy, size - y + 1), self.H - 3 - y)
+        dy = min(max(dy, fs - y + 1), self.H - 3 - y)
         if italic is None:
             italic = bool(re.fullmatch(r"[A-Za-z]{1,2}'?", s))
         st = ' font-style="italic"' if italic else ""
-        wt = ' font-weight="700"' if bold else ""
         self.add(
-            f'<text x="{_fn(x + dx)}" y="{_fn(y + dy)}" font-size="{size}" text-anchor="{anchor}" fill="{color}"{st}{wt} '
-            f'stroke="#fff" stroke-width="3.6" stroke-linejoin="round" paint-order="stroke">{html_escape(s)}</text>'
+            f'<text x="{_fn(x + dx)}" y="{_fn(y + dy)}" font-size="{fs}" text-anchor="{anchor}" fill="{color}"{st} font-weight="900" '
+            f'stroke="#fff" stroke-width="4.6" stroke-linejoin="round" paint-order="stroke">{html_escape(s)}</text>'
         )
 
     def label_out(self, p, s, center, off=13, fit=False, **kw):

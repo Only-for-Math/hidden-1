@@ -1,3 +1,4 @@
+import base64
 import itertools
 import json
 import math
@@ -2767,6 +2768,778 @@ def _end_sound(tex):
     return None
 
 
+# ==========================================
+# 문제 그림 (SVG 벡터 그림)
+#  - 좌표평면·함수 그래프·도형 문제에서는 문제 아래에 그림을 붙인다. 벡터(SVG) 그림이라 화면을 키워도 깨지지 않는다.
+#  - 안티에일리어싱: 그림 전체에 shape-rendering·text-rendering 을 geometricPrecision 으로 지정해서,
+#    브라우저가 선과 글자의 가장자리를 부드럽게(안티에일리어싱) 그리도록 한다. (crispEdges 는 쓰지 않는다.)
+#  - 그림에는 문제에 '주어진 값'만 적는다. 구해야 하는 값은 글자(x, k 등)로 두고, 눈금 숫자도 주어진 값만 적는다.
+#    (그래프를 정확한 눈금으로 그리면 정답이 그림에서 읽힐 수 있기 때문이다.)
+#  - 그림은 SVG 글을 base64 로 바꿔 <img> 로 문제 글 끝에 붙인다. (fig_md)
+# ==========================================
+_FIG_INK = "#1f2937"
+
+
+_FIG_AXIS = "#4b5563"
+
+
+_FIG_GRID = "#e5e7eb"
+
+
+_FIG_BLUE = "#2563eb"
+
+
+_FIG_RED = "#dc2626"
+
+
+_FIG_GREEN = "#059669"
+
+
+_FIG_GRAY = "#9ca3af"
+
+
+_FIG_FONT = "'Times New Roman','Noto Serif KR','Noto Serif',Georgia,serif"
+
+
+_FIG_SUP = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _fn(v):
+    """SVG 숫자: 소수 둘째 자리까지, 끝의 0 은 뺀다."""
+    s = f"{v:.2f}".rstrip("0").rstrip(".")
+    return "0" if s in ("-0", "") else s
+
+
+def _plain(s):
+    """문제 글(LaTeX 조각)을 그림 안에 쓸 평범한 글자로 바꾼다. '(2x + 10)^\\circ' -> '(2x + 10)°'."""
+    s = s.replace("^{\\circ}", "°").replace("^\\circ", "°").replace("\\circ", "°")
+    s = re.sub(r"\\overline\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\sqrt\{([^}]*)\}", r"√\1", s)
+    s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"\1/\2", s)
+    s = re.sub(r"\^\{?(\d)\}?", lambda m: m.group(1).translate(_FIG_SUP), s)
+    s = s.replace("\\pi", "π").replace("\\times", "×").replace("\\,", "").replace("\\ ", " ")
+    s = s.replace("{", "").replace("}", "")
+    s = s.replace(" - ", " − ")
+    s = re.sub(r"(^|[(,=])-", lambda m: m.group(1) + "−", s)
+    return s.strip()
+
+
+def _clip_param(p, d, x0, x1, y0, y1, t0, t1):
+    """p + t·d (t0 ≤ t ≤ t1) 중 사각형 [x0,x1]×[y0,y1] 안에 들어오는 t 구간. 없으면 None."""
+    for pv, dv, lo, hi in ((p[0], d[0], x0, x1), (p[1], d[1], y0, y1)):
+        if abs(dv) < 1e-12:
+            if pv < lo - 1e-9 or pv > hi + 1e-9:
+                return None
+            continue
+        ta, tb = (lo - pv) / dv, (hi - pv) / dv
+        if ta > tb:
+            ta, tb = tb, ta
+        t0, t1 = max(t0, ta), min(t1, tb)
+        if t0 > t1:
+            return None
+    return t0, t1
+
+
+class _Fig:
+    """SVG 그림 한 장. 수학 좌표(x 오른쪽, y 위쪽)로 그리면 화면 좌표로 바꿔 준다."""
+
+    def __init__(self, xmin, xmax, ymin, ymax, width=340, height=None, equal=True, pad=(36, 22, 22, 30)):
+        self.x0, self.x1, self.y0, self.y1 = xmin, xmax, ymin, ymax
+        L, R, T, B = pad
+        dx, dy = xmax - xmin, ymax - ymin
+        self.W = width
+        if equal:
+            max_h = height or 330
+            s = min((width - L - R) / dx, (max_h - T - B) / dy)
+            self.sx = self.sy = s
+            self.ox = L + ((width - L - R) - s * dx) / 2
+            self.H = s * dy + T + B
+        else:
+            self.H = height or 230
+            self.sx = (width - L - R) / dx
+            self.sy = (self.H - T - B) / dy
+            self.ox = L
+        self.oy = T
+        self.parts = []
+
+    # ----- 좌표 변환 -----
+    def X(self, x):
+        return self.ox + (x - self.x0) * self.sx
+
+    def Y(self, y):
+        return self.oy + (self.y1 - y) * self.sy
+
+    def P(self, p):
+        return self.X(p[0]), self.Y(p[1])
+
+    def add(self, s):
+        self.parts.append(s)
+
+    # ----- 기본 도형 -----
+    def line(self, p, q, color=_FIG_INK, w=1.7, dash=None, cap="round"):
+        (ax, ay), (bx, by) = self.P(p), self.P(q)
+        d = f' stroke-dasharray="{dash}"' if dash else ""
+        self.add(
+            f'<line x1="{_fn(ax)}" y1="{_fn(ay)}" x2="{_fn(bx)}" y2="{_fn(by)}" stroke="{color}" '
+            f'stroke-width="{w}" stroke-linecap="{cap}"{d}/>'
+        )
+
+    def clipped_line(self, p, q, draw=True, **kw):
+        """p, q 를 지나는 직선을 그림 안쪽만 그리고 그 두 끝점을 돌려준다. (draw=False 면 그리지 않고 끝점만)"""
+        d = (q[0] - p[0], q[1] - p[1])
+        r = _clip_param(p, d, self.x0, self.x1, self.y0, self.y1, -1e6, 1e6)
+        if r:
+            a = (p[0] + r[0] * d[0], p[1] + r[0] * d[1])
+            b = (p[0] + r[1] * d[0], p[1] + r[1] * d[1])
+            if draw:
+                self.line(a, b, **kw)
+            return a, b
+        return None
+
+    def clipped_seg(self, p, q, **kw):
+        d = (q[0] - p[0], q[1] - p[1])
+        r = _clip_param(p, d, self.x0, self.x1, self.y0, self.y1, 0, 1)
+        if r:
+            self.line((p[0] + r[0] * d[0], p[1] + r[0] * d[1]), (p[0] + r[1] * d[0], p[1] + r[1] * d[1]), **kw)
+
+    def poly(self, pts, fill=None, fo=0.14, stroke=_FIG_INK, w=1.7, close=True, dash=None):
+        pp = " ".join(f"{_fn(a)},{_fn(b)}" for a, b in map(self.P, pts))
+        f = f'fill="{fill}" fill-opacity="{fo}"' if fill else 'fill="none"'
+        st = f'stroke="{stroke}" stroke-width="{w}" stroke-linejoin="round" stroke-linecap="round"' if stroke else 'stroke="none"'
+        if dash:
+            st += f' stroke-dasharray="{dash}"'
+        self.add(f'<{"polygon" if close else "polyline"} points="{pp}" {f} {st}/>')
+
+    def circle(self, c, r, fill=None, fo=0.1, stroke=_FIG_INK, w=1.7, dash=None):
+        cx, cy = self.P(c)
+        f = f'fill="{fill}" fill-opacity="{fo}"' if fill else 'fill="none"'
+        d = f' stroke-dasharray="{dash}"' if dash else ""
+        self.add(f'<circle cx="{_fn(cx)}" cy="{_fn(cy)}" r="{_fn(r * self.sx)}" {f} stroke="{stroke}" stroke-width="{w}"{d}/>')
+
+    def ellipse(self, c, rx, ry, **kw):
+        """수학 단위 반지름 rx, ry 의 타원."""
+        cx, cy = self.P(c)
+        fill, fo, stroke, w, dash = kw.get("fill"), kw.get("fo", 0.1), kw.get("stroke", _FIG_INK), kw.get("w", 1.7), kw.get("dash")
+        f = f'fill="{fill}" fill-opacity="{fo}"' if fill else 'fill="none"'
+        d = f' stroke-dasharray="{dash}"' if dash else ""
+        self.add(
+            f'<ellipse cx="{_fn(cx)}" cy="{_fn(cy)}" rx="{_fn(rx * self.sx)}" ry="{_fn(ry * self.sy)}" {f} '
+            f'stroke="{stroke}" stroke-width="{w}"{d}/>'
+        )
+
+    def dot(self, p, r=3.6, color=_FIG_INK, ring=False):
+        x, y = self.P(p)
+        if ring:
+            self.add(f'<circle cx="{_fn(x)}" cy="{_fn(y)}" r="{r + 0.4}" fill="#fff" stroke="{color}" stroke-width="1.8"/>')
+        else:
+            self.add(f'<circle cx="{_fn(x)}" cy="{_fn(y)}" r="{r}" fill="{color}"/>')
+
+    def text(self, p, s, dx=0, dy=0, size=15, anchor="middle", italic=None, color=_FIG_INK, bold=False, raw=False):
+        """글자. p 는 수학 좌표(raw=True 면 화면 좌표), dx, dy 는 화면 픽셀 어긋남. 글자 둘레에 흰 테두리를 둘러 선과 겹쳐도 읽힌다."""
+        x, y = (p if raw else self.P(p))
+        # 글자가 그림 틀 밖으로 잘리지 않게 안쪽으로 밀어 넣는다. (글자 폭은 어림한다)
+        w = 0.52 * size * len(s)
+        left = x + dx - (w if anchor == "end" else w / 2 if anchor == "middle" else 0)
+        if left < 2:
+            dx += 2 - left
+        elif left + w > self.W - 2:
+            dx -= left + w - (self.W - 2)
+        dy = min(max(dy, size - y + 1), self.H - 3 - y)
+        if italic is None:
+            italic = bool(re.fullmatch(r"[A-Za-z]{1,2}'?", s))
+        st = ' font-style="italic"' if italic else ""
+        wt = ' font-weight="700"' if bold else ""
+        self.add(
+            f'<text x="{_fn(x + dx)}" y="{_fn(y + dy)}" font-size="{size}" text-anchor="{anchor}" fill="{color}"{st}{wt} '
+            f'stroke="#fff" stroke-width="3.6" stroke-linejoin="round" paint-order="stroke">{html_escape(s)}</text>'
+        )
+
+    def label_out(self, p, s, center, off=13, fit=False, **kw):
+        """점 p 의 글자를 center 의 반대쪽으로 off 픽셀 띄워 적는다. fit=True 면 글자 상자의 크기만큼 더 띄운다."""
+        (px_, py_), (cx, cy) = self.P(p), self.P(center)
+        vx, vy = px_ - cx, py_ - cy
+        n = math.hypot(vx, vy) or 1.0
+        ux, uy = vx / n, vy / n
+        kw.setdefault("size", 15)
+        if fit:
+            off += abs(ux) * 0.26 * kw["size"] * len(s) + abs(uy) * kw["size"] * 0.5
+        self.text((px_ + ux * off, py_ + uy * off + kw["size"] * 0.34), s, raw=True, **kw)
+
+    def side_label(self, p, q, s, away, off=12, **kw):
+        """선분 pq 의 가운데에서 away 의 반대쪽으로 수직으로 띄워 길이 글자를 적는다."""
+        (ax, ay), (bx, by), (cx, cy) = self.P(p), self.P(q), self.P(away)
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        nx, ny = -(by - ay), bx - ax
+        n = math.hypot(nx, ny) or 1.0
+        nx, ny = nx / n, ny / n
+        if (mx - cx) * nx + (my - cy) * ny < 0:
+            nx, ny = -nx, -ny
+        kw.setdefault("size", 13)
+        self.text((mx + nx * off, my + ny * off + kw["size"] * 0.34), s, raw=True, **kw)
+
+    def tickmark(self, p, q, n=1, size=4.5, color=_FIG_INK):
+        """선분 pq 의 가운데에 같은 길이 표시(짧은 선 n 개)."""
+        (ax, ay), (bx, by) = self.P(p), self.P(q)
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        dx, dy = bx - ax, by - ay
+        L = math.hypot(dx, dy) or 1.0
+        ux, uy, nx, ny = dx / L, dy / L, -dy / L, dx / L
+        for i in range(n):
+            o = (i - (n - 1) / 2) * 4
+            cx, cy = mx + ux * o, my + uy * o
+            self.add(
+                f'<line x1="{_fn(cx - nx * size)}" y1="{_fn(cy - ny * size)}" x2="{_fn(cx + nx * size)}" '
+                f'y2="{_fn(cy + ny * size)}" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>'
+            )
+
+    # ----- 각 -----
+    def angle(self, v, p1, p2, r=22, label=None, label_r=None, color=_FIG_RED, fill=True, size=13, w=1.6):
+        """꼭짓점 v 에서 반직선 v→p1, v→p2 사이의 (작은) 각을 호로 그리고 label 을 적는다."""
+        vx, vy = self.P(v)
+        a1 = math.atan2(self.P(p1)[1] - vy, self.P(p1)[0] - vx)
+        a2 = math.atan2(self.P(p2)[1] - vy, self.P(p2)[0] - vx)
+        diff = (a2 - a1 + math.pi) % (2 * math.pi) - math.pi
+        sweep = 1 if diff > 0 else 0
+        ex1, ey1 = vx + r * math.cos(a1), vy + r * math.sin(a1)
+        ex2, ey2 = vx + r * math.cos(a1 + diff), vy + r * math.sin(a1 + diff)
+        if fill:
+            self.add(
+                f'<path d="M {_fn(vx)} {_fn(vy)} L {_fn(ex1)} {_fn(ey1)} A {r} {r} 0 0 {sweep} {_fn(ex2)} {_fn(ey2)} Z" '
+                f'fill="{color}" fill-opacity="0.13" stroke="none"/>'
+            )
+        self.add(
+            f'<path d="M {_fn(ex1)} {_fn(ey1)} A {r} {r} 0 0 {sweep} {_fn(ex2)} {_fn(ey2)}" fill="none" '
+            f'stroke="{color}" stroke-width="{w}" stroke-linecap="round"/>'
+        )
+        if label:
+            am = a1 + diff / 2
+            tw, th = 0.5 * size * len(label), size   # 글자 상자의 대략적인 가로·세로
+            lr = label_r if label_r is not None else r + 5 + abs(math.cos(am)) * tw / 2 + abs(math.sin(am)) * th / 2
+            self.text((vx + lr * math.cos(am), vy + lr * math.sin(am) + size * 0.34), label, raw=True, size=size, color=color, italic=False, anchor="middle")
+
+    def right_angle(self, v, p1, p2, size=9, color=_FIG_INK):
+        vx, vy = self.P(v)
+        u = []
+        for p in (p1, p2):
+            px_, py_ = self.P(p)
+            dx, dy = px_ - vx, py_ - vy
+            n = math.hypot(dx, dy) or 1.0
+            u.append((dx / n, dy / n))
+        (u1x, u1y), (u2x, u2y) = u
+        pts = [(vx + u1x * size, vy + u1y * size), (vx + (u1x + u2x) * size, vy + (u1y + u2y) * size), (vx + u2x * size, vy + u2y * size)]
+        self.add(
+            f'<polyline points="{" ".join(f"{_fn(a)},{_fn(b)}" for a, b in pts)}" fill="none" stroke="{color}" '
+            f'stroke-width="1.4" stroke-linejoin="round"/>'
+        )
+
+    # ----- 좌표축·눈금 -----
+    def grid(self, xs, ys, color=_FIG_GRID):
+        for x in xs:
+            self.line((x, self.y0), (x, self.y1), color=color, w=1.0, cap="butt")
+        for y in ys:
+            self.line((self.x0, y), (self.x1, y), color=color, w=1.0, cap="butt")
+
+    def axes(self, xlab="x", ylab="y", origin="O", color=_FIG_AXIS):
+        ax = 0 if self.x0 <= 0 <= self.x1 else self.x0
+        ay = 0 if self.y0 <= 0 <= self.y1 else self.y0
+        self.line((self.x0, ay), (self.x1, ay), color=color, w=1.5, cap="butt")
+        self.line((ax, self.y0), (ax, self.y1), color=color, w=1.5, cap="butt")
+        # 화살촉
+        X1, Y1 = self.X(self.x1), self.Y(ay)
+        self.add(f'<polygon points="{_fn(X1 + 5)},{_fn(Y1)} {_fn(X1 - 4)},{_fn(Y1 - 3.6)} {_fn(X1 - 4)},{_fn(Y1 + 3.6)}" fill="{color}"/>')
+        X2, Y2 = self.X(ax), self.Y(self.y1)
+        self.add(f'<polygon points="{_fn(X2)},{_fn(Y2 - 5)} {_fn(X2 - 3.6)},{_fn(Y2 + 4)} {_fn(X2 + 3.6)},{_fn(Y2 + 4)}" fill="{color}"/>')
+        if xlab:
+            self.text((X1, Y1), xlab, raw=True, dx=-3, dy=-9, size=15, anchor="end")
+        if ylab:
+            self.text((X2, Y2), ylab, raw=True, dx=-11, dy=9, size=15, anchor="end")
+        if origin and ax == 0 and ay == 0:
+            self.text(self.P((0, 0)), origin, raw=True, dx=-9, dy=15, size=14, anchor="middle")
+        self._ax, self._ay = ax, ay
+
+    def xtick(self, x, label=None, size=12):
+        ay = getattr(self, "_ay", 0)
+        X, Y = self.X(x), self.Y(ay)
+        if X > self.X(self.x1) - 16:          # 화살촉·x 글자와 겹치는 끝자리는 쓰지 않는다
+            return
+        if abs(x) < 1e-9 and getattr(self, "_ax", None) == 0:   # 원점은 O 글자가 있으므로 0 은 쓰지 않는다
+            return
+        self.add(f'<line x1="{_fn(X)}" y1="{_fn(Y - 3.5)}" x2="{_fn(X)}" y2="{_fn(Y + 3.5)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
+        self.text((X, Y), label if label is not None else _fn(x).replace("-", "−"), raw=True, dy=17, size=size, italic=False)
+
+    def ytick(self, y, label=None, size=12):
+        ax = getattr(self, "_ax", 0)
+        X, Y = self.X(ax), self.Y(y)
+        if Y < self.Y(self.y1) + 16:
+            return
+        if abs(y) < 1e-9 and getattr(self, "_ay", None) == 0:
+            return
+        self.add(f'<line x1="{_fn(X - 3.5)}" y1="{_fn(Y)}" x2="{_fn(X + 3.5)}" y2="{_fn(Y)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
+        self.text((X, Y), label if label is not None else _fn(y).replace("-", "−"), raw=True, dx=-8, dy=size * 0.34, size=size, anchor="end", italic=False)
+
+    # ----- 함수 그래프 -----
+    def curve(self, fn, x0, x1, n=320, color=_FIG_BLUE, w=2.3, dash=None, ylo=None, yhi=None):
+        """y=fn(x) 를 그림 안쪽 부분만 그린다. (경계를 넘으면 경계에서 끊는다.)"""
+        ylo = self.y0 if ylo is None else ylo
+        yhi = self.y1 if yhi is None else yhi
+
+        def ev(x):
+            try:
+                y = fn(x)
+                return y if y == y and abs(y) < 1e9 else None
+            except (ZeroDivisionError, ValueError, OverflowError):
+                return None
+
+        def inside(y):
+            return y is not None and ylo - 1e-9 <= y <= yhi + 1e-9
+
+        def cross(xa, xb):
+            """xa 는 안, xb 는 밖일 때 경계와 만나는 점."""
+            ya, yb = ev(xa), ev(xb)
+            if yb is None:
+                return None
+            edge = yhi if (yb > yhi) else ylo
+            lo, hi = xa, xb
+            for _ in range(40):
+                mid = (lo + hi) / 2
+                ym = ev(mid)
+                if inside(ym):
+                    lo = mid
+                else:
+                    hi = mid
+            return (lo, edge) if ev(lo) is not None else None
+
+        xs = [x0 + (x1 - x0) * i / n for i in range(n + 1)]
+        runs, cur = [], []
+        prev = None
+        for x in xs:
+            y = ev(x)
+            if inside(y):
+                if not cur and prev is not None and prev[1] is not None:
+                    c = cross(x, prev[0])
+                    if c:
+                        cur.append(c)
+                cur.append((x, y))
+            else:
+                if cur:
+                    c = cross(cur[-1][0], x) if y is not None else None
+                    if c:
+                        cur.append(c)
+                    runs.append(cur)
+                    cur = []
+            prev = (x, y)
+        if cur:
+            runs.append(cur)
+        d = f' stroke-dasharray="{dash}"' if dash else ""
+        for run in runs:
+            if len(run) < 2:
+                continue
+            pp = " ".join(f"{_fn(a)},{_fn(b)}" for a, b in map(self.P, run))
+            self.add(
+                f'<polyline points="{pp}" fill="none" stroke="{color}" stroke-width="{w}" stroke-linejoin="round" '
+                f'stroke-linecap="round"{d}/>'
+            )
+
+    def area(self, fn, x0, x1, base=0.0, n=160, color=_FIG_BLUE, fo=0.16):
+        pts = [(x0, base)] + [(x0 + (x1 - x0) * i / n, fn(x0 + (x1 - x0) * i / n)) for i in range(n + 1)] + [(x1, base)]
+        self.poly(pts, fill=color, fo=fo, stroke=None)
+
+    # ----- 마무리 -----
+    def inner(self):
+        return "".join(self.parts)
+
+    def svg(self):
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {_fn(self.W)} {_fn(self.H)}" width="{_fn(self.W)}" '
+            f'height="{_fn(self.H)}" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" '
+            f'font-family="{_FIG_FONT}">{self.inner()}</svg>'
+        )
+
+
+def fig_md(svg, alt="문제 그림"):
+    """SVG 글을 문제 글 끝에 붙일 <img> 로 바꾼다. (앞뒤 빈 줄로 마크다운 문단을 끊는다.)"""
+    b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return (
+        '\n\n<p style="text-align:center;margin:12px 0 4px">'
+        f'<img alt="{alt}" src="data:image/svg+xml;base64,{b64}" '
+        'style="max-width:100%;height:auto;image-rendering:auto"></p>\n\n'
+    )
+
+
+# ---------- 좌표평면·함수 그래프 그림 ----------
+def _tx_num(v):
+    """눈금·점 글자에 쓸 숫자 (음수는 진짜 마이너스 기호로)."""
+    return str(v).replace("-", "−")
+
+
+def _pt_txt(x, y):
+    return f"({_tx_num(x)}, {_tx_num(y)})"
+
+
+def _line_label(f, seg, text, color, off=11, below=False, side=None):
+    """직선(그림 안쪽 선분 seg)의 한쪽 끝 가까이에 식 글자를 적는다. 그림 밖으로 나가거나 축 글자와 겹치지 않게 맞춘다.
+    side: 'top'(화면에서 위쪽 끝), 'bottom'(아래쪽 끝), 'right'(오른쪽 끝). 없으면 x축에서 먼 끝."""
+    if not seg:
+        return
+    a, b = seg
+    (pax, pay), (pbx, pby) = f.P(a), f.P(b)
+    if side == "top":
+        pick_b = pby < pay
+    elif side == "bottom":
+        pick_b = pby > pay
+    elif side == "right":
+        pick_b = pbx > pax
+    else:
+        ay0 = f.Y(0)
+        pick_b = abs(pby - ay0) >= abs(pay - ay0)
+    if not pick_b:
+        a, b = b, a
+    (ax, ay), (bx, by) = f.P(a), f.P(b)
+    dx, dy = bx - ax, by - ay
+    n = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / n, dx / n
+    if (ny > 0) != below:
+        nx, ny = -nx, -ny
+    x = bx + nx * off - dx / n * 5
+    y = by + ny * off - dy / n * 5 + 5
+    anchor = "end" if nx < 0.3 else "start"
+    w = 0.52 * 13 * len(text)
+    if anchor == "start" and x + w > f.W - 3:
+        anchor = "end"
+    if anchor == "end" and x - w < 3:
+        anchor = "start"
+        x = max(x, 3)
+    x = min(max(x, 3 + (w if anchor == "end" else 0)), f.W - 3 - (w if anchor == "start" else 0))
+    cx = x - w / 2 if anchor == "end" else x + w / 2
+    if abs(cx - f.X(getattr(f, "_ax", 0))) < 70 and y < 50:        # y축 글자 근처는 피한다
+        y = 50
+    y = min(max(y, 14), f.H - 4)
+    f.text((x, y), text, raw=True, size=13, anchor=anchor, color=color, italic=False)
+
+
+def _view_pts(pts, mx, my, origin=True):
+    xs = [p[0] for p in pts] + ([0] if origin else [])
+    ys = [p[1] for p in pts] + ([0] if origin else [])
+    return min(xs) - mx, max(xs) + mx, min(ys) - my, max(ys) + my
+
+
+def _centroid(pts):
+    return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+
+# ---------- 도형의 방정식·유리함수·삼각함수·미적분 그림 ----------
+def _auto_view(fn, x0, x1, pts=(), pad=0.14, include_zero=True, ycap=None):
+    """x0..x1 에서 fn 의 값과 pts 를 모두 담는 y 범위."""
+    ys = [fn(x0 + (x1 - x0) * i / 120) for i in range(121)] + [p[1] for p in pts]
+    if include_zero:
+        ys.append(0.0)
+    lo, hi = min(ys), max(ys)
+    if ycap is not None:
+        lo, hi = max(lo, -ycap), min(hi, ycap)
+    d = max(hi - lo, 1e-6)
+    return lo - d * pad, hi + d * pad
+
+
+def _eq_fn(p, q, c):
+    """직선 p x + q y + c = 0 을 지나는 두 점 (그리기용)."""
+    if q != 0:
+        return (0, -c / q), (1, -(p + c) / q)
+    return (-c / p, 0), (-c / p, 1)
+
+
+def fig_dist_point_line(P, p, q, c, eq, name="P"):
+    """점 P 에서 직선 px+qy+c=0 까지의 거리 d: 수선의 발 H 와 수선(점선)."""
+    a, b = P
+    t = (p * a + q * b + c) / (p * p + q * q)
+    H = (a - t * p, b - t * q)
+    pts = [P, H, (0, 0)]
+    x0, x1, y0, y1 = _view_pts(pts, 2.6, 2.6)
+    f = _Fig(x0, x1, y0, y1, width=340, equal=True, height=330)
+    f.axes()
+    s1, s2 = _eq_fn(p, q, c)
+    seg = f.clipped_line(s1, s2, color=_FIG_BLUE, w=2.0)
+    f.line(P, H, color=_FIG_RED, w=1.8, dash="5 4")
+    f.right_angle(H, P, (H[0] + (-q), H[1] + p) if True else P, size=8)
+    f.dot(P, color=_FIG_RED)
+    f.text(P, f"{name}({_tx_num(a)}, {_tx_num(b)})", dx=9, dy=-8, anchor="start", italic=False, color=_FIG_RED, size=13)
+    f.text(((a + H[0]) / 2, (b + H[1]) / 2), "d", dx=-10, dy=4, italic=True, color=_FIG_RED)
+    _line_label(f, seg, eq, _FIG_BLUE)
+    return f.svg()
+
+
+def fig_dist_parallel(p, q, c1, c2, eq1, eq2):
+    """평행한 두 직선 사이의 거리 d (공통 수선)."""
+    n2 = p * p + q * q
+    Q1 = (-c1 * p / n2, -c1 * q / n2)
+    Q2 = (-c2 * p / n2, -c2 * q / n2)
+    x0, x1, y0, y1 = _view_pts([Q1, Q2], 3.2, 3.2)
+    f = _Fig(x0, x1, y0, y1, width=340, equal=True, height=330)
+    f.axes()
+    s1 = f.clipped_line(*_eq_fn(p, q, c1), color=_FIG_BLUE, w=2.0)
+    s2 = f.clipped_line(*_eq_fn(p, q, c2), color=_FIG_GREEN, w=2.0)
+    f.line(Q1, Q2, color=_FIG_RED, w=1.8, dash="5 4")
+    f.dot(Q1, r=3, color=_FIG_RED)
+    f.dot(Q2, r=3, color=_FIG_RED)
+    f.text(((Q1[0] + Q2[0]) / 2, (Q1[1] + Q2[1]) / 2), "d", dx=10, dy=-6, italic=True, color=_FIG_RED)
+    _line_label(f, s1, eq1, _FIG_BLUE, side="top")
+    _line_label(f, s2, eq2, _FIG_GREEN, side="bottom")
+    return f.svg()
+
+
+def fig_circle_tangent(a, b, r, p, q, k, eq, circle_eq):
+    """원 (x-a)²+(y-b)²=r² 과 접하는 직선 px+qy+k=0 (접점 T)."""
+    t = (p * a + q * b + k) / (p * p + q * q)
+    T = (a - t * p, b - t * q)
+    x0, x1, y0, y1 = _view_pts([(a - r, b - r), (a + r, b + r), T], 1.8, 1.8)
+    f = _Fig(x0, x1, y0, y1, width=340, equal=True, height=340)
+    f.axes()
+    f.circle((a, b), r, fill=_FIG_GREEN, fo=0.07, stroke=_FIG_GREEN, w=1.9)
+    seg = f.clipped_line(*_eq_fn(p, q, k), color=_FIG_BLUE, w=2.0)
+    f.line((a, b), T, color=_FIG_RED, w=1.6, dash="5 4")
+    f.dot((a, b), r=3)
+    f.dot(T, r=3, color=_FIG_RED)
+    f.text((a, b), "C", dx=-4, dy=-9, italic=True)
+    f.text(((a + T[0]) / 2, (b + T[1]) / 2), "r", dx=10, dy=-4, italic=True, color=_FIG_RED)
+    f.text((x1 - 0.1, y1 - 0.1), circle_eq, raw=False, dx=0, dy=0, anchor="end", italic=False, size=12, color=_FIG_GREEN)
+    _line_label(f, seg, eq, _FIG_BLUE)
+    return f.svg()
+
+
+def fig_circle_general(a, b, r_label="r", axes=True, diameter=None, center_label=None):
+    """원과 좌표축. diameter = ((x1,y1,이름),(x2,y2,이름)) 이면 그 지름과 두 끝점을 그린다 (반지름은 구할 값이라 글자로 적는다)."""
+    R = r_label[0] if isinstance(r_label, tuple) else None
+    rad = r_label[1] if isinstance(r_label, tuple) else 1.0
+    x0, x1, y0, y1 = _view_pts([(a - rad, b - rad), (a + rad, b + rad)], 1.6, 1.6)
+    f = _Fig(x0, x1, y0, y1, width=340, equal=True, height=330)
+    f.axes()
+    f.circle((a, b), rad, fill=_FIG_BLUE, fo=0.06, stroke=_FIG_BLUE, w=2.0)
+    f.dot((a, b), r=3)
+    if center_label:
+        f.text((a, b), center_label, dx=0, dy=-9, italic=True)
+    if diameter:
+        (xa, ya, na), (xb, yb, nb) = diameter
+        f.line((xa, ya), (xb, yb), color=_FIG_RED, w=1.8)
+        for (x, y, n), s in (((xa, ya, na), -1), ((xb, yb, nb), 1)):
+            f.dot((x, y), color=_FIG_RED)
+            f.label_out((x, y), f"{n}({_tx_num(x)}, {_tx_num(y)})", (a, b), off=13, size=13, italic=False, color=_FIG_RED, fit=True)
+    elif R:
+        f.line((a, b), (a + rad, b), color=_FIG_RED, w=1.7)
+        f.text((a + rad / 2, b), R, dy=-9, italic=True, color=_FIG_RED)
+    return f.svg()
+
+
+def fig_circle_from_origin(a, b, rad, mode, d):
+    """원점 O 와 원(중심 C, 반지름 r) 위의 점 중 가장 먼(가까운) 점 P. mode 는 'max' 또는 'min'."""
+    L = math.hypot(a, b)
+    ux, uy = a / L, b / L
+    far = (a + ux * rad, b + uy * rad)
+    near = (a - ux * rad, b - uy * rad)
+    Pt = far if mode == "max" else near
+    x0, x1, y0, y1 = _view_pts([(a - rad, b - rad), (a + rad, b + rad)], 1.5, 1.5)
+    f = _Fig(x0, x1, y0, y1, width=340, equal=True, height=330)
+    f.axes()
+    f.circle((a, b), rad, fill=_FIG_BLUE, fo=0.06, stroke=_FIG_BLUE, w=2.0)
+    f.line((0, 0), far, color=_FIG_GRAY, w=1.4, dash="5 4")
+    f.line((0, 0), Pt, color=_FIG_RED, w=2.0)
+    f.dot((a, b), r=3)
+    f.text((a, b), "C", dx=-4, dy=-9, italic=True)
+    f.dot(Pt, ring=True, color=_FIG_RED)
+    f.text(Pt, "P", dx=10, dy=-6, italic=True, color=_FIG_RED)
+    return f.svg()
+
+
+def fig_two_lines(l1, l2, kind, e1, e2):
+    """두 직선 (p, q, r) 과 (p2, q2, r2) (px+qy+r=0). kind 가 'perp' 이면 교점에 직각 표시."""
+    f = _Fig(-9, 9, -9, 9, width=340, equal=True, height=340)
+    f.axes()
+    p1, q1, r1 = l1
+    p2, q2, r2 = l2
+    s1 = f.clipped_line(*_eq_fn(p1, q1, r1), color=_FIG_BLUE, w=2.0)
+    s2 = f.clipped_line(*_eq_fn(p2, q2, r2), color=_FIG_RED, w=2.0)
+    det = p1 * q2 - p2 * q1
+    if kind == "perp" and det:
+        X = (q1 * r2 - q2 * r1) / det
+        Y = (p2 * r1 - p1 * r2) / det
+        if f.x0 < X < f.x1 and f.y0 < Y < f.y1:
+            d1 = (-q1, p1)
+            d2 = (-q2, p2)
+            f.right_angle((X, Y), (X + d1[0] * 0.01, Y + d1[1] * 0.01), (X + d2[0] * 0.01, Y + d2[1] * 0.01), size=9)
+    _line_label(f, s1, e1, _FIG_BLUE, side="top")
+    _line_label(f, s2, e2, _FIG_RED, side="bottom")
+    return f.svg()
+
+
+def fig_collinear(A, B, C, names=("A", "B", "C")):
+    """한 직선 위의 세 점 A, B, C (좌표 글자는 호출하는 쪽이 정한다)."""
+    pts = [A[:2], B[:2], C[:2]]
+    x0, x1, y0, y1 = _view_pts(pts, 2.4, 2.4)
+    f = _Fig(x0, x1, y0, y1, width=340, equal=False, height=270)
+    f.axes()
+    f.clipped_line(pts[0], pts[1], color=_FIG_BLUE, w=2.0)
+    cen = _centroid(pts)
+    for (x, y, t), n in zip((A, B, C), names):
+        f.dot((x, y))
+        f.text((x, y), t, dx=10, dy=-9, anchor="start", italic=False, size=13)
+    return f.svg()
+
+
+def fig_rational(a, b, k, asym=("x = a", "y = b"), point=None, ring=False, label_asym=True):
+    """y = k/(x-a) + b 의 그래프와 점근선(점선). point 는 지나는 점 (좌표 글자 포함), ring 은 두 점근선의 교점."""
+    x0, x1 = min(a, 0) - 5.5, max(a, 0) + 5.5
+    if point:
+        x0, x1 = min(x0, point[0] - 1.5), max(x1, point[0] + 1.5)
+    ylo, yhi = min(b, 0) - 5.5, max(b, 0) + 5.5
+    if point:
+        ylo, yhi = min(ylo, point[1] - 1.5), max(yhi, point[1] + 1.5)
+    f = _Fig(x0, x1, ylo, yhi, width=340, equal=False, height=270)
+    f.axes()
+    fn = lambda x: k / (x - a) + b
+    f.line((a, ylo), (a, yhi), color=_FIG_GRAY, w=1.4, dash="5 4", cap="butt")
+    f.line((x0, b), (x1, b), color=_FIG_GRAY, w=1.4, dash="5 4", cap="butt")
+    f.curve(fn, x0, a - 0.03, color=_FIG_BLUE)
+    f.curve(fn, a + 0.03, x1, color=_FIG_BLUE)
+    if label_asym:
+        f.text((a, ylo), asym[0], dx=6, dy=-8, anchor="start", italic=False, size=12, color=_FIG_AXIS)
+        f.text((x0, b), asym[1], dx=4, dy=-7, anchor="start", italic=False, size=12, color=_FIG_AXIS)
+    if ring:
+        f.dot((a, b), ring=True)
+    if point:
+        f.dot((point[0], point[1]), color=_FIG_RED)
+        f.text((point[0], point[1]), point[2], dx=9, dy=-9, anchor="start", italic=False, size=13, color=_FIG_RED)
+    return f.svg()
+
+
+def fig_sine(a, bq, c, per_text, vmax_t, vmin_t):
+    """y = a sin(bx) + c 의 그래프. 최댓값·최솟값은 y축에, 주기(한 주기의 길이)는 x축에 글자로 적는다."""
+    T = 2 * math.pi / bq
+    x0, x1 = -0.35 * T, 1.45 * T
+    hi, lo = a + c, c - a
+    pad = max(1.2, a * 0.35)
+    f = _Fig(x0, x1, min(lo, 0) - pad, max(hi, 0) + pad, width=360, equal=False, height=250)
+    f.axes()
+    f.line((x0, hi), (x1, hi), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    f.line((x0, lo), (x1, lo), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    f.curve(lambda x: a * math.sin(bq * x) + c, x0, x1)
+    f.ytick(hi, vmax_t)
+    f.ytick(lo, vmin_t)
+    f.xtick(T, per_text)
+    return f.svg()
+
+
+def fig_area_curve(fn, x0, x1, lo, hi, ticks=(), area_text=None, view=None, color=_FIG_BLUE, curve_text=None, ycap=None):
+    """곡선 y=fn(x) 와 x축 사이에서 lo..hi 구간을 색칠한다. ticks = [(x, 글자)], area_text 는 넓이 글자(예: 'S = 36')."""
+    yl, yh = _auto_view(fn, x0, x1, ycap=ycap)
+    if view:
+        yl, yh = view
+    f = _Fig(x0, x1, yl, yh, width=340, equal=False, height=250)
+    f.axes()
+    f.area(fn, lo, hi, color=color, fo=0.2)
+    f.curve(fn, x0, x1, color=color, w=2.3)
+    for x, t in ticks:
+        f.xtick(x, t)
+    f.line((lo, 0), (lo, fn(lo)), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    f.line((hi, 0), (hi, fn(hi)), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    if curve_text:
+        f.text((x1, fn(x1)), curve_text, dx=-6, dy=-10, anchor="end", italic=False, size=13, color=color)
+    if area_text:
+        ym = max(fn(x) for x in [lo + (hi - lo) * i / 40 for i in range(41)])
+        sign = 1 if ym > 0 else -1
+        f.text(((lo + hi) / 2, (min(fn((lo + hi) / 2), ym) / 2) if sign > 0 else fn((lo + hi) / 2) / 2), area_text, dy=5, italic=False, size=14, color=_FIG_INK)
+    return f.svg()
+
+
+def fig_curve_tangent(fn, x0, x1, a, tick_text="a", dfn=None, point_text=None):
+    """곡선과 x=a 에서의 접선(점선)."""
+    ya = fn(a)
+    yl, yh = _auto_view(fn, x0, x1, pts=[(a, ya)], ycap=60)
+    f = _Fig(x0, x1, yl, yh, width=340, equal=False, height=250)
+    f.axes()
+    f.curve(fn, x0, x1)
+    m = dfn(a) if dfn else (fn(a + 1e-5) - fn(a - 1e-5)) / 2e-5
+    f.clipped_line((a, ya), (a + 1, ya + m), color=_FIG_RED, w=1.7, dash="6 4")
+    f.line((a, 0), (a, ya), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    f.xtick(a, tick_text)
+    f.dot((a, ya), color=_FIG_RED)
+    if point_text:
+        f.text((a, ya), point_text, dx=9, dy=-9, anchor="start", italic=False, size=13, color=_FIG_RED)
+    return f.svg()
+
+
+def fig_cubic_extrema(fn, x0, x1, xmax_pt, M_text, xmin_pt=None):
+    """삼차함수 그래프에서 극대인 점의 y좌표를 글자로 적는다 (극솟점은 점만 찍는다)."""
+    pm = (xmax_pt, fn(xmax_pt))
+    pts = [pm] + ([(xmin_pt, fn(xmin_pt))] if xmin_pt is not None else [])
+    yl, yh = _auto_view(fn, x0, x1, pts=pts, ycap=80)
+    f = _Fig(x0, x1, yl, yh, width=340, equal=False, height=260)
+    f.axes()
+    f.curve(fn, x0, x1)
+    f.line((0, pm[1]), pm, color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    f.line((pm[0], 0), pm, color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    f.ytick(pm[1], M_text)
+    f.dot(pm, color=_FIG_RED)
+    if xmin_pt is not None:
+        f.dot((xmin_pt, fn(xmin_pt)), color=_FIG_RED)
+    return f.svg()
+
+
+def fig_limit_hole(a, m, hole_label=None, point_label=None, a_text="a", closed=None):
+    """y = x + m (x≠a) 에서 x=a 일 때의 구멍. 구멍의 높이는 hole_label 로 적는다. closed 가 있으면 x=a 에서 값이 (closed) 인 점을 채운 점으로 찍는다."""
+    x0, x1 = min(a, 0) - 4.5, max(a, 0) + 4.5
+    ha = a + m
+    ylo, yhi = min(0, x0 + m, ha) - 2.5, max(0, x1 + m, ha) + 2.5
+    f = _Fig(x0, x1, ylo, yhi, width=340, equal=False, height=250)
+    f.axes()
+    f.curve(lambda x: x + m, x0, a - 0.02, color=_FIG_BLUE)
+    f.curve(lambda x: x + m, a + 0.02, x1, color=_FIG_BLUE)
+    f.line((a, 0), (a, ha), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    f.xtick(a, a_text)
+    if closed is not None:
+        f.dot((a, ha), color=_FIG_RED)
+        f.text((a, ha), closed, dx=-10, dy=-8, anchor="end", italic=True, color=_FIG_RED)
+    else:
+        f.dot((a, ha), ring=True)
+        if hole_label:
+            f.ytick(ha, hole_label)
+    return f.svg()
+
+
+def fig_inverse(kind, a, b, k=None):
+    """함수 f 와 그 역함수 g 의 그래프, 직선 y=x (점선). kind 'lin': f(x)=ax+b / 'quad': x≥0 에서 f(x)=x²+b."""
+    R = 8.0 if kind == "lin" else max(8.0, abs(b) + 8.0)
+    f = _Fig(-R, R, -R, R, width=330, equal=True, height=330)
+    f.axes()
+    f.line((-R, -R), (R, R), color=_FIG_GRAY, w=1.4, dash="5 4")
+    if kind == "lin":
+        f.clipped_line((0, b), (1, a + b), color=_FIG_BLUE, w=2.1)                         # y = f(x) = ax + b
+        f.clipped_line((0, -b / a), (1, (1 - b) / a), color=_FIG_RED, w=2.1)               # y = g(x) = (x - b)/a
+    else:
+        f.curve(lambda x: x * x + b, 0, R, color=_FIG_BLUE, w=2.1)
+        f.curve(lambda x: math.sqrt(x - b) if x >= b else float("nan"), b, R, color=_FIG_RED, w=2.1)
+    f.text((R, R), "y = x", dx=-6, dy=14, anchor="end", italic=False, size=12, color=_FIG_AXIS)
+    f.text((-R, R), "y = f(x)", dx=6, dy=34, anchor="start", italic=False, size=13, color=_FIG_BLUE)
+    f.text((-R, R), "y = g(x)", dx=6, dy=50, anchor="start", italic=False, size=13, color=_FIG_RED)
+    return f.svg()
+
+
+def fig_normal(m, sigma, shades, ticks):
+    """정규분포 곡선(평균 m, 표준편차 sigma). shades = [(왼쪽 끝, 오른쪽 끝)] 구간을 색칠하고, ticks = [(x, 글자)] 를 x축에 적는다."""
+    xs = [t[0] for t in ticks] + [m - 3.2 * sigma, m + 3.2 * sigma]
+    x0, x1 = min(xs) - 0.7 * sigma, max(xs) + 0.7 * sigma
+    fn = lambda x: math.exp(-((x - m) ** 2) / (2 * sigma * sigma))
+    f = _Fig(x0, x1, -0.2, 1.25, width=350, equal=False, height=220, pad=(14, 22, 14, 34))
+    for lo, hi in shades:
+        a, b = max(lo, x0), min(hi, x1)
+        if a < b:
+            f.area(fn, a, b, color=_FIG_BLUE, fo=0.28)
+    f.curve(fn, x0, x1, color=_FIG_BLUE, w=2.3)
+    f.line((x0, 0), (x1, 0), color=_FIG_AXIS, w=1.5, cap="butt")
+    f._ay, f._ax = 0, x0
+    for x, t in ticks:
+        f.xtick(x, t, size=13)
+    f.line((m, 0), (m, 1), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    return f.svg()
+
+
 def _tidy_math(text):
     """수식($...$, $$...$$) 안의 연속 공백을 하나로 줄이고, 한 줄 수식($...$)의 앞뒤 빈칸을 없앤다.
     조각을 이어 붙이다 생긴 빈칸이다. ($f(x)=x^{2} $ 처럼 닫는 $ 앞에 빈칸이 있으면 수식으로 읽히지 않는 화면이 있다.)"""
@@ -3350,7 +4123,7 @@ def h_distance(target, level):
             f"$$\\frac{{|{p}\\times{_p(a)}+{qq}\\times{_p(b)} {_sgn(c)}|}}{{\\sqrt{{{p}^{{2}}+{qq}^{{2}}}}}}"
             f"=\\frac{{{abs(val)}}}{{{n}}}={target}$$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_dist_point_line((a, b), p, qq, c, _plain(_line(p, qq, c)))), exp, str(target)
     if level == 2:
         while True:
             p, qq, n = random.choice(_LINE_NORMS)
@@ -3363,7 +4136,7 @@ def h_distance(target, level):
             "직선 위의 한 점과 다른 직선 사이의 거리를 구하면 됩니다.\n\n"
             f"$$\\frac{{|{c1}-{_p(c2)}|}}{{\\sqrt{{{p}^{{2}}+{qq}^{{2}}}}}}=\\frac{{{abs(c1 - c2)}}}{{{n}}}={target}$$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_dist_parallel(p, qq, c1, c2, _plain(_line(p, qq, c1)), _plain(_line(p, qq, c2)))), exp, str(target)
     while True:
         p, qq, n = random.choice(_LINE_NORMS[:4])
         r = random.randint(1, 8)
@@ -3381,7 +4154,7 @@ def h_distance(target, level):
         f"$|{p * a + qq * b}+k|={n * r}$이므로 $k={n * r - p * a - qq * b}$ 또는 $k={-n * r - p * a - qq * b}$이고, "
         f"양수는 $k={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_circle_tangent(a, b, r, p, qq, target, _plain(f'{_coef(p)} {_tx(qq, "y")} + k = 0'), _plain(f'{_sq("x", a)} + {_sq("y", b)} = {r * r}'))), exp, str(target)
 
 
 def h_circle(target, level):
@@ -3399,7 +4172,7 @@ def h_circle(target, level):
             f"$${_sq('x', p)}+{_sq('y', qq)}={target ** 2}$$\n\n"
             f"이므로 반지름의 길이는 ${target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_circle_general(p, qq, ('r', target), center_label='C')), exp, str(target)
     if level == 2:
         while True:
             a, b, c = random.randint(-8, 8), random.randint(-8, 8), random.randint(-8, 8)
@@ -3416,7 +4189,7 @@ def h_circle(target, level):
             f"=\\left({_frac(a + c, 2)},\\ {_frac(b + d, 2)}\\right)$$\n\n"
             f"따라서 두 좌표의 합은 ${target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_circle_general((a + c) / 2, (b + d) / 2, ('', math.hypot(c - a, d - b) / 2), diameter=((a, b, 'A'), (c, d, 'B')))), exp, str(target)
     triples = [(3, 4, 5), (4, 3, 5), (5, 12, 13), (12, 5, 13), (6, 8, 10), (8, 6, 10)]
 
     def make():
@@ -3443,7 +4216,7 @@ def h_circle(target, level):
             else f"원점은 원 바깥에 있고, 가장 작은 거리는 $d-r={d}-{r}={target}$"
         )
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_circle_from_origin(a, b, r, mode, d)), exp, str(target)
 
 
 def h_line(target, level):
@@ -3481,7 +4254,7 @@ def h_line(target, level):
                 f"$${p}\\times{_p(p2)}+{_p(qq)}\\times a=0$$\n\n"
                 f"이므로 $a={target}$"
             )
-        return q, exp, str(target)
+        return q + fig_md(fig_two_lines((p, qq, r), (p2, target, r2), 'par' if level == 1 else 'perp', _plain(line1), _plain(line2))), exp, str(target)
     while True:
         x1, y1, x2 = random.randint(-4, 4), random.randint(-6, 6), random.randint(-4, 4)
         m = _nonzero(-4, 4)
@@ -3499,7 +4272,7 @@ def h_line(target, level):
         f"직선 $AB$의 기울기는 $\\frac{{{y2}-{_p(y1)}}}{{{x2}-{_p(x1)}}}={m}$입니다.\n\n"
         f"점 $C$도 이 직선 위에 있으므로 $\\frac{{k-{_p(y1)}}}{{{x3}-{_p(x1)}}}={m}$이고, 따라서 $k={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_collinear((x1, y1, f'A{_pt_txt(x1, y1)}'), (x2, y2, f'B{_pt_txt(x2, y2)}'), (x3, target, f'C({_tx_num(x3)}, k)'))), exp, str(target)
 
 
 # ---------- 집합과 명제 ----------
@@ -3753,7 +4526,7 @@ def h_inverse(target, level):
         exp = (
             f"$g({k})=m$이라 하면 $f(m)={k}$이므로\n\n$${_lin(a, b, 'm')}={k}$$\n\n따라서 $m={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_inverse('lin', a, b)), exp, str(target)
     if level == 2:
         c = random.randint(-6, 6)
         k = target * target + c
@@ -3764,7 +4537,7 @@ def h_inverse(target, level):
             f"$g({k})=m$이라 하면 $f(m)={k}$ ($m\\ge 0$)이므로\n\n"
             f"$$m^{{2}} {_sgn(c)}={k}$$\n\n$m^{{2}}={target ** 2}$이고 $m\\ge 0$이므로 $m={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_inverse('quad', 1, c)), exp, str(target)
     while True:
         a, b, k = _nonzero(-4, 5), random.randint(-8, 8), random.randint(2, 7)
         if a == 1:
@@ -3807,7 +4580,7 @@ def h_rational(target, level):
             f"$x={p}$, $y={qv}$를 대입하면\n\n$${qv}=\\frac{{k}}{{{p} {_sgn(-a)}}} {_sgn(b)}$$\n\n"
             + tail
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_rational(a, b, target, (f'x = {_tx_num(a)}', f'y = {_tx_num(b)}'), point=(p, qv, _pt_txt(p, qv)))), exp, str(target)
     if level == 2:
         while True:
             a, b = random.randint(-6, 9), random.randint(-6, 9)
@@ -3826,7 +4599,7 @@ def h_rational(target, level):
             f"점근선은 $x={a}$, $y={b}$이고 교점은 $({a}, {b})$입니다.\n\n"
             f"따라서 $p+q={a}+{_p(b)}={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_rational(a, b, c + a * b, label_asym=False, ring=True)), exp, str(target)
 
     def make():
         m, n = random.randint(-5, 6), random.randint(-4, 6)
@@ -3854,7 +4627,7 @@ def h_rational(target, level):
         f"점 $({p}, {qv})$를 지나므로 ${qv}=\\frac{{{n}\\times{_p(p)}+b}}{{{p} {_sgn(c)}}}$에서 $b={b}$입니다.\n\n"
         f"따라서 $a+b+c={n}+{_p(b)}+{_p(c)}={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_rational(m, n, (qv - n) * (p - m), (f'x = {_tx_num(m)}', f'y = {_tx_num(n)}'), point=(p, qv, _pt_txt(p, qv)))), exp, str(target)
 
 
 # ==========================================
@@ -4036,7 +4809,7 @@ def s_trig(target, level):
             f"주기는 $\\frac{{2\\pi}}{{b}}={per}$이므로 $b={bq}$입니다.\n\n"
             f"따라서 $a+b+c={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_sine(a, bq, c, _plain(per), _tx_num(a + c), _tx_num(c - a))), exp, str(target)
     # 구간 [0, Lπ) 에서 sin kx, cos kx 가 1 또는 -1 이 되는 x 의 개수가 target 이 되도록 k 를 고른다.
     # t = kx 는 [0, kLπ) 를 움직이고, 해는 t = t0·π + 2nπ (n = 0, 1, ...) 이므로 반 주기가 남는 경우까지 따져야 한다.
     kind = random.choice(["sin", "cos"])
@@ -4129,7 +4902,7 @@ def s_limit(target, level):
             f"분자를 인수분해하면 ${num}={_fprod(_lin(1, -a), _lin(1, a + p))}$이므로\n\n"
             f"$$\\lim_{{x\\to {a}}}{_fac(_lin(1, a + p))}={_j(str(a), _sgn(a + p))}={target}$$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_limit_hole(a, a + p, a_text=_tx_num(a))), exp, str(target)
     if level == 2:
         def make():
             return random.randint(-5, 6), random.randint(-8, 12)
@@ -4154,7 +4927,7 @@ def s_limit(target, level):
             f"${_fprod(_lin(1, -a), _lin(1, m))}$을 전개하면 ${_poly([1, m - a, -a * m])}$이므로 "
             f"$p={m - a}$, $q={-a * m}$이고 $p+q={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_limit_hole(a, c - a, hole_label=_tx_num(c), a_text=_tx_num(a))), exp, str(target)
 
     def make3():
         return random.randint(-12, 12), random.randint(-6, 6)
@@ -4182,7 +4955,7 @@ def s_limit(target, level):
         f"$k=\\lim_{{x\\to {c}}}{_fac(_lin(1, c + a))}={k}$입니다.\n\n"
         f"따라서 $b+k={_p(b)}+{_p(k)}={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_limit_hole(c, a + c, closed='k', a_text=_tx_num(c))), exp, str(target)
 
 
 # ---------- 미분 ----------
@@ -4204,7 +4977,7 @@ def s_deriv(target, level):
         exp = (
             f"$f'(x)={_poly([3, 2 * p, qq])}$이므로\n\n$${calc}$$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_curve_tangent(lambda x: x ** 3 + p * x * x + qq * x + r, a - 3.4, a + 3.4, a, _tx_num(a), dfn=lambda x: 3 * x * x + 2 * p * x + qq)), exp, str(target)
     if level == 2:
         # 미분계수의 정의: lim_{h→0} {f(a+mh) - f(a-nh)}/h = (m+n) f'(a).
         # (m+n) 이 target 의 약수라서 f'(a) = target/(m+n) 이 정수이고, 큰 계수가 나오지 않는다.
@@ -4231,7 +5004,7 @@ def s_deriv(target, level):
             f"$f'(x)={_poly([3, 2 * p, qq])}$이므로 $f'({a})={calc}={F}$\n\n"
             f"따라서 구하는 값은 ${d}\\times{F}={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_curve_tangent(lambda x: x ** 3 + p * x * x + qq * x + r, a - 3.4, a + 3.4, a, _tx_num(a), dfn=lambda x: 3 * x * x + 2 * p * x + qq)), exp, str(target)
     while True:
         al, be = random.randint(-3, 1), random.randint(2, 5)
         if (al + be) % 2 != 0:
@@ -4247,7 +5020,7 @@ def s_deriv(target, level):
         f"$x={al}$에서 극대, $x={be}$에서 극소입니다.\n\n"
         f"극댓값은 $f({al})={al ** 3 + A * al * al + B * al}+k={M}$이므로 $k={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_cubic_extrema(lambda x: x ** 3 + A * x * x + B * x + target, al - 2.6, be + 2.6, al, _tx_num(M), xmin_pt=be)), exp, str(target)
 
 
 # ---------- 적분 ----------
@@ -4268,7 +5041,7 @@ def s_integral(target, level):
         exp = (
             f"$$\\int_{{0}}^{{{a}}}({f})\\,dx=\\left[{anti}\\right]_{{0}}^{{{a}}}={target}$$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_area_curve(lambda x: p * x * x + qq * x + r, -0.7, a + 0.9, 0, a, ticks=[(a, str(a))])), exp, str(target)
     if level == 2:
         a, b = random.choice([(0, 2), (0, 3), (1, 2), (1, 3), (-1, 2), (0, 1)])
         N = (b ** 3 - a ** 3) + (b * b - a * a) + target * (b - a)
@@ -4280,7 +5053,7 @@ def s_integral(target, level):
             f"={b ** 3 - a ** 3}+{b * b - a * a}+{_coef(b - a, 'k')}={N}$$\n\n"
             f"${_coef(b - a, 'k')}={N - (b ** 3 - a ** 3) - (b * b - a * a)}$이므로 $k={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_area_curve(lambda x: 3 * x * x + 2 * x + target, min(a, 0) - 1, b + 1, a, b, ticks=[(a, _tx_num(a)), (b, _tx_num(b))])), exp, str(target)
     while True:
         m = random.choice([2, 3, 4, 6])
         num = target * m ** 3
@@ -4303,7 +5076,7 @@ def s_integral(target, level):
             "$\\int_{\\alpha}^{\\beta}(x-\\alpha)(\\beta-x)\\,dx=\\frac{(\\beta-\\alpha)^{3}}{6}$이므로 넓이는\n\n"
             f"$$k\\times\\frac{{({hi}-{_p(lo)})^{{3}}}}{{6}}={area_k}={N}$$\n\n따라서 $k={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_area_curve(lambda x: target * (x - lo) * (hi - x), lo - 1.3, hi + 1.3, lo, hi, ticks=[(lo, _tx_num(lo)), (hi, _tx_num(hi))], area_text=f'S = {N}')), exp, str(target)
     q = f"곡선 $y=kx({m}-x)$ ($k>0$)와 $x$축으로 둘러싸인 부분의 넓이가 ${N}$일 때, 상수 $k$의 값을 구하시오."
     half = _frac(m, 2)
     sq_term = "x^{2}" if half == "1" else f"{half}x^{{2}}"
@@ -4314,7 +5087,7 @@ def s_integral(target, level):
         f"$$\\int_{{0}}^{{{m}}}kx({m}-x)\\,dx=k\\left[{sq_term}-\\frac{{1}}{{3}}x^{{3}}\\right]_{{0}}^{{{m}}}"
         f"={area_k}={N}$$\n\n따라서 $k={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_area_curve(lambda x: target * x * (m - x), -1.2, m + 1.2, 0, m, ticks=[(m, str(m))], area_text=f'S = {N}')), exp, str(target)
 
 
 # ==========================================
@@ -4625,7 +5398,7 @@ def p_normal(target, level):
             f"$\\mathrm{{P}}(X\\ge {a})=\\mathrm{{P}}\\left(Z\\ge\\frac{{{a}-{m}}}{{{sigma_sym}}}\\right)$이므로\n\n"
             f"$$\\frac{{{d}}}{{{sigma_sym}}}={_frac(z)}$$\n\n따라서 $\\sigma={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_normal(m, target, [(a, 1e9)], [(m, str(m)), (a, str(a))])), exp, str(target)
     if level == 2:
         z, m, d = pick([Fraction(3, 2), Fraction(1), Fraction(2), Fraction(3)], below=True)
         a = m - d
@@ -4639,7 +5412,7 @@ def p_normal(target, level):
             f"$X$를 표준화하면 $\\frac{{{a}-{m}}}{{{sigma_sym}}}=-{_frac(z)}$이므로 $\\frac{{{d}}}{{{sigma_sym}}}={_frac(z)}$\n\n"
             f"따라서 $\\sigma={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_normal(m, target, [(-1e9, a)], [(m, str(m)), (a, str(a))])), exp, str(target)
     # 상: 평균이 문자 m 이고, P(X≤s1)=P(X≥s2) 에서 m=(s1+s2)/2 를 먼저 구해야 한다.
     z, m, d = pick([Fraction(3, 2), Fraction(1), Fraction(2), Fraction(3)], below=True)
     t = random.randint(3, 12)
@@ -4656,7 +5429,7 @@ def p_normal(target, level):
         f"$\\mathrm{{P}}(X\\ge {a})=\\mathrm{{P}}\\left(Z\\ge\\frac{{{a}-{m}}}{{{sigma_sym}}}\\right)$이므로 "
         f"$\\frac{{{d}}}{{{sigma_sym}}}={_frac(z)}$, 따라서 $\\sigma={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_normal(m, target, [(-1e9, s1), (s2, 1e9)], [(s1, str(s1)), (m, 'm'), (s2, str(s2)), (a, str(a))])), exp, str(target)
 
 
 def p_expectation(target, level):
@@ -4843,7 +5616,8 @@ FAST_PASS_BY_GRADE = {
         (
             "함수 $f(x)$가 모든 실수 $x$에 대하여 다음을 만족시킨다.\n\n"
             "$$f'(x)=3e^{x}(e^{x}+1)^{2}$$\n\n"
-            "$f(0)=600$일 때, $f(\\ln 9)$의 값을 구하시오.",
+            "$f(0)=600$일 때, $f(\\ln 9)$의 값을 구하시오."
+            + fig_md(fig_area_curve(lambda x: 3 * math.exp(x) * (math.exp(x) + 1) ** 2, -0.6, 2.8, 0, math.log(9), ticks=[(math.log(9), "ln 9")], curve_text="y = f′(x)")),
             "*(미적분 · 치환적분 단원)*\n\n"
             "$t=e^{x}+1$로 놓으면 $dt=e^{x}dx$이므로\n\n"
             "$$\\int 3e^{x}(e^{x}+1)^{2}dx=\\int 3t^{2}dt=t^{3}+C=(e^{x}+1)^{3}+C$$\n\n"

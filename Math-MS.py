@@ -1,3 +1,4 @@
+import base64
 import json
 import math
 import os
@@ -2676,7 +2677,7 @@ def g2_func(target):
 
     q = f"기울기가 ${slope}$이고 점 $({x1}, {y1})$을 지나는 일차함수의 $y$절편을 구하시오."
     exp = f"일차함수 식을 $y = {_coef(slope)} + b$로 두고 점 $({x1}, {y1})$을 대입하면:\n\n$${y1} = {slope} \\times {x1} + b$$\n\n따라서 $y$절편 $b = {target}$ 입니다."
-    return q, exp, str(target)
+    return q + fig_md(fig_line_points([(x1, y1)], eq=_plain(f'y = {_coef(slope)} + b'), b_ring=target, m=slope)), exp, str(target)
 
 
 def g2_exp(target):
@@ -2721,7 +2722,7 @@ def g3_quad_func(target):
 
     q = f"이차함수 $y = (x - {p})^2 {q_str}$ 의 그래프가 $y$축과 만나는 점의 $y$좌표를 구하시오."
     exp = f"$y$축과 만나는 점의 $y$좌표는 $x = 0$일 때의 $y$값이므로:\n\n$$y = (0 - {p})^2 {q_str} = {p**2} {q_str} = {target}$$"
-    return q, exp, str(target)
+    return q + fig_md(fig_parabola(1, p, q_val, ring=(0, target))), exp, str(target)
 
 
 def g3_sqrt(target):
@@ -2845,6 +2846,1682 @@ def _end_sound(tex):
     if ch.isascii() and ch.isalpha():
         return _LETTER_END.get(ch.lower(), "V")
     return None
+
+
+# ==========================================
+# 문제 그림 (SVG 벡터 그림)
+#  - 좌표평면·함수 그래프·도형 문제에서는 문제 아래에 그림을 붙인다. 벡터(SVG) 그림이라 화면을 키워도 깨지지 않는다.
+#  - 안티에일리어싱: 그림 전체에 shape-rendering·text-rendering 을 geometricPrecision 으로 지정해서,
+#    브라우저가 선과 글자의 가장자리를 부드럽게(안티에일리어싱) 그리도록 한다. (crispEdges 는 쓰지 않는다.)
+#  - 그림에는 문제에 '주어진 값'만 적는다. 구해야 하는 값은 글자(x, k 등)로 두고, 눈금 숫자도 주어진 값만 적는다.
+#    (그래프를 정확한 눈금으로 그리면 정답이 그림에서 읽힐 수 있기 때문이다.)
+#  - 그림은 SVG 글을 base64 로 바꿔 <img> 로 문제 글 끝에 붙인다. (fig_md)
+# ==========================================
+_FIG_INK = "#1f2937"
+
+
+_FIG_AXIS = "#4b5563"
+
+
+_FIG_GRID = "#e5e7eb"
+
+
+_FIG_BLUE = "#2563eb"
+
+
+_FIG_RED = "#dc2626"
+
+
+_FIG_GREEN = "#059669"
+
+
+_FIG_GRAY = "#9ca3af"
+
+
+_FIG_FONT = "'Times New Roman','Noto Serif KR','Noto Serif',Georgia,serif"
+
+
+_FIG_SUP = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _fn(v):
+    """SVG 숫자: 소수 둘째 자리까지, 끝의 0 은 뺀다."""
+    s = f"{v:.2f}".rstrip("0").rstrip(".")
+    return "0" if s in ("-0", "") else s
+
+
+def _plain(s):
+    """문제 글(LaTeX 조각)을 그림 안에 쓸 평범한 글자로 바꾼다. '(2x + 10)^\\circ' -> '(2x + 10)°'."""
+    s = s.replace("^{\\circ}", "°").replace("^\\circ", "°").replace("\\circ", "°")
+    s = re.sub(r"\\overline\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\sqrt\{([^}]*)\}", r"√\1", s)
+    s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"\1/\2", s)
+    s = re.sub(r"\^\{?(\d)\}?", lambda m: m.group(1).translate(_FIG_SUP), s)
+    s = s.replace("\\pi", "π").replace("\\times", "×").replace("\\,", "").replace("\\ ", " ")
+    s = s.replace("{", "").replace("}", "")
+    s = s.replace(" - ", " − ")
+    s = re.sub(r"(^|[(,=])-", lambda m: m.group(1) + "−", s)
+    return s.strip()
+
+
+def _clip_param(p, d, x0, x1, y0, y1, t0, t1):
+    """p + t·d (t0 ≤ t ≤ t1) 중 사각형 [x0,x1]×[y0,y1] 안에 들어오는 t 구간. 없으면 None."""
+    for pv, dv, lo, hi in ((p[0], d[0], x0, x1), (p[1], d[1], y0, y1)):
+        if abs(dv) < 1e-12:
+            if pv < lo - 1e-9 or pv > hi + 1e-9:
+                return None
+            continue
+        ta, tb = (lo - pv) / dv, (hi - pv) / dv
+        if ta > tb:
+            ta, tb = tb, ta
+        t0, t1 = max(t0, ta), min(t1, tb)
+        if t0 > t1:
+            return None
+    return t0, t1
+
+
+class _Fig:
+    """SVG 그림 한 장. 수학 좌표(x 오른쪽, y 위쪽)로 그리면 화면 좌표로 바꿔 준다."""
+
+    def __init__(self, xmin, xmax, ymin, ymax, width=340, height=None, equal=True, pad=(36, 22, 22, 30)):
+        self.x0, self.x1, self.y0, self.y1 = xmin, xmax, ymin, ymax
+        L, R, T, B = pad
+        dx, dy = xmax - xmin, ymax - ymin
+        self.W = width
+        if equal:
+            max_h = height or 330
+            s = min((width - L - R) / dx, (max_h - T - B) / dy)
+            self.sx = self.sy = s
+            self.ox = L + ((width - L - R) - s * dx) / 2
+            self.H = s * dy + T + B
+        else:
+            self.H = height or 230
+            self.sx = (width - L - R) / dx
+            self.sy = (self.H - T - B) / dy
+            self.ox = L
+        self.oy = T
+        self.parts = []
+
+    # ----- 좌표 변환 -----
+    def X(self, x):
+        return self.ox + (x - self.x0) * self.sx
+
+    def Y(self, y):
+        return self.oy + (self.y1 - y) * self.sy
+
+    def P(self, p):
+        return self.X(p[0]), self.Y(p[1])
+
+    def add(self, s):
+        self.parts.append(s)
+
+    # ----- 기본 도형 -----
+    def line(self, p, q, color=_FIG_INK, w=1.7, dash=None, cap="round"):
+        (ax, ay), (bx, by) = self.P(p), self.P(q)
+        d = f' stroke-dasharray="{dash}"' if dash else ""
+        self.add(
+            f'<line x1="{_fn(ax)}" y1="{_fn(ay)}" x2="{_fn(bx)}" y2="{_fn(by)}" stroke="{color}" '
+            f'stroke-width="{w}" stroke-linecap="{cap}"{d}/>'
+        )
+
+    def clipped_line(self, p, q, draw=True, **kw):
+        """p, q 를 지나는 직선을 그림 안쪽만 그리고 그 두 끝점을 돌려준다. (draw=False 면 그리지 않고 끝점만)"""
+        d = (q[0] - p[0], q[1] - p[1])
+        r = _clip_param(p, d, self.x0, self.x1, self.y0, self.y1, -1e6, 1e6)
+        if r:
+            a = (p[0] + r[0] * d[0], p[1] + r[0] * d[1])
+            b = (p[0] + r[1] * d[0], p[1] + r[1] * d[1])
+            if draw:
+                self.line(a, b, **kw)
+            return a, b
+        return None
+
+    def clipped_seg(self, p, q, **kw):
+        d = (q[0] - p[0], q[1] - p[1])
+        r = _clip_param(p, d, self.x0, self.x1, self.y0, self.y1, 0, 1)
+        if r:
+            self.line((p[0] + r[0] * d[0], p[1] + r[0] * d[1]), (p[0] + r[1] * d[0], p[1] + r[1] * d[1]), **kw)
+
+    def poly(self, pts, fill=None, fo=0.14, stroke=_FIG_INK, w=1.7, close=True, dash=None):
+        pp = " ".join(f"{_fn(a)},{_fn(b)}" for a, b in map(self.P, pts))
+        f = f'fill="{fill}" fill-opacity="{fo}"' if fill else 'fill="none"'
+        st = f'stroke="{stroke}" stroke-width="{w}" stroke-linejoin="round" stroke-linecap="round"' if stroke else 'stroke="none"'
+        if dash:
+            st += f' stroke-dasharray="{dash}"'
+        self.add(f'<{"polygon" if close else "polyline"} points="{pp}" {f} {st}/>')
+
+    def circle(self, c, r, fill=None, fo=0.1, stroke=_FIG_INK, w=1.7, dash=None):
+        cx, cy = self.P(c)
+        f = f'fill="{fill}" fill-opacity="{fo}"' if fill else 'fill="none"'
+        d = f' stroke-dasharray="{dash}"' if dash else ""
+        self.add(f'<circle cx="{_fn(cx)}" cy="{_fn(cy)}" r="{_fn(r * self.sx)}" {f} stroke="{stroke}" stroke-width="{w}"{d}/>')
+
+    def ellipse(self, c, rx, ry, **kw):
+        """수학 단위 반지름 rx, ry 의 타원."""
+        cx, cy = self.P(c)
+        fill, fo, stroke, w, dash = kw.get("fill"), kw.get("fo", 0.1), kw.get("stroke", _FIG_INK), kw.get("w", 1.7), kw.get("dash")
+        f = f'fill="{fill}" fill-opacity="{fo}"' if fill else 'fill="none"'
+        d = f' stroke-dasharray="{dash}"' if dash else ""
+        self.add(
+            f'<ellipse cx="{_fn(cx)}" cy="{_fn(cy)}" rx="{_fn(rx * self.sx)}" ry="{_fn(ry * self.sy)}" {f} '
+            f'stroke="{stroke}" stroke-width="{w}"{d}/>'
+        )
+
+    def dot(self, p, r=3.6, color=_FIG_INK, ring=False):
+        x, y = self.P(p)
+        if ring:
+            self.add(f'<circle cx="{_fn(x)}" cy="{_fn(y)}" r="{r + 0.4}" fill="#fff" stroke="{color}" stroke-width="1.8"/>')
+        else:
+            self.add(f'<circle cx="{_fn(x)}" cy="{_fn(y)}" r="{r}" fill="{color}"/>')
+
+    def text(self, p, s, dx=0, dy=0, size=15, anchor="middle", italic=None, color=_FIG_INK, bold=False, raw=False):
+        """글자. p 는 수학 좌표(raw=True 면 화면 좌표), dx, dy 는 화면 픽셀 어긋남. 글자 둘레에 흰 테두리를 둘러 선과 겹쳐도 읽힌다."""
+        x, y = (p if raw else self.P(p))
+        # 글자가 그림 틀 밖으로 잘리지 않게 안쪽으로 밀어 넣는다. (글자 폭은 어림한다)
+        w = 0.52 * size * len(s)
+        left = x + dx - (w if anchor == "end" else w / 2 if anchor == "middle" else 0)
+        if left < 2:
+            dx += 2 - left
+        elif left + w > self.W - 2:
+            dx -= left + w - (self.W - 2)
+        dy = min(max(dy, size - y + 1), self.H - 3 - y)
+        if italic is None:
+            italic = bool(re.fullmatch(r"[A-Za-z]{1,2}'?", s))
+        st = ' font-style="italic"' if italic else ""
+        wt = ' font-weight="700"' if bold else ""
+        self.add(
+            f'<text x="{_fn(x + dx)}" y="{_fn(y + dy)}" font-size="{size}" text-anchor="{anchor}" fill="{color}"{st}{wt} '
+            f'stroke="#fff" stroke-width="3.6" stroke-linejoin="round" paint-order="stroke">{html_escape(s)}</text>'
+        )
+
+    def label_out(self, p, s, center, off=13, fit=False, **kw):
+        """점 p 의 글자를 center 의 반대쪽으로 off 픽셀 띄워 적는다. fit=True 면 글자 상자의 크기만큼 더 띄운다."""
+        (px_, py_), (cx, cy) = self.P(p), self.P(center)
+        vx, vy = px_ - cx, py_ - cy
+        n = math.hypot(vx, vy) or 1.0
+        ux, uy = vx / n, vy / n
+        kw.setdefault("size", 15)
+        if fit:
+            off += abs(ux) * 0.26 * kw["size"] * len(s) + abs(uy) * kw["size"] * 0.5
+        self.text((px_ + ux * off, py_ + uy * off + kw["size"] * 0.34), s, raw=True, **kw)
+
+    def side_label(self, p, q, s, away, off=12, **kw):
+        """선분 pq 의 가운데에서 away 의 반대쪽으로 수직으로 띄워 길이 글자를 적는다."""
+        (ax, ay), (bx, by), (cx, cy) = self.P(p), self.P(q), self.P(away)
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        nx, ny = -(by - ay), bx - ax
+        n = math.hypot(nx, ny) or 1.0
+        nx, ny = nx / n, ny / n
+        if (mx - cx) * nx + (my - cy) * ny < 0:
+            nx, ny = -nx, -ny
+        kw.setdefault("size", 13)
+        self.text((mx + nx * off, my + ny * off + kw["size"] * 0.34), s, raw=True, **kw)
+
+    def tickmark(self, p, q, n=1, size=4.5, color=_FIG_INK):
+        """선분 pq 의 가운데에 같은 길이 표시(짧은 선 n 개)."""
+        (ax, ay), (bx, by) = self.P(p), self.P(q)
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        dx, dy = bx - ax, by - ay
+        L = math.hypot(dx, dy) or 1.0
+        ux, uy, nx, ny = dx / L, dy / L, -dy / L, dx / L
+        for i in range(n):
+            o = (i - (n - 1) / 2) * 4
+            cx, cy = mx + ux * o, my + uy * o
+            self.add(
+                f'<line x1="{_fn(cx - nx * size)}" y1="{_fn(cy - ny * size)}" x2="{_fn(cx + nx * size)}" '
+                f'y2="{_fn(cy + ny * size)}" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>'
+            )
+
+    # ----- 각 -----
+    def angle(self, v, p1, p2, r=22, label=None, label_r=None, color=_FIG_RED, fill=True, size=13, w=1.6):
+        """꼭짓점 v 에서 반직선 v→p1, v→p2 사이의 (작은) 각을 호로 그리고 label 을 적는다."""
+        vx, vy = self.P(v)
+        a1 = math.atan2(self.P(p1)[1] - vy, self.P(p1)[0] - vx)
+        a2 = math.atan2(self.P(p2)[1] - vy, self.P(p2)[0] - vx)
+        diff = (a2 - a1 + math.pi) % (2 * math.pi) - math.pi
+        sweep = 1 if diff > 0 else 0
+        ex1, ey1 = vx + r * math.cos(a1), vy + r * math.sin(a1)
+        ex2, ey2 = vx + r * math.cos(a1 + diff), vy + r * math.sin(a1 + diff)
+        if fill:
+            self.add(
+                f'<path d="M {_fn(vx)} {_fn(vy)} L {_fn(ex1)} {_fn(ey1)} A {r} {r} 0 0 {sweep} {_fn(ex2)} {_fn(ey2)} Z" '
+                f'fill="{color}" fill-opacity="0.13" stroke="none"/>'
+            )
+        self.add(
+            f'<path d="M {_fn(ex1)} {_fn(ey1)} A {r} {r} 0 0 {sweep} {_fn(ex2)} {_fn(ey2)}" fill="none" '
+            f'stroke="{color}" stroke-width="{w}" stroke-linecap="round"/>'
+        )
+        if label:
+            am = a1 + diff / 2
+            tw, th = 0.5 * size * len(label), size   # 글자 상자의 대략적인 가로·세로
+            lr = label_r if label_r is not None else r + 5 + abs(math.cos(am)) * tw / 2 + abs(math.sin(am)) * th / 2
+            self.text((vx + lr * math.cos(am), vy + lr * math.sin(am) + size * 0.34), label, raw=True, size=size, color=color, italic=False, anchor="middle")
+
+    def right_angle(self, v, p1, p2, size=9, color=_FIG_INK):
+        vx, vy = self.P(v)
+        u = []
+        for p in (p1, p2):
+            px_, py_ = self.P(p)
+            dx, dy = px_ - vx, py_ - vy
+            n = math.hypot(dx, dy) or 1.0
+            u.append((dx / n, dy / n))
+        (u1x, u1y), (u2x, u2y) = u
+        pts = [(vx + u1x * size, vy + u1y * size), (vx + (u1x + u2x) * size, vy + (u1y + u2y) * size), (vx + u2x * size, vy + u2y * size)]
+        self.add(
+            f'<polyline points="{" ".join(f"{_fn(a)},{_fn(b)}" for a, b in pts)}" fill="none" stroke="{color}" '
+            f'stroke-width="1.4" stroke-linejoin="round"/>'
+        )
+
+    # ----- 좌표축·눈금 -----
+    def grid(self, xs, ys, color=_FIG_GRID):
+        for x in xs:
+            self.line((x, self.y0), (x, self.y1), color=color, w=1.0, cap="butt")
+        for y in ys:
+            self.line((self.x0, y), (self.x1, y), color=color, w=1.0, cap="butt")
+
+    def axes(self, xlab="x", ylab="y", origin="O", color=_FIG_AXIS):
+        ax = 0 if self.x0 <= 0 <= self.x1 else self.x0
+        ay = 0 if self.y0 <= 0 <= self.y1 else self.y0
+        self.line((self.x0, ay), (self.x1, ay), color=color, w=1.5, cap="butt")
+        self.line((ax, self.y0), (ax, self.y1), color=color, w=1.5, cap="butt")
+        # 화살촉
+        X1, Y1 = self.X(self.x1), self.Y(ay)
+        self.add(f'<polygon points="{_fn(X1 + 5)},{_fn(Y1)} {_fn(X1 - 4)},{_fn(Y1 - 3.6)} {_fn(X1 - 4)},{_fn(Y1 + 3.6)}" fill="{color}"/>')
+        X2, Y2 = self.X(ax), self.Y(self.y1)
+        self.add(f'<polygon points="{_fn(X2)},{_fn(Y2 - 5)} {_fn(X2 - 3.6)},{_fn(Y2 + 4)} {_fn(X2 + 3.6)},{_fn(Y2 + 4)}" fill="{color}"/>')
+        if xlab:
+            self.text((X1, Y1), xlab, raw=True, dx=-3, dy=-9, size=15, anchor="end")
+        if ylab:
+            self.text((X2, Y2), ylab, raw=True, dx=-11, dy=9, size=15, anchor="end")
+        if origin and ax == 0 and ay == 0:
+            self.text(self.P((0, 0)), origin, raw=True, dx=-9, dy=15, size=14, anchor="middle")
+        self._ax, self._ay = ax, ay
+
+    def xtick(self, x, label=None, size=12):
+        ay = getattr(self, "_ay", 0)
+        X, Y = self.X(x), self.Y(ay)
+        if X > self.X(self.x1) - 16:          # 화살촉·x 글자와 겹치는 끝자리는 쓰지 않는다
+            return
+        if abs(x) < 1e-9 and getattr(self, "_ax", None) == 0:   # 원점은 O 글자가 있으므로 0 은 쓰지 않는다
+            return
+        self.add(f'<line x1="{_fn(X)}" y1="{_fn(Y - 3.5)}" x2="{_fn(X)}" y2="{_fn(Y + 3.5)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
+        self.text((X, Y), label if label is not None else _fn(x).replace("-", "−"), raw=True, dy=17, size=size, italic=False)
+
+    def ytick(self, y, label=None, size=12):
+        ax = getattr(self, "_ax", 0)
+        X, Y = self.X(ax), self.Y(y)
+        if Y < self.Y(self.y1) + 16:
+            return
+        if abs(y) < 1e-9 and getattr(self, "_ay", None) == 0:
+            return
+        self.add(f'<line x1="{_fn(X - 3.5)}" y1="{_fn(Y)}" x2="{_fn(X + 3.5)}" y2="{_fn(Y)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
+        self.text((X, Y), label if label is not None else _fn(y).replace("-", "−"), raw=True, dx=-8, dy=size * 0.34, size=size, anchor="end", italic=False)
+
+    # ----- 함수 그래프 -----
+    def curve(self, fn, x0, x1, n=320, color=_FIG_BLUE, w=2.3, dash=None, ylo=None, yhi=None):
+        """y=fn(x) 를 그림 안쪽 부분만 그린다. (경계를 넘으면 경계에서 끊는다.)"""
+        ylo = self.y0 if ylo is None else ylo
+        yhi = self.y1 if yhi is None else yhi
+
+        def ev(x):
+            try:
+                y = fn(x)
+                return y if y == y and abs(y) < 1e9 else None
+            except (ZeroDivisionError, ValueError, OverflowError):
+                return None
+
+        def inside(y):
+            return y is not None and ylo - 1e-9 <= y <= yhi + 1e-9
+
+        def cross(xa, xb):
+            """xa 는 안, xb 는 밖일 때 경계와 만나는 점."""
+            ya, yb = ev(xa), ev(xb)
+            if yb is None:
+                return None
+            edge = yhi if (yb > yhi) else ylo
+            lo, hi = xa, xb
+            for _ in range(40):
+                mid = (lo + hi) / 2
+                ym = ev(mid)
+                if inside(ym):
+                    lo = mid
+                else:
+                    hi = mid
+            return (lo, edge) if ev(lo) is not None else None
+
+        xs = [x0 + (x1 - x0) * i / n for i in range(n + 1)]
+        runs, cur = [], []
+        prev = None
+        for x in xs:
+            y = ev(x)
+            if inside(y):
+                if not cur and prev is not None and prev[1] is not None:
+                    c = cross(x, prev[0])
+                    if c:
+                        cur.append(c)
+                cur.append((x, y))
+            else:
+                if cur:
+                    c = cross(cur[-1][0], x) if y is not None else None
+                    if c:
+                        cur.append(c)
+                    runs.append(cur)
+                    cur = []
+            prev = (x, y)
+        if cur:
+            runs.append(cur)
+        d = f' stroke-dasharray="{dash}"' if dash else ""
+        for run in runs:
+            if len(run) < 2:
+                continue
+            pp = " ".join(f"{_fn(a)},{_fn(b)}" for a, b in map(self.P, run))
+            self.add(
+                f'<polyline points="{pp}" fill="none" stroke="{color}" stroke-width="{w}" stroke-linejoin="round" '
+                f'stroke-linecap="round"{d}/>'
+            )
+
+    def area(self, fn, x0, x1, base=0.0, n=160, color=_FIG_BLUE, fo=0.16):
+        pts = [(x0, base)] + [(x0 + (x1 - x0) * i / n, fn(x0 + (x1 - x0) * i / n)) for i in range(n + 1)] + [(x1, base)]
+        self.poly(pts, fill=color, fo=fo, stroke=None)
+
+    # ----- 마무리 -----
+    def inner(self):
+        return "".join(self.parts)
+
+    def svg(self):
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {_fn(self.W)} {_fn(self.H)}" width="{_fn(self.W)}" '
+            f'height="{_fn(self.H)}" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" '
+            f'font-family="{_FIG_FONT}">{self.inner()}</svg>'
+        )
+
+
+def fig_stack(svgs, gap=10, horizontal=False):
+    """여러 SVG 그림을 한 장으로 위아래로(horizontal=True 면 나란히) 붙인다."""
+    parts = []
+    for sv in svgs:
+        m = re.match(r'<svg[^>]*viewBox="0 0 ([\d.]+) ([\d.]+)"[^>]*>(.*)</svg>\s*$', sv, re.S)
+        parts.append((float(m.group(1)), float(m.group(2)), m.group(3)))
+    if horizontal:
+        W, H = sum(p[0] for p in parts) + gap * (len(parts) - 1), max(p[1] for p in parts)
+    else:
+        W, H = max(p[0] for p in parts), sum(p[1] for p in parts) + gap * (len(parts) - 1)
+    out, off = [], 0.0
+    for w, h, inner in parts:
+        tx, ty = (off, (H - h) / 2) if horizontal else ((W - w) / 2, off)
+        out.append(f'<g transform="translate({_fn(tx)},{_fn(ty)})">{inner}</g>')
+        off += (w if horizontal else h) + gap
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {_fn(W)} {_fn(H)}" width="{_fn(W)}" height="{_fn(H)}" '
+        f'shape-rendering="geometricPrecision" text-rendering="geometricPrecision" font-family="{_FIG_FONT}">{"".join(out)}</svg>'
+    )
+
+
+def fig_md(svg, alt="문제 그림"):
+    """SVG 글을 문제 글 끝에 붙일 <img> 로 바꾼다. (앞뒤 빈 줄로 마크다운 문단을 끊는다.)"""
+    b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return (
+        '\n\n<p style="text-align:center;margin:12px 0 4px">'
+        f'<img alt="{alt}" src="data:image/svg+xml;base64,{b64}" '
+        'style="max-width:100%;height:auto;image-rendering:auto"></p>\n\n'
+    )
+
+
+# ---------- 좌표평면·함수 그래프 그림 ----------
+def _tx_num(v):
+    """눈금·점 글자에 쓸 숫자 (음수는 진짜 마이너스 기호로)."""
+    return str(v).replace("-", "−")
+
+
+def _pt_txt(x, y):
+    return f"({_tx_num(x)}, {_tx_num(y)})"
+
+
+def _line_label(f, seg, text, color, off=11, below=False, side=None):
+    """직선(그림 안쪽 선분 seg)의 한쪽 끝 가까이에 식 글자를 적는다. 그림 밖으로 나가거나 축 글자와 겹치지 않게 맞춘다.
+    side: 'top'(화면에서 위쪽 끝), 'bottom'(아래쪽 끝), 'right'(오른쪽 끝). 없으면 x축에서 먼 끝."""
+    if not seg:
+        return
+    a, b = seg
+    (pax, pay), (pbx, pby) = f.P(a), f.P(b)
+    if side == "top":
+        pick_b = pby < pay
+    elif side == "bottom":
+        pick_b = pby > pay
+    elif side == "right":
+        pick_b = pbx > pax
+    else:
+        ay0 = f.Y(0)
+        pick_b = abs(pby - ay0) >= abs(pay - ay0)
+    if not pick_b:
+        a, b = b, a
+    (ax, ay), (bx, by) = f.P(a), f.P(b)
+    dx, dy = bx - ax, by - ay
+    n = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / n, dx / n
+    if (ny > 0) != below:
+        nx, ny = -nx, -ny
+    x = bx + nx * off - dx / n * 5
+    y = by + ny * off - dy / n * 5 + 5
+    anchor = "end" if nx < 0.3 else "start"
+    w = 0.52 * 13 * len(text)
+    if anchor == "start" and x + w > f.W - 3:
+        anchor = "end"
+    if anchor == "end" and x - w < 3:
+        anchor = "start"
+        x = max(x, 3)
+    x = min(max(x, 3 + (w if anchor == "end" else 0)), f.W - 3 - (w if anchor == "start" else 0))
+    cx = x - w / 2 if anchor == "end" else x + w / 2
+    if abs(cx - f.X(getattr(f, "_ax", 0))) < 70 and y < 50:        # y축 글자 근처는 피한다
+        y = 50
+    y = min(max(y, 14), f.H - 4)
+    f.text((x, y), text, raw=True, size=13, anchor=anchor, color=color, italic=False)
+
+
+def _drop(f, x, y, xlab=None, ylab=None):
+    """점 (x, y) 에서 두 축으로 점선을 내리고 주어진 값만 눈금 글자로 적는다."""
+    f.line((x, 0), (x, y), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    f.line((0, y), (x, y), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    if xlab is not None:
+        f.xtick(x, xlab)
+    if ylab is not None:
+        f.ytick(y, ylab)
+
+
+def fig_prop_line(p, q_):
+    """정비례 y=ax 의 그래프와 지나는 한 점 (p, q)."""
+    X, Y = max(p * 1.9, p + 2), max(q_ * 1.9, q_ + 2)
+    f = _Fig(-X * 0.1, X, -Y * 0.12, Y, width=320, height=230, equal=False)
+    f.axes()
+    seg = f.clipped_line((0, 0), (p, q_), color=_FIG_BLUE)
+    _drop(f, p, q_, str(p), str(q_))
+    f.dot((p, q_))
+    f.text((p, q_), _pt_txt(p, q_), dx=9, dy=18, anchor="start", italic=False)
+    _line_label(f, seg, "y = ax", _FIG_BLUE)
+    return f.svg()
+
+
+def fig_prop_hyper(p, ap, r, br, cross=None):
+    """정비례 y=ax 와 반비례 y=b/x 의 그래프(제1사분면)와 각각 지나는 한 점. cross 가 있으면 두 그래프의 교점을 속이 빈 점으로 표시한다."""
+    b = r * br
+    xs = [p, r] + ([cross[0]] if cross else [])
+    ys = [ap, br] + ([cross[1]] if cross else [])
+    X, Y = max(xs) * 1.7 + 1, max(ys) * 1.5 + 1
+    f = _Fig(-X * 0.1, X, -Y * 0.12, Y, width=330, height=240, equal=False)
+    f.axes()
+    seg = f.clipped_line((0, 0), (p, ap), color=_FIG_BLUE)
+    f.curve(lambda x: b / x, b / Y * 0.98, X, color=_FIG_RED)
+    f.dot((p, ap), color=_FIG_BLUE)
+    f.dot((r, br), color=_FIG_RED)
+    # 두 점 글자가 겹치지 않게 서로 반대쪽으로 띄운다
+    (u1, v1), (u2, v2) = f.P((p, ap)), f.P((r, br))
+    left_first = u1 <= u2
+    f.text((p, ap), _pt_txt(p, ap), dx=(-9 if left_first else 9), dy=(-8 if left_first else 18), anchor=("end" if left_first else "start"), italic=False, color=_FIG_BLUE, size=13)
+    f.text((r, br), _pt_txt(r, br), dx=(9 if left_first else -9), dy=(18 if left_first else -8), anchor=("start" if left_first else "end"), italic=False, color=_FIG_RED, size=13)
+    _line_label(f, seg, "y = ax", _FIG_BLUE)
+    f.text((X * 0.93, b / (X * 0.93)), "y = b/x", dy=-12, anchor="end", italic=False, color=_FIG_RED, size=13)
+    if cross:
+        f.dot(cross, ring=True, color=_FIG_INK)
+    return f.svg()
+
+
+def fig_grid_polygon(pts, names):
+    """좌표평면 위의 다각형. 꼭짓점의 이름만 적는다. (좌표는 문제에 주어져 있다.)"""
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    x0, x1 = min(0, min(xs)) - 1, max(0, max(xs)) + 1
+    y0, y1 = min(0, min(ys)) - 1, max(0, max(ys)) + 1
+    f = _Fig(x0, x1, y0, y1, width=330, height=330)
+    step = 1 if max(x1 - x0, y1 - y0) <= 14 else (2 if max(x1 - x0, y1 - y0) <= 26 else 5)
+    gx = [v for v in range(math.ceil(x0), math.floor(x1) + 1)]
+    gy = [v for v in range(math.ceil(y0), math.floor(y1) + 1)]
+    gs = 1 if max(x1 - x0, y1 - y0) <= 14 else step           # 좌표가 크면 격자선도 듬성하게
+    f.grid([v for v in gx if v % gs == 0], [v for v in gy if v % gs == 0])
+    f.axes()
+    for v in gx:
+        if v and v % step == 0:
+            f.xtick(v, size=11)
+    for v in gy:
+        if v and v % step == 0:
+            f.ytick(v, size=11)
+    f.poly(pts, fill=_FIG_BLUE, fo=0.16, w=2.0)
+    cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+    for n, p in zip(names, pts):
+        f.dot(p, r=3.2)
+        f.label_out(p, n, (cx, cy), off=12, size=15)
+    return f.svg()
+
+
+def _view_pts(pts, mx, my, origin=True):
+    xs = [p[0] for p in pts] + ([0] if origin else [])
+    ys = [p[1] for p in pts] + ([0] if origin else [])
+    return min(xs) - mx, max(xs) + mx, min(ys) - my, max(ys) + my
+
+
+def fig_icpt_x(p, b, eq):
+    """y=ax+b 의 그래프: x절편이 p (주어짐), y절편은 b (구할 값)."""
+    x0, x1, y0, y1 = _view_pts([(p, 0), (0, b)], max(1.5, abs(p) * 0.35), max(1.5, abs(b) * 0.3))
+    f = _Fig(x0, x1, y0, y1, width=320, height=230, equal=False)
+    f.axes()
+    seg = f.clipped_line((p, 0), (0, b), color=_FIG_BLUE)
+    f.xtick(p, _tx_num(p))
+    f.dot((p, 0))
+    f.dot((0, b))
+    f.text((0, b), "b", dx=-12 if True else 12, dy=5, anchor="end", italic=True)
+    _line_label(f, seg, eq, _FIG_BLUE)
+    return f.svg()
+
+
+def fig_icpt_eq(c, m, n, eq1, eq2):
+    """두 일차함수: ① y=mx+c (y절편 c), ② y=nx+a (x절편이 ① 의 y절편 c 와 같다). 구할 값은 ② 의 y절편 a."""
+    a_val = -n * c
+    pts = [(0, c), (c, 0), (0, a_val), (-c / m, 0)]
+    x0, x1, y0, y1 = _view_pts(pts, max(1.5, abs(c) * 0.4), max(1.5, abs(c) * 0.4))
+    f = _Fig(x0, x1, y0, y1, width=330, height=240, equal=False)
+    f.axes()
+    s1 = f.clipped_line((0, c), (1, c + m), color=_FIG_BLUE)
+    s2 = f.clipped_line((c, 0), (c + 1, n), color=_FIG_RED)
+    f.ytick(c, _tx_num(c))
+    f.xtick(c, _tx_num(c))
+    f.dot((0, c), color=_FIG_BLUE)
+    f.dot((c, 0), color=_FIG_RED)
+    f.dot((0, a_val), color=_FIG_RED)
+    f.text((0, a_val), "a", dx=12, dy=5, anchor="start", italic=True, color=_FIG_RED)
+    _line_label(f, s1, eq1, _FIG_BLUE, side="top")
+    _line_label(f, s2, eq2, _FIG_RED, side="bottom")
+    return f.svg()
+
+
+def fig_icpt_shift(m, d, e, eq_given):
+    """y=ax+b 를 y축 방향으로 e만큼 평행이동하면 y=mx+d 와 일치한다. 두 직선(원래 직선은 점선)과 이동 거리 e."""
+    b0 = d - e                                   # 원래 직선의 y절편
+    x_lo, x_hi = -4.5, 4.5
+    ys = [m * x_lo + d, m * x_hi + d, m * x_lo + b0, m * x_hi + b0, 0]
+    ymin, ymax = min(ys), max(ys)
+    pad = max(1.5, (ymax - ymin) * 0.12)
+    f = _Fig(x_lo, x_hi, ymin - pad, ymax + pad, width=320, height=240, equal=False)
+    f.axes()
+    s_given = f.clipped_line((0, d), (1, d + m), color=_FIG_BLUE)
+    f.clipped_line((0, b0), (1, b0 + m), color=_FIG_RED, dash="6 4")
+    f.line((0, b0), (0, d), color=_FIG_INK, w=1.6)
+    # 이동 방향 화살촉
+    tip = f.P((0, d))
+    sgn = -1 if d > b0 else 1
+    f.add(f'<polygon points="{_fn(tip[0])},{_fn(tip[1])} {_fn(tip[0] - 3.6)},{_fn(tip[1] + sgn * 8)} {_fn(tip[0] + 3.6)},{_fn(tip[1] + sgn * 8)}" fill="{_FIG_INK}"/>')
+    f.text((0, (b0 + d) / 2), _tx_num(e), dx=14, dy=5, anchor="start", italic=False)
+    f.dot((0, d), r=3)
+    f.dot((0, b0), r=3)
+    _line_label(f, s_given, eq_given, _FIG_BLUE, side="top")
+    sg = f.clipped_line((0, b0), (1, b0 + m), draw=False)
+    _line_label(f, sg, "y = ax + b", _FIG_RED, side="bottom")
+    return f.svg()
+
+
+def _lines_view(pt, pad_x=None, pad_y=None):
+    x, y = pt
+    px = pad_x if pad_x is not None else max(2.5, abs(x) * 0.5)
+    py = pad_y if pad_y is not None else max(2.5, abs(y) * 0.5)
+    return min(0, x) - px, max(0, x) + px, min(0, y) - py, max(0, y) + py
+
+
+def fig_cross(lines, cross, ring_only=True):
+    """여러 직선과 한 교점. lines = [(m, b, 식글자, 색)]. 교점은 속이 빈 점으로만 나타낸다."""
+    x0, x1, y0, y1 = _lines_view(cross)
+    f = _Fig(x0, x1, y0, y1, width=330, height=250, equal=False)
+    f.axes()
+    for i, (m, b, txt, col) in enumerate(lines):
+        seg = f.clipped_line((0, b), (1, b + m), color=col)
+        _line_label(f, seg, txt, col, side=("top", "bottom", "right")[i % 3])
+    f.dot(cross, ring=True)
+    return f.svg()
+
+
+def fig_cross_three(lines, cross, k_point, k_text):
+    """세 직선이 한 점에서 만난다. 세 번째 직선의 y절편 k 를 표시한다."""
+    x0, x1, y0, y1 = _lines_view(cross, pad_x=max(3, abs(cross[0]) * 0.6), pad_y=max(3, abs(cross[1]) * 0.6))
+    ky = k_point[1]                                   # k 점도 그림 안에 들어오게 보이는 범위를 넓힌다
+    pad_k = max(2.0, abs(ky) * 0.25)
+    y0, y1 = min(y0, ky - pad_k), max(y1, ky + pad_k)
+    f = _Fig(x0, x1, y0, y1, width=330, height=250, equal=False)
+    f.axes()
+    for i, (m, b, txt, col) in enumerate(lines):
+        seg = f.clipped_line((0, b), (1, b + m), color=col)
+        _line_label(f, seg, txt, col, side=("top", "bottom", "right")[i % 3])
+    f.dot(cross, ring=True)
+    f.dot(k_point, color=lines[-1][3])
+    f.text(k_point, k_text, dx=-10, dy=5, anchor="end", italic=True, color=lines[-1][3])
+    return f.svg()
+
+
+def fig_parabola(a, p, qv, points=(), vertex_text=None, ring=None, ring_text=None, eq=None, xr=None, ytick_vals=()):
+    """y=a(x-p)^2+qv 의 그래프. points = [(x, y, 글자)] 는 점과 글자, ring 은 속이 빈 점(구할 값)."""
+    w = xr or 3.2
+    xl = min(p - w, min([pt[0] for pt in points] + [0]) - 1)
+    xh = max(p + w, max([pt[0] for pt in points] + [0]) + 1)
+    ys = [a * (x - p) ** 2 + qv for x in (xl, xh)] + [qv, 0] + [pt[1] for pt in points]
+    ymin, ymax = min(ys), max(ys)
+    pad = max(1.0, (ymax - ymin) * 0.1)
+    if a > 0:
+        yhi, ylo = ymax + pad, min(qv, 0) - pad
+    else:
+        yhi, ylo = max(qv, 0) + pad, ymin - pad
+    f = _Fig(xl, xh, ylo, yhi, width=330, height=250, equal=False)
+    f.axes()
+    f.curve(lambda x: a * (x - p) ** 2 + qv, xl, xh)
+    for x, y, t in points:
+        f.dot((x, y))
+        f.text((x, y), t, dx=9, dy=-9 if y >= qv else 18, anchor="start", italic=False)
+    if vertex_text:
+        f.dot((p, qv))
+        f.text((p, qv), vertex_text, dx=10, dy=(18 if a > 0 else -10), anchor="start", italic=False)
+    if ring:
+        f.dot(ring, ring=True)
+        if ring_text:
+            f.text(ring, ring_text, dx=-9, dy=-8, anchor="end", italic=False)
+    return f.svg()
+
+
+def fig_parabola_shift(a, p, qv, a2=None, show_q=True):
+    """y=ax² (점선) 을 x축 방향으로 p, y축 방향으로 q 만큼 평행이동한 그래프(실선)와 이동 거리 p, q.
+    a2 가 있으면 이동한 그래프의 이차항 계수가 a2 (x축 대칭이동을 한 경우)."""
+    a2 = a if a2 is None else a2
+    xl, xh = min(0, p) - 3.2, max(0, p) + 3.2
+    sh = lambda x: a2 * (x - p) ** 2 + qv
+    base = lambda x: a * x * x
+    vals = [sh(xl), sh(xh), base(xl), base(xh), qv, 0]
+    lo, hi = min(vals), max(vals)
+    cap = max(abs(a), abs(a2)) * 3.2 ** 2 * 1.3
+    hi, lo = min(hi, max(qv, 0) + cap), max(lo, min(qv, 0) - cap)
+    pad = max(1.0, (hi - lo) * 0.1)
+    f = _Fig(xl, xh, lo - pad, hi + pad, width=330, equal=False, height=260)
+    f.axes()
+    f.curve(base, xl, xh, color=_FIG_GRAY, dash="6 4")
+    f.curve(sh, xl, xh, color=_FIG_BLUE)
+    f.line((0, 0), (p, 0), color=_FIG_RED, w=1.5, dash="3 3")
+    f.dot((0, 0), r=3)
+    f.dot((p, qv), r=3)
+    f.text((p / 2, 0), "p", dy=-8, italic=True, color=_FIG_RED)
+    if show_q:
+        f.line((p, 0), (p, qv), color=_FIG_RED, w=1.5, dash="3 3")
+        f.text((p, qv / 2), "q", dx=(10 if p >= 0 else -10), dy=5, anchor=("start" if p >= 0 else "end"), italic=True, color=_FIG_RED)
+    return f.svg()
+
+
+def fig_two_parallel(m, k0, P1, P2, P3, k, eq0=None):
+    """평행한 두 직선: 점 P1, P2 를 지나는 직선과 점 P3 을 지나는 직선(y절편 b 는 구할 값)."""
+    pts = [P1, P2, P3, (0, k)]
+    x0, x1, y0, y1 = _view_pts(pts, 1.6, 2.0)
+    f = _Fig(x0, x1, y0, y1, width=330, equal=False, height=250)
+    f.axes()
+    s0 = f.clipped_line((0, k0), (1, k0 + m), color=_FIG_BLUE)
+    s1 = f.clipped_line((0, k), (1, k + m), color=_FIG_RED)
+    for (x, y), col in ((P1, _FIG_BLUE), (P2, _FIG_BLUE), (P3, _FIG_RED)):
+        f.dot((x, y), color=col)
+        f.text((x, y), _pt_txt(x, y), dx=9, dy=-9 if col == _FIG_BLUE else 18, anchor="start", italic=False, color=col, size=13)
+    f.dot((0, k), ring=True, color=_FIG_RED)
+    f.text((0, k), "b", dx=-12, dy=5, anchor="end", italic=True, color=_FIG_RED)
+    _line_label(f, s1, "y = mx + b", _FIG_RED, side="top")
+    return f.svg()
+
+
+def fig_line_points(pts, eq=None, b_ring=None, extra_pts=(), m=None):
+    """일차함수의 그래프: 점(주어진 좌표)과 y절편(구할 값 b)을 표시한다."""
+    allp = list(pts) + [(0, b_ring)] if b_ring is not None else list(pts)
+    x0, x1, y0, y1 = _view_pts(allp, max(1.5, max(abs(p[0]) for p in allp) * 0.35), max(1.5, max(abs(p[1]) for p in allp) * 0.3))
+    f = _Fig(x0, x1, y0, y1, width=320, height=230, equal=False)
+    f.axes()
+    (ax, ay) = pts[0]
+    seg = None
+    if len(pts) >= 2:
+        seg = f.clipped_line(pts[0], pts[1], color=_FIG_BLUE)
+    elif m is not None:
+        seg = f.clipped_line(pts[0], (pts[0][0] + 1, pts[0][1] + m), color=_FIG_BLUE)
+    for x, y in pts:
+        f.dot((x, y))
+        f.text((x, y), _pt_txt(x, y), dx=9, dy=-9 if True else 18, anchor="start", italic=False)
+    if b_ring is not None:
+        f.dot((0, b_ring), ring=True)
+        f.text((0, b_ring), "b", dx=-12, dy=5, anchor="end", italic=True)
+    if eq and seg:
+        _line_label(f, seg, eq, _FIG_BLUE, side="bottom")
+    return f.svg()
+
+
+# ---------- 각·다각형·부채꼴 그림 ----------
+def _pol(c, r, deg):
+    """중심 c 에서 반지름 r, 각 deg(도, 반시계) 위치의 점."""
+    return (c[0] + r * math.cos(math.radians(deg)), c[1] + r * math.sin(math.radians(deg)))
+
+
+def _arc_pts(c, r, a0, a1, n=48):
+    return [_pol(c, r, a0 + (a1 - a0) * i / n) for i in range(n + 1)]
+
+
+def fig_line_angles(labels, values):
+    """한 직선 위의 점 O 에서 반직선들로 나눈 평각. labels 는 각의 크기 글자, values 는 실제 크기(도)."""
+    n = len(values)
+    f = _Fig(-3.4, 3.4, -0.55, 3.15, width=340, equal=True, pad=(10, 10, 10, 10))
+    cum = [0]
+    for v in values:
+        cum.append(cum[-1] + v)
+    O = (0, 0)
+    f.line((-3.2, 0), (3.2, 0), w=1.9)
+    for t in cum[1:-1]:
+        f.line(O, _pol(O, 3.0, t), w=1.9)
+    f.dot(O, r=3.4)
+    f.text(O, "O", dy=18, italic=True)
+    ring = [(0.62, 0.0), (0.92, 0.0)] if n <= 4 else [(0.5, 0), (0.78, 0), (1.06, 0)]
+    for i in range(n):
+        a0, a1 = cum[i], cum[i + 1]
+        rad = 0.45 + 0.1 * (i % 2)
+        am = (a0 + a1) / 2
+        lab_r = (1.5 + 0.55 * (i % 2)) if n <= 4 else (1.25 + 0.5 * (i % 3))
+        col = (_FIG_RED, _FIG_BLUE, _FIG_GREEN)[i % 3]
+        pa, pb = _pol(O, 1, a0), _pol(O, 1, a1)
+        f.angle(O, pa, pb, r=(rad * f.sx), color=col, label=None, fill=True)
+        lp = _pol(O, lab_r, am)
+        arc_mid = _pol(O, rad + 0.04, am)
+        if lab_r > rad + 0.9:
+            f.line(arc_mid, _pol(O, lab_r - 0.34, am), color=col, w=0.9, cap="butt")
+        f.text(lp, labels[i], dy=5, size=13, color=col, italic=False)
+    return f.svg()
+
+
+def _bar_arrow(f, p, q, color=_FIG_INK, n=1):
+    """평행 표시(>)를 선분 pq 의 가운데에 n 개 그린다."""
+    (ax, ay), (bx, by) = f.P(p), f.P(q)
+    mx, my = (ax + bx) / 2, (ay + by) / 2
+    dx, dy = bx - ax, by - ay
+    L = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / L, dy / L
+    for i in range(n):
+        o = (i - (n - 1) / 2) * 5
+        cx, cy = mx + ux * o, my + uy * o
+        f.add(
+            f'<polyline points="{_fn(cx - ux * 4 - uy * 4)},{_fn(cy - uy * 4 + ux * 4)} {_fn(cx + ux * 2)},{_fn(cy + uy * 2)} '
+            f'{_fn(cx - ux * 4 + uy * 4)},{_fn(cy - uy * 4 - ux * 4)}" fill="none" stroke="{color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>'
+        )
+
+
+def fig_parallel_pair(kind, lab_p, lab_q, v):
+    """평행한 두 직선 l, m 과 한 직선. kind: '엇각' 또는 '동위각'. P(위쪽 직선 위), Q(아래쪽 직선 위)에서 크기가 v 인 두 각을 표시한다."""
+    f = _Fig(-3.3, 3.3, -2.3, 2.5, width=340, equal=True, pad=(10, 10, 10, 10))
+    phi = v
+    dxq = -2.4 / math.tan(math.radians(phi))              # P 에서 Q 로 가는 x 변화
+    P = (-dxq / 2, 1.2)
+    Q = (dxq / 2 + 0.0, -1.2)
+    ext = 0.75
+    u = (math.cos(math.radians(phi)), math.sin(math.radians(phi)))
+    top = (P[0] + u[0] * ext, P[1] + u[1] * ext)
+    bot = (Q[0] - u[0] * ext, Q[1] - u[1] * ext)
+    f.line((-3.0, 1.2), (3.0, 1.2), w=1.8)
+    f.line((-3.0, -1.2), (3.0, -1.2), w=1.8)
+    f.line(bot, top, w=1.8)
+    _bar_arrow(f, (-3.0, 1.2), (-2.4, 1.2), n=1)
+    _bar_arrow(f, (-3.0, -1.2), (-2.4, -1.2), n=1)
+    f.text((3.0, 1.2), "l", dx=-2, dy=-9, italic=True)
+    f.text((3.0, -1.2), "m", dx=-2, dy=-9, italic=True)
+    f.dot(P, r=3)
+    f.dot(Q, r=3)
+    left, right = (-1, 0), (1, 0)
+    r = 30
+    if kind == "엇각":
+        f.angle(P, (P[0] - 1, P[1]), Q, r=r, label=lab_p, color=_FIG_RED)           # P 의 아래쪽 왼쪽 각
+        f.angle(Q, (Q[0] + 1, Q[1]), P, r=r, label=lab_q, color=_FIG_BLUE)          # Q 의 위쪽 오른쪽 각
+    else:
+        f.angle(P, (P[0] + 1, P[1]), top, r=r, label=lab_p, color=_FIG_RED)         # P 의 위쪽 오른쪽 각
+        f.angle(Q, (Q[0] + 1, Q[1]), P, r=r, label=lab_q, color=_FIG_BLUE)          # Q 의 위쪽 오른쪽 각
+    return f.svg()
+
+
+def fig_parallel_bent(v1, v2, lab1, lab2, lab3):
+    """평행한 두 직선 l, m 사이의 점 P 에서 꺾인 선. P 를 지나 l 에 평행한 보조선(점선)을 긋는다."""
+    f = _Fig(-4.2, 3.0, -1.7, 1.7, width=360, equal=True, pad=(10, 10, 10, 10))
+    P = (1.6, 0.0)
+    tA, tB = 1.2 / math.sin(math.radians(v1)), 1.2 / math.sin(math.radians(v2))
+    A = _pol(P, tA, 180 - v1)
+    B = _pol(P, tB, 180 + v2)
+    f.line((-4.0, 1.2), (2.6, 1.2), w=1.8)
+    f.line((-4.0, -1.2), (2.6, -1.2), w=1.8)
+    f.line((-4.0, 0), (2.6, 0), color=_FIG_GRAY, w=1.3, dash="5 4")
+    f.line(P, A, w=1.9)
+    f.line(P, B, w=1.9)
+    f.dot(P, r=3.2)
+    f.text(P, "P", dx=12, dy=5, italic=True)
+    f.text((2.6, 1.2), "l", dx=2, dy=-9, italic=True)
+    f.text((2.6, -1.2), "m", dx=2, dy=-9, italic=True)
+    f.angle(P, (P[0] - 1, 0), A, r=30, color=_FIG_RED)
+    f.angle(P, (P[0] - 1, 0), B, r=30, color=_FIG_BLUE)
+    f.angle(P, A, B, r=54, color=_FIG_GREEN, fill=False, w=1.8)
+    f.text(_pol(P, 1.6, 180 - v1 / 2 - 4), lab1, dy=5, size=13, color=_FIG_RED, italic=False, anchor="middle")
+    f.text(_pol(P, 1.6, 180 + v2 / 2 + 4), lab2, dy=5, size=13, color=_FIG_BLUE, italic=False, anchor="middle")
+    f.text(_pol(P, 2.75, 180), lab3, dy=5, size=13, color=_FIG_GREEN, italic=False, anchor="middle")
+    return f.svg()
+
+
+def fig_parallel_two(lab_a, lab_b, lab_c, lab_d, v1, c1_val):
+    """평행한 두 직선 l, m 과 두 직선: 왼쪽 직선에서 엇각 두 개(lab_a, lab_b), 오른쪽 직선에서 동측내각 두 개(lab_c, lab_d).
+    v1 은 엇각의 크기, c1_val 은 동측내각 중 위쪽 것의 크기(도)."""
+    f = _Fig(-4.9, 4.5, -1.9, 1.9, width=390, equal=True, pad=(10, 10, 10, 10))
+    f.line((-4.6, 1.2), (3.8, 1.2), w=1.8)
+    f.line((-4.6, -1.2), (3.8, -1.2), w=1.8)
+    _bar_arrow(f, (-4.6, 1.2), (-4.0, 1.2))
+    _bar_arrow(f, (-4.6, -1.2), (-4.0, -1.2))
+    f.text((3.8, 1.2), "l", dx=-2, dy=-9, italic=True)
+    f.text((3.8, -1.2), "m", dx=-2, dy=-9, italic=True)
+    # 왼쪽 직선: 엇각 (크기 v1)
+    phi1 = v1
+    dx1 = -2.4 / math.tan(math.radians(phi1))
+    P1, Q1 = (-2.3 - dx1 / 2, 1.2), (-2.3 + dx1 / 2, -1.2)
+    u1 = (math.cos(math.radians(phi1)), math.sin(math.radians(phi1)))
+    f.line((Q1[0] - u1[0] * 0.7, Q1[1] - u1[1] * 0.7), (P1[0] + u1[0] * 0.7, P1[1] + u1[1] * 0.7), w=1.8)
+    f.angle(P1, (P1[0] - 1, P1[1]), Q1, r=26, label=lab_a, color=_FIG_RED)
+    f.angle(Q1, (Q1[0] + 1, Q1[1]), P1, r=26, label=lab_b, color=_FIG_BLUE)
+    # 오른쪽 직선: 동측내각 (오른쪽 안쪽 두 각의 합이 180°)
+    phi2 = 180 - c1_val                       # 위쪽 직선 위의 오른쪽 안쪽 각 = 180 - phi2 = c1_val
+    phi2 = phi2 if 15 < phi2 < 165 else 60
+    dx2 = -2.4 / math.tan(math.radians(phi2))
+    P2, Q2 = (1.3 - dx2 / 2, 1.2), (1.3 + dx2 / 2, -1.2)
+    u2 = (math.cos(math.radians(phi2)), math.sin(math.radians(phi2)))
+    f.line((Q2[0] - u2[0] * 0.7, Q2[1] - u2[1] * 0.7), (P2[0] + u2[0] * 0.7, P2[1] + u2[1] * 0.7), w=1.8)
+    f.angle(P2, (P2[0] + 1, P2[1]), Q2, r=26, label=lab_c, color=_FIG_RED)
+    f.angle(Q2, (Q2[0] + 1, Q2[1]), P2, r=26, label=lab_d, color=_FIG_BLUE)
+    return f.svg()
+
+
+def _poly_from_angles(angs, tries=600):
+    """내각이 angs(도, 합은 180(n-2)) 인 볼록다각형의 꼭짓점들(반시계). 변의 길이는 무작위로 잡고 닫히게 두 변을 푼다."""
+    n = len(angs)
+    turns = [180 - a for a in angs]
+    phi = [0.0]
+    for i in range(1, n):
+        phi.append(phi[-1] + turns[i])
+    u = [(math.cos(math.radians(p)), math.sin(math.radians(p))) for p in phi]
+    best = None
+    for _ in range(tries):
+        L = [random.uniform(0.7, 1.4) for _ in range(n)]
+        sx = sum(L[i] * u[i][0] for i in range(2, n))
+        sy = sum(L[i] * u[i][1] for i in range(2, n))
+        det = u[0][0] * u[1][1] - u[0][1] * u[1][0]
+        if abs(det) < 1e-6:
+            continue
+        l0 = (-sx * u[1][1] + sy * u[1][0]) / det
+        l1 = (-u[0][0] * sy + u[0][1] * sx) / det
+        if l0 > 0.35 and l1 > 0.35:
+            L[0], L[1] = l0, l1
+            best = L
+            break
+    if best is None:
+        best = [1.0] * n
+    pts = [(0.0, 0.0)]
+    for i in range(n - 1):
+        pts.append((pts[-1][0] + best[i] * u[i][0], pts[-1][1] + best[i] * u[i][1]))
+    return pts
+
+
+def fig_polygon_angles(labels, values):
+    """내각의 크기가 차례로 labels 인 다각형. 각 꼭짓점 바깥쪽에 크기 글자를 적고 안쪽에 호를 그린다."""
+    pts = _poly_from_angles(values)
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    dx, dy = max(xs) - min(xs), max(ys) - min(ys)
+    W = 380
+    maxw = max(0.52 * 13 * len(t) for t in labels)
+    px_pad, py_pad = maxw + 26, 48
+    s = min((W - 2 * px_pad) / dx, 240 / dy)
+    f = _Fig(min(xs) - px_pad / s, max(xs) + px_pad / s, min(ys) - py_pad / s, max(ys) + py_pad / s, width=W, equal=True, pad=(0, 0, 0, 0))
+    f.poly(pts, fill=_FIG_BLUE, fo=0.08, w=2.0)
+    n = len(pts)
+    cx, cy = sum(xs) / n, sum(ys) / n
+    for i, p in enumerate(pts):
+        prv, nxt = pts[i - 1], pts[(i + 1) % n]
+        col = (_FIG_RED, _FIG_BLUE, _FIG_GREEN)[i % 3]
+        f.angle(p, prv, nxt, r=16, color=col, label=None)
+        f.dot(p, r=2.6)
+        f.label_out(p, labels[i], (cx, cy), off=14, fit=True, size=13, color=col, italic=False)
+    return f.svg()
+
+
+def _sector_pts(c, r, a0, a1):
+    return [c] + _arc_pts(c, r, a0, a1, 40)
+
+
+def fig_sectors(angs, label_r="r"):
+    """한 원을 중심각이 angs(도) 인 부채꼴 여러 개로 나눈 그림. 반지름은 r 로 적는다."""
+    f = _Fig(-1.45, 1.45, -1.3, 1.3, width=320, equal=True, pad=(10, 10, 10, 10))
+    f.circle((0, 0), 1.0, stroke=_FIG_GRAY, w=1.4)
+    a0 = 90.0
+    cols = (_FIG_BLUE, _FIG_RED, _FIG_GREEN)
+    for i, a in enumerate(angs):
+        a1 = a0 + a
+        f.poly(_sector_pts((0, 0), 1.0, a0, a1), fill=cols[i % 3], fo=0.2, stroke=cols[i % 3], w=1.8)
+        f.text(_pol((0, 0), 0.58, (a0 + a1) / 2), f"{a}°", dy=5, size=13, italic=False, color=_FIG_INK)
+        a0 = a1
+    f.dot((0, 0), r=3)
+    f.text(_pol((0, 0), 0.5, 90), label_r, dx=11, dy=0, italic=True, color=_FIG_INK)       # 첫 부채꼴은 왼쪽에 있으므로 오른쪽에 적는다
+    f.line((0, 0), (0, 1.0), color=_FIG_INK, w=1.6)
+    return f.svg()
+
+
+# ---------- 삼각형·사각형·원 그림 ----------
+def _fit(pts, width=340, max_h=300, pad=(46, 46, 36, 36)):
+    """점들이 들어가는 그림 틀. pad = (왼쪽, 오른쪽, 위, 아래) 픽셀 여백."""
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    dx, dy = (max(xs) - min(xs)) or 1.0, (max(ys) - min(ys)) or 1.0
+    L, R, T, B = pad
+    s = min((width - L - R) / dx, (max_h - T - B) / dy)
+    return _Fig(min(xs) - L / s, max(xs) + R / s, min(ys) - B / s, max(ys) + T / s, width=width, equal=True, pad=(0, 0, 0, 0))
+
+
+def _centroid(pts):
+    return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+
+def _clamp_len(vals, lo=0.38):
+    """그림에서 변이 너무 짧거나 길어 보이지 않게 가장 긴 길이의 lo 배 이상으로 맞춘다."""
+    m = max(vals)
+    return [max(v, lo * m) / m for v in vals]
+
+
+def fig_right_triangle(r_name, x_name, y_name, lx, ly, lab_x=None, lab_y=None, lab_h=None, incircle=False):
+    """직각삼각형. 직각 꼭짓점 r 는 원점, x_name 은 오른쪽, y_name 은 위쪽. lab_* 는 주어진 변의 길이 글자(없으면 적지 않는다)."""
+    ux, uy = _clamp_len([lx, ly], 0.4)
+    X, Y = ux * 4.0, uy * 4.0
+    R, Xp, Yp = (0, 0), (X, 0), (0, Y)
+    f = _fit([R, Xp, Yp], pad=(48, 52, 34, 36))
+    f.poly([R, Xp, Yp], fill=_FIG_BLUE, fo=0.08, w=2.0)
+    f.right_angle(R, Xp, Yp, size=10)
+    if incircle:
+        a, b, c = X, Y, math.hypot(X, Y)
+        r = (a + b - c) / 2
+        f.circle((r, r), r, fill=_FIG_GREEN, fo=0.1, stroke=_FIG_GREEN, w=1.6)
+        f.dot((r, r), r=2.6, color=_FIG_GREEN)
+    cen = _centroid([R, Xp, Yp])
+    f.label_out(R, r_name, cen, off=14, size=15)
+    f.label_out(Xp, x_name, cen, off=14, size=15)
+    f.label_out(Yp, y_name, cen, off=14, size=15)
+    if lab_x:
+        f.side_label(R, Xp, lab_x, cen, off=13)
+    if lab_y:
+        f.side_label(R, Yp, lab_y, cen, off=15)
+    if lab_h:
+        f.side_label(Xp, Yp, lab_h, cen, off=14)
+    return f.svg()
+
+
+def fig_pythag_spiral(names, lens, labels):
+    """연달아 이어진 직각삼각형들(A 가 한 꼭짓점). lens 는 AB, BC, CD ... 의 길이, labels 는 문제에 주어진 길이 글자."""
+    n = len(lens)
+    ls = [v * 4.2 for v in _clamp_len(lens, 0.4)]
+    pts = [(0.0, 0.0), (ls[0], 0.0)]
+    pts.append((ls[0], ls[1]))
+    for i in range(2, n):
+        hx, hy = pts[i]                                # A 에서 i 번째 꼭짓점으로 가는 선분 (빗변)
+        L = math.hypot(hx, hy)
+        pts.append((hx - hy / L * ls[i], hy + hx / L * ls[i]))
+    f = _fit(pts, pad=(46, 46, 40, 40), max_h=340)
+    cen = _centroid(pts)
+    for i in range(1, len(pts) - 1):
+        f.poly([pts[0], pts[i], pts[i + 1]], fill=_FIG_BLUE, fo=0.07, w=1.9)
+    f.poly([pts[0], pts[-1]], stroke=_FIG_INK, close=False, w=1.9)
+    for i in range(1, len(pts) - 1):
+        f.right_angle(pts[i], pts[i - 1] if i == 1 else pts[0], pts[i + 1], size=9)
+    for nm, p in zip(names, pts):
+        f.label_out(p, nm, cen if nm != names[0] else (pts[1][0], pts[1][1] + 1), off=13, size=15)
+    for i in range(n):
+        if labels[i]:
+            seg = (pts[i], pts[i + 1])
+            away = pts[0] if i else (cen[0], cen[1] + 3)
+            f.side_label(seg[0], seg[1], labels[i], away if i else (cen[0], cen[1] + 3), off=13)
+    return f.svg()
+
+
+def fig_triangle_pts(pts, names, side_labels=None, ang_labels=None, right_at=None, ticks=None, extra=None, fill=_FIG_BLUE):
+    """일반 삼각형. side_labels = {(i, j): 글자}, ang_labels = {i: 글자}, right_at = 직각인 꼭짓점 번호."""
+    f = _fit(pts)
+    f.poly(pts, fill=fill, fo=0.08, w=2.0)
+    cen = _centroid(pts)
+    n = len(pts)
+    for nm, p in zip(names, pts):
+        f.label_out(p, nm, cen, off=13, size=15)
+    for (i, j), t in (side_labels or {}).items():
+        f.side_label(pts[i], pts[j], t, cen, off=13)
+    for i, t in (ang_labels or {}).items():
+        f.angle(pts[i], pts[i - 1], pts[(i + 1) % n], r=24, label=t, color=_FIG_RED)
+    if right_at is not None:
+        i = right_at
+        f.right_angle(pts[i], pts[i - 1], pts[(i + 1) % n], size=10)
+    return f
+
+
+def _tri_from_angles(Bd, Cd, base=5.0):
+    """B=(0,0), C=(base,0) 이고 ∠B=Bd, ∠C=Cd 인 삼각형의 A."""
+    B, C = math.radians(Bd), math.radians(Cd)
+    t = math.sin(C) / math.sin(B + C) * base
+    return (t * math.cos(B), t * math.sin(B))
+
+
+def fig_triangle_sas(names, la, lb, ang, lab_a, lab_b, lab_ang):
+    """∠A=ang, AB=la, AC=lb 인 삼각형 (A 가 원점, AB 가 오른쪽)."""
+    ua, ub = _clamp_len([la, lb], 0.5)
+    A = (0.0, 0.0)
+    B = (ua * 4.4, 0.0)
+    C = (ub * 4.4 * math.cos(math.radians(ang)), ub * 4.4 * math.sin(math.radians(ang)))
+    f = fig_triangle_pts([A, B, C], names, side_labels={(0, 1): lab_a, (0, 2): lab_b}, ang_labels={0: lab_ang})
+    return f.svg()
+
+
+def fig_trig_right(names, t_len, lab_len, angB, lab_angB):
+    """∠C=90°, ∠B=angB 인 직각삼각형 ABC 와 C 에서 AB 에 내린 수선의 발 D."""
+    A_, B_, C_, D_ = names
+    C = (0.0, 0.0)
+    Bp = (5.0, 0.0)
+    Ap = (0.0, 5.0 * math.tan(math.radians(angB)))
+    # D: C 에서 AB 에 내린 수선의 발
+    dx, dy = Bp[0] - Ap[0], Bp[1] - Ap[1]
+    t = ((C[0] - Ap[0]) * dx + (C[1] - Ap[1]) * dy) / (dx * dx + dy * dy)
+    D = (Ap[0] + t * dx, Ap[1] + t * dy)
+    f = _fit([C, Bp, Ap])
+    f.poly([C, Bp, Ap], fill=_FIG_BLUE, fo=0.08, w=2.0)
+    f.line(C, D, color=_FIG_INK, w=1.7, dash="5 4")
+    f.right_angle(C, Bp, Ap, size=10)
+    f.right_angle(D, C, Bp, size=8)
+    cen = _centroid([C, Bp, Ap])
+    for nm, p in ((C_, C), (B_, Bp), (A_, Ap)):
+        f.label_out(p, nm, cen, off=13, size=15)
+    f.label_out(D, D_, C, off=12, size=15)
+    f.side_label(C, Ap, lab_len, cen, off=15)
+    f.angle(Bp, Ap, C, r=30, label=lab_angB, color=_FIG_RED)
+    return f.svg()
+
+
+def fig_parallelogram(names, theta, ab=None, dc=None, ad=None, bc=None, ang_a=None, ang_b=None, ang_c=None, ang_d=None, ticks=True, ratio=1.45):
+    """평행사변형 ABCD (A 왼쪽 아래, B 오른쪽 아래). ∠A=theta(도). ab, dc, ad, bc, ang_* 는 적을 글자."""
+    A_, B_, C_, D_ = names
+    L1, L2 = 4.6, 4.6 / ratio
+    th = math.radians(theta)
+    A = (0.0, 0.0)
+    B = (L1, 0.0)
+    D = (L2 * math.cos(th), L2 * math.sin(th))
+    C = (B[0] + D[0], B[1] + D[1])
+    pts = [A, B, C, D]
+    f = _fit(pts, pad=(58, 58, 40, 40))
+    f.poly(pts, fill=_FIG_BLUE, fo=0.08, w=2.0)
+    cen = _centroid(pts)
+    for nm, p in zip(names, pts):
+        f.label_out(p, nm, cen, off=13, size=15)
+    for (i, j), t in (((0, 1), ab), ((3, 2), dc), ((0, 3), ad), ((1, 2), bc)):
+        if t:
+            f.side_label(pts[i], pts[j], t, cen, off=13)
+    if ticks:
+        f.tickmark(A, B, 1)
+        f.tickmark(D, C, 1)
+        f.tickmark(A, D, 2)
+        f.tickmark(B, C, 2)
+    for i, t in ((0, ang_a), (1, ang_b), (2, ang_c), (3, ang_d)):
+        if t:
+            f.angle(pts[i], pts[i - 1], pts[(i + 1) % 4], r=24, label=t, color=_FIG_RED)
+    return f.svg()
+
+
+def _circum_pts(A_deg, B_deg, C_deg):
+    """단위원에 내접하는 삼각형 (내각이 A, B, C): A 는 위쪽, B 는 왼쪽 아래, C 는 오른쪽 아래 쪽에 둔다."""
+    # 호 BC = 2A, 호 CA = 2B, 호 AB = 2C.  A 를 90° 에 두고 반시계로 B, C
+    a = 90.0
+    b = a + 2 * C_deg
+    c = b + 2 * A_deg
+    return _pol((0, 0), 1, a), _pol((0, 0), 1, b), _pol((0, 0), 1, c)
+
+
+def fig_circumcenter(names, A_deg, lab_A, lab_BOC):
+    """삼각형 ABC 의 외접원과 외심 O. ∠A=A_deg(주어진 식 lab_A), ∠BOC=2·A_deg(lab_BOC)."""
+    A_, B_, C_, O_ = names
+    rest = 180 - A_deg
+    B_deg, C_deg = rest / 2 + 7, rest / 2 - 7
+    A, B, C = _circum_pts(A_deg, B_deg, C_deg)
+    f = _Fig(-1.9, 1.9, -1.5, 1.45, width=340, equal=True, pad=(10, 10, 10, 10))
+    f.circle((0, 0), 1.0, stroke=_FIG_GRAY, w=1.5)
+    f.poly([A, B, C], fill=_FIG_BLUE, fo=0.07, w=2.0)
+    f.line((0, 0), B, color=_FIG_INK, w=1.6, dash="5 4")
+    f.line((0, 0), C, color=_FIG_INK, w=1.6, dash="5 4")
+    f.dot((0, 0), r=3)
+    f.text((0, 0), O_, dx=12, dy=-6, italic=True)
+    for nm, p in ((A_, A), (B_, B), (C_, C)):
+        f.label_out(p, nm, (0, 0), off=13, size=15)
+        f.dot(p, r=2.8)
+    f.angle(A, B, C, r=26, label=lab_A, color=_FIG_RED)
+    f.angle((0, 0), B, C, r=22, label=lab_BOC, color=_FIG_BLUE, label_r=50)
+    return f.svg()
+
+
+def fig_incenter(names, B_deg, C_deg, lab_B, lab_C, lab_BIC):
+    """삼각형 ABC 의 내심 I. ∠B, ∠C 와 ∠BIC 의 크기 글자를 적는다."""
+    A_, B_, C_, I_ = names
+    Bp, Cp = (0.0, 0.0), (5.0, 0.0)
+    Ap = _tri_from_angles(B_deg, C_deg, 5.0)
+    a = math.dist(Bp, Cp)
+    b = math.dist(Ap, Cp)
+    c = math.dist(Ap, Bp)
+    I = ((a * Ap[0] + b * Bp[0] + c * Cp[0]) / (a + b + c), (a * Ap[1] + b * Bp[1] + c * Cp[1]) / (a + b + c))
+    f = _fit([Ap, Bp, Cp], pad=(52, 52, 36, 40))
+    f.poly([Ap, Bp, Cp], fill=_FIG_BLUE, fo=0.07, w=2.0)
+    for p in (Bp, Cp):
+        f.line(p, I, color=_FIG_INK, w=1.5, dash="5 4")
+    f.line(Ap, I, color=_FIG_INK, w=1.5, dash="5 4")
+    f.dot(I, r=3)
+    cen = _centroid([Ap, Bp, Cp])
+    f.text(I, I_, dx=0, dy=-9, italic=True)
+    for nm, p in ((A_, Ap), (B_, Bp), (C_, Cp)):
+        f.label_out(p, nm, cen, off=13, size=15)
+    f.angle(Bp, Ap, Cp, r=30, label=lab_B, color=_FIG_RED, label_r=62)
+    f.angle(Cp, Bp, Ap, r=30, label=lab_C, color=_FIG_GREEN, label_r=62)
+    f.angle(I, Bp, Cp, r=18, label=lab_BIC, color=_FIG_BLUE, label_r=44)
+    return f.svg()
+
+
+def fig_inscribed_angle(v, lab_in, lab_cen, names=("A", "B", "C", "O")):
+    """원 O 에서 호 AB 에 대한 원주각 ∠ACB(크기 v, 글자 lab_in) 와 중심각 ∠AOB(크기 2v, 글자 lab_cen)."""
+    A_, B_, C_, O_ = names
+    f = _Fig(-1.9, 1.9, -1.45, 1.5, width=340, equal=True, pad=(10, 10, 10, 10))
+    f.circle((0, 0), 1.0, stroke=_FIG_GRAY, w=1.5)
+    A = _pol((0, 0), 1, 270 + v)
+    B = _pol((0, 0), 1, 270 - v)
+    C = _pol((0, 0), 1, 90)
+    f.poly([A, C, B], stroke=_FIG_INK, close=False, w=2.0)
+    f.line((0, 0), A, w=1.8)
+    f.line((0, 0), B, w=1.8)
+    f.dot((0, 0), r=3)
+    f.text((0, 0), O_, dx=13, dy=-5, italic=True)
+    for nm, p in ((A_, A), (B_, B), (C_, C)):
+        f.dot(p, r=2.8)
+        f.label_out(p, nm, (0, 0), off=13, size=15)
+    f.angle(C, A, B, r=26, label=lab_in, color=_FIG_RED, label_r=62)
+    f.angle((0, 0), A, B, r=24, label=lab_cen, color=_FIG_BLUE, label_r=50)
+    return f.svg()
+
+
+def fig_cyclic_quad(names, vA, lab_A, lab_C, center_name=None):
+    """원에 내접하는 사각형. ∠A=vA 이고 ∠C=180-vA. 크기 글자를 적는다."""
+    A_, B_, C_, D_ = names
+    # 호 BC, CD 는 합이 2·vA, 호 DA, AB 는 합이 360-2·vA
+    b1 = vA * random.uniform(0.75, 1.25)
+    b2 = 2 * vA - b1
+    rest = 360 - 2 * vA
+    b4 = rest * random.uniform(0.4, 0.6)
+    b3 = rest - b4
+    a0 = 110.0
+    A = _pol((0, 0), 1, a0)
+    B = _pol((0, 0), 1, a0 + b4)
+    C = _pol((0, 0), 1, a0 + b4 + b1)
+    D = _pol((0, 0), 1, a0 + b4 + b1 + b2)
+    f = _Fig(-1.95, 1.95, -1.5, 1.5, width=340, equal=True, pad=(10, 10, 10, 10))
+    f.circle((0, 0), 1.0, stroke=_FIG_GRAY, w=1.5)
+    f.poly([A, B, C, D], fill=_FIG_BLUE, fo=0.07, w=2.0)
+    for nm, p in ((A_, A), (B_, B), (C_, C), (D_, D)):
+        f.dot(p, r=2.8)
+        f.label_out(p, nm, (0, 0), off=13, size=15)
+    f.angle(A, D, B, r=24, label=lab_A, color=_FIG_RED, label_r=66)
+    f.angle(C, B, D, r=24, label=lab_C, color=_FIG_BLUE, label_r=66)
+    return f.svg()
+
+
+def fig_chord(d_txt, r_txt, names=("O", "A", "B", "M")):
+    """원 O 의 중심에서 현 AB 에 내린 수선의 발 M. OM 과 반지름의 길이 글자를 적는다 (AM 은 구할 값)."""
+    O_, A_, B_, M_ = names
+    R = 1.0
+    d = 0.45
+    half = math.sqrt(R * R - d * d)
+    f = _Fig(-1.9, 1.9, -1.5, 1.35, width=340, equal=True, pad=(10, 10, 10, 10))
+    f.circle((0, 0), R, stroke=_FIG_GRAY, w=1.5)
+    A, B, M = (-half, -d), (half, -d), (0, -d)
+    f.line(A, B, w=2.0)
+    f.line((0, 0), M, w=1.8)
+    f.line((0, 0), A, w=1.6, dash="5 4")
+    f.right_angle(M, (0, 0), B, size=8)
+    for nm, p, c in ((A_, A, (0, 0)), (B_, B, (0, 0)), (M_, M, (0, 0))):
+        f.dot(p, r=2.8)
+        f.label_out(p, nm, c, off=13, size=15)
+    f.dot((0, 0), r=3)
+    f.text((0, 0), O_, dx=0, dy=-9, italic=True)
+    f.text((0, -d / 2), d_txt, dx=-12, dy=5, anchor="end", italic=False, size=13)
+    f.text((-half / 2, -d / 2), r_txt, dx=-12, dy=-12, anchor="end", italic=False, size=13)
+    return f.svg()
+
+
+def _tangent_vertex(t1, t2):
+    """단위원의 두 접점(각도 t1, t2) 에서 그은 접선들이 만나는 점."""
+    mid = (t1 + t2) / 2
+    return _pol((0, 0), 1 / math.cos(math.radians((t2 - t1) / 2)), mid)
+
+
+def fig_circumscribed_quad(names, labels):
+    """원 O 에 외접하는 사각형 ABCD. labels = {'AB': 글자, 'BC': 글자, 'CD': 글자} (AD 는 구할 값)."""
+    A_, B_, C_, D_ = names
+    ts = [30.0, 115.0, 200.0, 285.0]                        # 접점의 각도 (변 AB, BC, CD, DA 위)
+    ts = [t + random.uniform(-8, 8) for t in ts]
+    V = [_tangent_vertex(ts[(i - 1) % 4] if i else ts[3] - 360, ts[i]) for i in range(4)]
+    # V[i] 는 접점 ts[i-1] 과 ts[i] 의 접선이 만나는 점: 변 DA 와 AB 가 만나는 꼭짓점 A
+    A, B, C, D = V[0], V[1], V[2], V[3]
+    pts = [A, B, C, D]
+    allp = pts + [(-1, -1), (1, 1)]
+    f = _fit(allp, pad=(54, 54, 40, 40), max_h=340)
+    f.circle((0, 0), 1.0, fill=_FIG_GREEN, fo=0.08, stroke=_FIG_GREEN, w=1.6)
+    f.poly(pts, fill=None, w=2.0)
+    f.dot((0, 0), r=2.6)
+    cen = (0, 0)
+    for nm, p in zip(names, pts):
+        f.label_out(p, nm, cen, off=13, size=15)
+    for (i, j), key in (((0, 1), "AB"), ((1, 2), "BC"), ((2, 3), "CD")):
+        if labels.get(key):
+            f.side_label(pts[i], pts[j], labels[key], cen, off=13)
+    return f.svg()
+
+
+def fig_incircle_triangle(names, sides):
+    """삼각형 ABC 의 내접원이 세 변 AB, BC, CA 와 만나는 점 P, Q, R. sides = (AB, BC, CA) 의 길이 글자와 값."""
+    (ab, ab_t), (bc, bc_t), (ca, ca_t) = sides
+    A_, B_, C_ = names
+    B, C = (0.0, 0.0), (bc, 0.0)
+    cosB = (ab * ab + bc * bc - ca * ca) / (2 * ab * bc)
+    cosB = max(-0.97, min(0.97, cosB))
+    A = (ab * cosB, ab * math.sqrt(1 - cosB * cosB))
+    a, b, c = bc, ca, ab
+    s = (a + b + c) / 2
+    area = math.sqrt(max(s * (s - a) * (s - b) * (s - c), 1e-9))
+    r = area / s
+    I = ((a * A[0] + b * B[0] + c * C[0]) / (a + b + c), (a * A[1] + b * B[1] + c * C[1]) / (a + b + c))
+    tA, tB, tC = s - a, s - b, s - c                        # A, B, C 에서 접점까지의 길이
+
+    def along(P, Q, t):
+        d = math.dist(P, Q)
+        return (P[0] + (Q[0] - P[0]) * t / d, P[1] + (Q[1] - P[1]) * t / d)
+
+    Pp = along(A, B, tA)                                    # AB 위
+    Qp = along(B, C, tB)                                    # BC 위
+    Rp = along(C, A, tC)                                    # CA 위
+    f = _fit([A, B, C], pad=(52, 52, 36, 40))
+    f.circle(I, r, fill=_FIG_GREEN, fo=0.08, stroke=_FIG_GREEN, w=1.6)
+    f.poly([A, B, C], fill=_FIG_BLUE, fo=0.06, w=2.0)
+    cen = _centroid([A, B, C])
+    for nm, p in ((A_, A), (B_, B), (C_, C)):
+        f.label_out(p, nm, cen, off=13, size=15)
+    for nm, p in (("P", Pp), ("Q", Qp), ("R", Rp)):
+        f.dot(p, r=2.8)
+        f.label_out(p, nm, (2 * p[0] - I[0], 2 * p[1] - I[1]), off=12, size=14)       # 안쪽(내심 쪽)에 적는다
+    f.side_label(A, B, ab_t, cen, off=15)
+    f.side_label(B, C, bc_t, cen, off=15)
+    f.side_label(C, A, ca_t, cen, off=15)
+    return f.svg()
+
+
+# ---------- 닮음·평행선과 선분의 비·입체도형 그림 ----------
+def fig_parallel_prop1(names, lab_ad, lab_db, lab_de, a, b):
+    """삼각형 ABC 에서 BC ∥ DE (D 는 AB 위, E 는 AC 위). AD=a, DB=b 의 비로 D, E 를 잡는다."""
+    A_, B_, C_, D_, E_ = names
+    A, B, C = (0.0, 4.6), (-2.6, 0.0), (2.9, 0.0)
+    t = a / (a + b)
+    D = (A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t)
+    E = (A[0] + (C[0] - A[0]) * t, A[1] + (C[1] - A[1]) * t)
+    f = _fit([A, B, C], pad=(54, 54, 34, 36))
+    f.poly([A, B, C], fill=_FIG_BLUE, fo=0.07, w=2.0)
+    f.line(D, E, w=2.0)
+    cen = _centroid([A, B, C])
+    for nm, p in ((A_, A), (B_, B), (C_, C)):
+        f.label_out(p, nm, cen, off=13, size=15)
+    f.label_out(D, D_, cen, off=12, size=15)
+    f.label_out(E, E_, cen, off=12, size=15)
+    f.dot(D, r=2.8)
+    f.dot(E, r=2.8)
+    f.side_label(A, D, lab_ad, cen, off=12)
+    f.side_label(D, B, lab_db, cen, off=12)
+    f.side_label(D, E, lab_de, A, off=-12 if False else 12)
+    _bar_arrow(f, D, E)
+    _bar_arrow(f, B, C)
+    return f.svg()
+
+
+def fig_parallel_prop2(names1, names2, lab_ab, lab_bc, lab_de, a, b):
+    """서로 평행한 세 직선 l, m, n 이 두 직선과 만나는 점 A, B, C 와 D, E, F. AB=a, BC=b 의 비로 간격을 잡는다."""
+    s1, s2 = 4.0 * a / (a + b), 4.0 * b / (a + b)
+    ys = [s1 + s2, s2, 0.0]                         # l(위), m, n(아래)
+    k1, k2 = 0.28, -0.22
+    xA = lambda y: -1.9 + (ys[0] - y) * (-k1)
+    A, B, C = (-1.6, ys[0]), (-1.6 + k1 * (ys[0] - ys[1]), ys[1]), (-1.6 + k1 * (ys[0] - ys[2]), ys[2])
+    D, E, F = (1.4, ys[0]), (1.4 + k2 * (ys[0] - ys[1]), ys[1]), (1.4 + k2 * (ys[0] - ys[2]), ys[2])
+    f = _fit([(-3.2, -0.5), (3.2, ys[0] + 0.5)], pad=(36, 36, 30, 30), max_h=300)
+    for y, nm in zip(ys, "lmn"):
+        f.line((-3.0, y), (3.0, y), w=1.8)
+        f.text((3.0, y), nm, dx=8, dy=-8, italic=True)
+        _bar_arrow(f, (-3.0, y), (-2.4, y))
+    f.line((A[0] - (C[0] - A[0]) * 0.12, A[1] + 0.35), (C[0] + (C[0] - A[0]) * 0.12, C[1] - 0.35), w=1.9)
+    f.line((D[0] - (F[0] - D[0]) * 0.12, D[1] + 0.35), (F[0] + (F[0] - D[0]) * 0.12, F[1] - 0.35), w=1.9)
+    for nm, p in zip(names1, (A, B, C)):
+        f.dot(p, r=2.8)
+        f.text(p, nm, dx=-12, dy=-7, italic=True)
+    for nm, p in zip(names2, (D, E, F)):
+        f.dot(p, r=2.8)
+        f.text(p, nm, dx=12, dy=-7, italic=True)
+    f.text(((A[0] + B[0]) / 2, (A[1] + B[1]) / 2), lab_ab, dx=-8, dy=4, anchor="end", italic=False, size=13)
+    f.text(((B[0] + C[0]) / 2, (B[1] + C[1]) / 2), lab_bc, dx=-8, dy=4, anchor="end", italic=False, size=13)
+    f.text(((D[0] + E[0]) / 2, (D[1] + E[1]) / 2), lab_de, dx=8, dy=4, anchor="start", italic=False, size=13)
+    return f.svg()
+
+
+def fig_trapezoid_mid(names, lab_ad, lab_bc, lab_ae, lab_eb, u, v, m, n):
+    """사다리꼴 ABCD (AD ∥ BC) 에서 E 는 AB 위, F 는 DC 위이고 EF ∥ BC. AE:EB=m:n."""
+    A_, B_, C_, D_, E_, F_ = names
+    ul, vl = _clamp_len([u, v], 0.45)
+    wU, wV = ul * 4.6, vl * 4.6
+    H = 2.8
+    A, D = (-wU / 2 + 0.3, H), (wU / 2 + 0.3, H)
+    B, C = (-wV / 2, 0.0), (wV / 2, 0.0)
+    t = m / (m + n)
+    E = (A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t)
+    F = (D[0] + (C[0] - D[0]) * t, D[1] + (C[1] - D[1]) * t)
+    f = _fit([A, B, C, D], pad=(50, 54, 34, 36))
+    f.poly([A, B, C, D], fill=_FIG_BLUE, fo=0.07, w=2.0)
+    f.line(E, F, w=2.0)
+    cen = _centroid([A, B, C, D])
+    for nm, p in ((A_, A), (B_, B), (C_, C), (D_, D)):
+        f.label_out(p, nm, cen, off=13, size=15)
+    f.label_out(E, E_, cen, off=12, size=15)
+    f.label_out(F, F_, cen, off=12, size=15)
+    f.dot(E, r=2.8)
+    f.dot(F, r=2.8)
+    f.side_label(A, D, lab_ad, cen, off=12)
+    f.side_label(B, C, lab_bc, cen, off=12)
+    f.side_label(A, E, lab_ae, cen, off=12, color=_FIG_RED)
+    f.side_label(E, B, lab_eb, cen, off=12, color=_FIG_BLUE)
+    _bar_arrow(f, A, D)
+    _bar_arrow(f, B, C)
+    _bar_arrow(f, E, F)
+    return f.svg()
+
+
+def _reg_poly(n, r, rot=90.0):
+    return [_pol((0, 0), r, rot + 360.0 * i / n) for i in range(n)]
+
+
+def fig_similar_plane(shape, ratio):
+    """닮음비가 1:ratio 인 두 닮은 도형 (삼각형·사각형·원·오각형). 크기가 닮음비대로 보인다."""
+    big = float(ratio)
+    f = _Fig(-1.0, 1.0 + (1 + big) * 1.15, -0.2 - big * 0.55, 0.3 + big * 0.55, width=340, equal=True, pad=(10, 10, 10, 10))
+    cx1, cx2 = 0.5, 1.0 + 0.5 + big * 0.62 + 0.35
+
+    def draw(cx, k, col):
+        if shape == "원":
+            f.circle((cx, 0), 0.5 * k, fill=col, fo=0.14, stroke=col, w=2.0)
+        else:
+            if shape == "삼각형":
+                base = [(-0.55, -0.45), (0.55, -0.45), (-0.1, 0.5)]
+            elif shape == "사각형":
+                base = [(-0.55, -0.4), (0.55, -0.4), (0.5, 0.4), (-0.45, 0.45)]
+            else:
+                base = _reg_poly(5, 0.55)
+            f.poly([(cx + x * k, y * k) for x, y in base], fill=col, fo=0.14, stroke=col, w=2.0)
+
+    draw(cx1, 1.0, _FIG_BLUE)
+    draw(cx2, big, _FIG_RED)
+    return f.svg()
+
+
+def _ell_arc(f, c, rx, ry, left_to_right_via, color=_FIG_INK, w=1.7, dash=None):
+    """타원의 아래쪽 반('down') 또는 위쪽 반('up') 을 왼쪽 끝에서 오른쪽 끝으로 그린다. 수학 단위 반지름 rx, ry."""
+    (x1, y1), (x2, y2) = f.P((c[0] - rx, c[1])), f.P((c[0] + rx, c[1]))
+    rxp, ryp = rx * f.sx, ry * f.sy
+    sweep = 0 if left_to_right_via == "down" else 1
+    d = f' stroke-dasharray="{dash}"' if dash else ""
+    f.add(f'<path d="M {_fn(x1)} {_fn(y1)} A {_fn(rxp)} {_fn(ryp)} 0 0 {sweep} {_fn(x2)} {_fn(y2)}" fill="none" stroke="{color}" stroke-width="{w}" stroke-linecap="round"{d}/>')
+
+
+def _cylinder(f, cx, by, rx, H, water=None, color=_FIG_INK):
+    ry = max(0.12, rx * 0.28)
+    if water:
+        wy = by + water
+        (xl, yb), (xr, _) = f.P((cx - rx, by)), f.P((cx + rx, by))
+        yl = f.P((0, wy))[1]
+        rxp, ryp = rx * f.sx, ry * f.sy
+        f.add(
+            f'<path d="M {_fn(xl)} {_fn(yb)} L {_fn(xl)} {_fn(yl)} A {_fn(rxp)} {_fn(ryp)} 0 0 0 {_fn(xr)} {_fn(yl)} '
+            f'L {_fn(xr)} {_fn(yb)} A {_fn(rxp)} {_fn(ryp)} 0 0 1 {_fn(xl)} {_fn(yb)} Z" fill="{_FIG_BLUE}" fill-opacity="0.22" stroke="none"/>'
+        )
+        f.ellipse((cx, wy), rx, ry, fill=_FIG_BLUE, fo=0.3, stroke=_FIG_BLUE, w=1.4)
+    f.line((cx - rx, by), (cx - rx, by + H), color=color, w=1.9)
+    f.line((cx + rx, by), (cx + rx, by + H), color=color, w=1.9)
+    _ell_arc(f, (cx, by), rx, ry, "up", color=color, w=1.5, dash="4 3")
+    _ell_arc(f, (cx, by), rx, ry, "down", color=color, w=1.9)
+    f.ellipse((cx, by + H), rx, ry, stroke=color, w=1.9)
+    return ry
+
+
+def _cone(f, cx, by, rx, H, color=_FIG_INK, water=False):
+    ry = max(0.12, rx * 0.28)
+    if water:
+        pass
+    f.line((cx - rx, by), (cx, by + H), color=color, w=1.9)
+    f.line((cx + rx, by), (cx, by + H), color=color, w=1.9)
+    _ell_arc(f, (cx, by), rx, ry, "up", color=color, w=1.5, dash="4 3")
+    _ell_arc(f, (cx, by), rx, ry, "down", color=color, w=1.9)
+    return ry
+
+
+def _sphere(f, cx, cy, r, color=_FIG_INK):
+    f.circle((cx, cy), r, stroke=color, w=1.9)
+    ry = r * 0.28
+    _ell_arc(f, (cx, cy), r, ry, "up", color=color, w=1.4, dash="4 3")
+    _ell_arc(f, (cx, cy), r, ry, "down", color=color, w=1.6)
+
+
+def _box(f, x, y, w, h, d, color=_FIG_INK, fill=_FIG_BLUE):
+    """앞면의 왼쪽 아래가 (x, y) 이고 가로 w, 세로 h, 깊이 d 인 상자 (깊이는 오른쪽 위로)."""
+    ox, oy = d * 0.46, d * 0.30
+    F = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+    T = [(x, y + h), (x + w, y + h), (x + w + ox, y + h + oy), (x + ox, y + h + oy)]
+    R = [(x + w, y), (x + w + ox, y + oy), (x + w + ox, y + h + oy), (x + w, y + h)]
+    f.poly(T, fill=fill, fo=0.10, stroke=color, w=1.8)
+    f.poly(R, fill=fill, fo=0.2, stroke=color, w=1.8)
+    f.poly(F, fill=fill, fo=0.05, stroke=color, w=1.8)
+    f.line((x, y), (x + ox, y + oy), color=color, w=1.3, dash="4 3")
+    f.line((x + ox, y + oy), (x + w + ox, y + oy), color=color, w=1.3, dash="4 3")
+    f.line((x + ox, y + oy), (x + ox, y + h + oy), color=color, w=1.3, dash="4 3")
+
+
+def _prism(f, x, y, w, h, d, color=_FIG_INK, fill=_FIG_BLUE):
+    """밑면이 삼각형인 삼각기둥 (앞면 삼각형을 오른쪽 위로 밀었다). 보이는 면: 앞면 삼각형, 오른쪽 비탈면."""
+    ox, oy = d * 0.46, d * 0.30
+    A, B, C = (x, y), (x + w, y), (x + w * 0.35, y + h)
+    A2, B2, C2 = (A[0] + ox, A[1] + oy), (B[0] + ox, B[1] + oy), (C[0] + ox, C[1] + oy)
+    f.poly([B, B2, C2, C], fill=fill, fo=0.2, stroke=color, w=1.8)
+    f.poly([A, B, C], fill=fill, fo=0.05, stroke=color, w=1.8)
+    f.line(A, A2, color=color, w=1.3, dash="4 3")
+    f.line(A2, B2, color=color, w=1.3, dash="4 3")
+    f.line(A2, C2, color=color, w=1.3, dash="4 3")
+    f.line(C, C2, color=color, w=1.8)
+
+
+def _draw_solid(f, kind, cx, by, k):
+    """kind 입체를 크기 배율 k 로 (cx, by) 를 바닥 가운데로 그린다. 위쪽 끝의 높이를 돌려준다."""
+    if kind == "원기둥":
+        _cylinder(f, cx, by, 0.5 * k, 1.0 * k)
+        return 1.0 * k + 0.14 * k
+    if kind == "원뿔":
+        _cone(f, cx, by, 0.55 * k, 1.1 * k)
+        return 1.1 * k
+    if kind == "구":
+        _sphere(f, cx, by + 0.6 * k, 0.6 * k)
+        return 1.2 * k
+    if kind == "직육면체":
+        _box(f, cx - 0.45 * k - 0.1 * k, by, 0.9 * k, 0.8 * k, 0.8 * k)
+        return 0.8 * k + 0.25 * k
+    _prism(f, cx - 0.68 * k, by, 1.0 * k, 0.9 * k, 0.8 * k)
+    return 0.9 * k + 0.25 * k
+
+
+def fig_similar_solids(kind, ratios):
+    """닮음비가 ratios 인 닮은 입체도형 (원기둥·원뿔·구·직육면체·삼각기둥)."""
+    ratios = [float(r) for r in ratios]
+    gap = 0.5
+    widths = [({"원기둥": 1.2, "원뿔": 1.3, "구": 1.4, "직육면체": 1.5, "삼각기둥": 1.6}.get(kind, 1.4)) * r for r in ratios]
+    total = sum(widths) + gap * (len(ratios) - 1)
+    hmax = max(1.4 * r for r in ratios)
+    f = _Fig(0, total, -0.45, hmax, width=340, equal=True, pad=(12, 12, 12, 24))
+    x = 0.0
+    for r, w in zip(ratios, widths):
+        _draw_solid(f, kind, x + w / 2, 0.0, r)
+        f.text((x + w / 2, 0), str(int(r)) if r == int(r) else _fn(r), dy=23, size=14, italic=False)
+        x += w + gap
+    return f.svg()
+
+
+def fig_cuboid(a, b, h, cuts, lab_a, lab_b, lab_h, cut_labels=()):
+    """가로 a, 세로 b, 높이 h 인 직육면체에서 cuts = [(위치 'FL'/'BR', 가로, 세로, 높이)] 를 윗부분 모서리에서 잘라 낸 입체.
+    단위 칸으로 나누어 겉면만 그리고, 앞에 있는 칸이 뒤를 가리도록 뒤에서부터 칠한다."""
+    solid = set()
+    for x in range(a):
+        for y in range(b):
+            for z in range(h):
+                solid.add((x, y, z))
+    for pos, cw, cl, ch in cuts:
+        x0 = 0 if pos == "FL" else a - cw
+        y0 = 0 if pos == "FL" else b - cl
+        for x in range(x0, x0 + cw):
+            for y in range(y0, y0 + cl):
+                for z in range(h - ch, h):
+                    solid.discard((x, y, z))
+    KX, KY = 0.46, 0.30
+
+    def proj(x, y, z):
+        return (x + KX * y, z + KY * y)
+
+    f = _fit([proj(0, 0, 0), proj(a, 0, 0), proj(a, b, 0), proj(a, b, h), proj(0, 0, h), proj(0, b, h)], width=340, max_h=360, pad=(50, 50, 30, 34))
+    shade = {"top": "#eaf1fe", "front": "#f8faff", "right": "#cddbf7"}
+    order = sorted(solid, key=lambda v: (-v[1], v[0], v[2]))
+
+    def S(v):
+        return v in solid
+
+    for (x, y, z) in order:
+        faces = []
+        if not S((x, y, z + 1)):
+            faces.append(("top", [(x, y, z + 1), (x + 1, y, z + 1), (x + 1, y + 1, z + 1), (x, y + 1, z + 1)], (0, 0, 1)))
+        if not S((x, y - 1, z)):
+            faces.append(("front", [(x, y, z), (x + 1, y, z), (x + 1, y, z + 1), (x, y, z + 1)], (0, -1, 0)))
+        if not S((x + 1, y, z)):
+            faces.append(("right", [(x + 1, y, z), (x + 1, y + 1, z), (x + 1, y + 1, z + 1), (x + 1, y, z + 1)], (1, 0, 0)))
+        for kind, corners, n in faces:
+            pts = [proj(*c) for c in corners]
+            f.poly(pts, fill=shade[kind], fo=1, stroke=shade[kind], w=0.6, close=True)
+            # 테두리: 이웃 칸과 같은 평면으로 이어지지 않는 변만 그린다.
+            dirs = {
+                "top": [((0, -1, 0), (0, 0)), ((1, 0, 0), (1, 2)), ((0, 1, 0), (2, 3)), ((-1, 0, 0), (3, 0))],
+                "front": [((0, 0, -1), (0, 1)), ((1, 0, 0), (1, 2)), ((0, 0, 1), (2, 3)), ((-1, 0, 0), (3, 0))],
+                "right": [((0, 0, -1), (0, 1)), ((0, 1, 0), (1, 2)), ((0, 0, 1), (2, 3)), ((0, -1, 0), (3, 0))],
+            }[kind]
+            edges = [(corners[0], corners[1], dirs[0][0]), (corners[1], corners[2], dirs[1][0]),
+                     (corners[2], corners[3], dirs[2][0]), (corners[3], corners[0], dirs[3][0])]
+            for p, q, d in edges:
+                nb = (x + d[0], y + d[1], z + d[2])
+                up = (nb[0] + n[0], nb[1] + n[1], nb[2] + n[2])
+                if S(up) or not S(nb):
+                    f.line(proj(*p), proj(*q), color=_FIG_INK, w=1.7, cap="round")
+    # 길이 글자
+    f.text(proj(a / 2, 0, 0), lab_a, dy=19, size=14, italic=False)
+    f.text(proj(a + 0.0, b / 2, 0), lab_b, dx=16, dy=12, size=14, italic=False, anchor="start")
+    f.text(proj(0, 0, h / 2), lab_h, dx=-10, dy=5, size=14, italic=False, anchor="end")
+    for (pos, cw, cl, ch), (t1, t2) in zip(cuts, cut_labels):
+        if pos == "FL":
+            base = proj(0, 0, h)
+            if t1:
+                f.text(proj(cw / 2, 0, h), t1, dy=-8, size=12, italic=False, color=_FIG_RED)
+            if t2:
+                f.text(proj(0, 0, h - ch / 2), t2, dx=-6, dy=4, size=12, italic=False, color=_FIG_RED, anchor="end")
+        else:
+            if t1:
+                f.text(proj(a - cw / 2, b, h), t1, dy=-8, size=12, italic=False, color=_FIG_RED)
+            if t2:
+                f.text(proj(a, b, h - ch / 2), t2, dx=6, dy=4, size=12, italic=False, color=_FIG_RED, anchor="start")
+    return f.svg()
+
+
+def fig_pour_cyl(r_text, h_text):
+    """밑면의 반지름이 r_text 인 원기둥 (높이는 h_text 로 적는다)."""
+    f = _Fig(-1.4, 1.4, -0.45, 2.1, width=260, equal=True, pad=(14, 14, 14, 14))
+    _cylinder(f, 0, 0, 0.8, 1.7)
+    f.line((0, 1.7), (0.8, 1.7), color=_FIG_RED, w=1.5)
+    f.text((0.4, 1.7), r_text, dy=-14, size=13, italic=False, color=_FIG_RED)
+    f.text((-0.8, 0.85), h_text, dx=-8, dy=4, size=13, italic=False, anchor="end", color=_FIG_RED)
+    return f.svg()
+
+
+def fig_pour_cones(cones, r_text, h0_text):
+    """원뿔 모양 그릇(들)의 물을 원기둥 그릇에 붓는 그림. cones = [(R, H, R글자, H글자)], 원기둥에는 처음 물의 높이 h0 를 적는다."""
+    n = len(cones)
+    rmax = max(c[0] for c in cones)
+    hmax = max(c[1] for c in cones)
+    cw = [max(c[0], 0.3 * rmax) / rmax * 1.0 for c in cones]
+    ch = [max(c[1], 0.4 * hmax) / hmax * 2.0 for c in cones]
+    r_cyl, h_cyl = 0.9, 2.3
+    width = sum(2 * w for w in cw) + 0.5 * (n - 1) + 1.1 + 2 * r_cyl
+    f = _Fig(-0.1, width + 0.75, -0.55, 2.95, width=390, equal=True, pad=(14, 14, 12, 24))
+    x = 0.0
+    for (R, H, rt, ht), w, hh in zip(cones, cw, ch):
+        cx = x + w
+        _cone(f, cx, 0, w, hh)
+        f.line((cx, 0), (cx + w, 0), color=_FIG_RED, w=1.4)
+        f.text((cx + w / 2, 0), rt, dy=19, size=12, italic=False, color=_FIG_RED)
+        f.line((cx, 0), (cx, hh), color=_FIG_RED, w=1.4, dash="4 3")
+        f.text((cx, hh / 2), ht, dx=-4, dy=4, size=12, italic=False, color=_FIG_RED, anchor="end")
+        x += 2 * w + 0.5
+    ax0 = x - 0.35
+    x += 0.35
+    cx = x + r_cyl
+    wl = h_cyl * 0.36
+    _cylinder(f, cx, 0, r_cyl, h_cyl, water=wl)
+    f.line((cx, h_cyl), (cx + r_cyl, h_cyl), color=_FIG_RED, w=1.4)
+    f.text((cx + r_cyl / 2, h_cyl), r_text, dy=-13, size=12, italic=False, color=_FIG_RED)
+    f.text((cx + r_cyl, wl / 2), h0_text, dx=8, dy=4, size=12, italic=False, color=_FIG_RED, anchor="start")
+    y_ar = h_cyl * 0.62
+    f.line((ax0, y_ar), (x - 0.12, y_ar), color=_FIG_GRAY, w=1.8)
+    px_, py_ = f.X(x - 0.04), f.Y(y_ar)
+    f.add(f'<polygon points="{_fn(px_)},{_fn(py_)} {_fn(px_ - 9)},{_fn(py_ - 4.5)} {_fn(px_ - 9)},{_fn(py_ + 4.5)}" fill="{_FIG_GRAY}"/>')
+    return f.svg()
+
+
+def fig_garden_cross(W, H, road, lab_w, lab_h):
+    """가로 W, 세로 H 인 직사각형 정원에 폭이 일정(road)한 십자 모양의 길. 길의 폭은 x 로 적는다."""
+    ux, uy = _clamp_len([W, H], 0.6)
+    w, h = ux * 4.6, uy * 4.6
+    rw = max(0.28, road / max(W, H) * 4.6)
+    f = _fit([(0, 0), (w, h)], pad=(40, 56, 24, 34))
+    cx, cy = w * 0.38, h * 0.42                           # 길의 왼쪽·아래쪽 위치
+    f.poly([(0, 0), (w, 0), (w, h), (0, h)], fill=_FIG_GREEN, fo=0.16, w=2.0)
+    f.poly([(cx, 0), (cx + rw, 0), (cx + rw, h), (cx, h)], fill="#9ca3af", fo=0.55, stroke=None)
+    f.poly([(0, cy), (w, cy), (w, cy + rw), (0, cy + rw)], fill="#9ca3af", fo=0.55, stroke=None)
+    f.poly([(0, 0), (w, 0), (w, h), (0, h)], stroke=_FIG_INK, w=2.0)
+    f.line((cx, 0), (cx, h), color=_FIG_INK, w=1.3, dash="5 3")
+    f.line((cx + rw, 0), (cx + rw, h), color=_FIG_INK, w=1.3, dash="5 3")
+    f.line((0, cy), (w, cy), color=_FIG_INK, w=1.3, dash="5 3")
+    f.line((0, cy + rw), (w, cy + rw), color=_FIG_INK, w=1.3, dash="5 3")
+    f.text((cx + rw / 2, h * 0.86), "x", italic=True, color=_FIG_RED, size=16)
+    f.text((w * 0.84, cy + rw / 2), "x", dy=5, italic=True, color=_FIG_RED, size=16)
+    f.text((w / 2, 0), lab_w, dy=22, size=14, italic=False)
+    f.text((w, h / 2), lab_h, dx=10, dy=5, size=14, italic=False, anchor="start")
+    return f.svg()
+
+
+def fig_two_squares(L, ap, lab_ab, names=("A", "P", "B")):
+    """선분 AB 위의 점 P 를 잡아 AP, BP 를 한 변으로 하는 두 정사각형. AB 의 길이만 적는다."""
+    A_, P_, B_ = names
+    bp = L - ap
+    A, P, B = (0.0, 0.0), (ap, 0.0), (float(L), 0.0)
+    f = _fit([A, B, (0, ap), (L, bp)], pad=(24, 24, 20, 62), max_h=300)
+    f.poly([A, P, (ap, ap), (0, ap)], fill=_FIG_BLUE, fo=0.14, stroke=_FIG_BLUE, w=2.0)
+    f.poly([P, B, (L, bp), (ap, bp)], fill=_FIG_RED, fo=0.14, stroke=_FIG_RED, w=2.0)
+    f.line(A, B, w=2.2)
+    for nm, p in ((A_, A), (P_, P), (B_, B)):
+        f.dot(p, r=3)
+        f.text(p, nm, dy=19, italic=True)
+    f.line((0, -L * 0.09), (L, -L * 0.09), color=_FIG_GRAY, w=1.3)
+    f.text((L / 2, -L * 0.09), lab_ab, dy=19, size=13, italic=False)
+    return f.svg()
 
 
 def _tidy_math(text):
@@ -3106,7 +4783,7 @@ def g2_func_mid(target):
         f"$${y1} = {m} \\times {x1} + b$$\n\n"
         f"따라서 $y$절편 $b = {target}$ 입니다."
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_line_points([(x1, y1), (x2, y2)], b_ring=target)), exp, str(target)
 
 
 def _split_three(total):
@@ -3202,7 +4879,7 @@ def g2_func_high(target):
         f"$${y3} = {m} \\times {x3} + b$$\n\n"
         f"따라서 $y$절편 $b = {target}$ 입니다."
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_two_parallel(m, k0, (x1, y1), (x2, y2), (x3, y3), target)), exp, str(target)
 
 
 def g2_exp_high(target):
@@ -3288,7 +4965,7 @@ def g3_quad_func_mid(target):
         f"$y$축과 만나는 점은 $x = 0$일 때이므로:\n\n"
         f"$$y = {a} \\times {(p + m) ** 2} {_sgn(q_val + n)} = {target}$$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_parabola(a, p + m, q_val + n, ring=(0, target))), exp, str(target)
 
 
 def g3_sqrt_mid(target):
@@ -3362,7 +5039,7 @@ def g3_quad_func_high(target):
         f"$y$축과 만나는 점은 $x = 0$일 때이므로:\n\n"
         f"$$y = -{a} \\times {(p + m + h) ** 2} {_sgn(-(q_val + n) + k)} = {target}$$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_parabola(-a, p + m + h, -(q_val + n) + k, ring=(0, target))), exp, str(target)
 
 
 def g3_sqrt_high(target):
@@ -3723,7 +5400,7 @@ def f_prop(target, level):
             f"$y=ax$에 $x={p}$, $y={q_}$의 값을 대입하면 $a={_frac(q_, p)}$이므로 $y={_frac(q_, p)}x$입니다.\n\n"
             f"$x={c}$를 대입하면 $y={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_prop_line(p, q_)), exp, str(target)
     if level == 3:
         # 교점 (m, am) 의 y좌표 am 이 target 이 되도록 a, m 을 고르고, b = a·m² 이 되게 한다.
         # (m=1 은 계산이 너무 쉬워 빼고, b 가 100 을 넘는 경우도 뺀다.)
@@ -3747,7 +5424,7 @@ def f_prop(target, level):
             f"제1사분면이므로 $x={m}$입니다.\n\n"
             f"따라서 ${y_line}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_prop_hyper(p, a * p, r, b // r, cross=(m, target))), exp, str(target)
     a, b = random.choice(
         [(a, target // a) for a in range(1, 16) if target % a == 0 and target // a <= 15]
     )
@@ -3765,7 +5442,7 @@ def f_prop(target, level):
         f"$y=\\frac{{b}}{{x}}$에 $x={r}$, $y={b // r}$의 값을 대입하면 $b={r}\\times{b // r}={b}$입니다.\n\n"
         f"따라서 ${ask}={a}{sym}{b}={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_prop_hyper(p, a * p, r, b // r)), exp, str(target)
 
 
 def _factor_pairs(n, lo=1, hi=12):
@@ -3818,7 +5495,7 @@ def f_area(target, level):
         + ("\n\n(단, $\\overline{AB}\\parallel\\overline{DC}$이다.)" if level == 3 else "")
     )
     exp = f"좌표를 이용하여 길이를 구하면\n\n{exp_core}"
-    return q, exp, str(target)
+    return q + fig_md(fig_grid_polygon(pts, name)), exp, str(target)
 
 
 # ---------- 5. 기본 도형과 작도 ----------
@@ -3860,7 +5537,7 @@ def f_line_angle(target, level):
         f"$${' + '.join(_ang(a, b) for a, b in exprs)} = 180^\\circ$$\n\n"
         f"$${_lin(A, B)} = 180$$\n\n따라서 $x={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_line_angles([_plain(_ang(a, b)) for a, b in exprs], [a * target + b for a, b in exprs])), exp, str(target)
 
 
 def _pair_equal(t):
@@ -3890,7 +5567,7 @@ def f_parallel_angle(target, level):
             f"{kind}의 크기는 서로 같으므로\n\n$${_lin(a1, b1)} = {_lin(a2, b2)}$$\n\n"
             f"따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parallel_pair(kind, _plain(_ang(a1, b1)), _plain(_ang(a2, b2)), a1 * target + b1)), exp, str(target)
     if level == 2:
         while True:
             v1, v2 = random.randint(20, 80), random.randint(20, 80)
@@ -3909,7 +5586,7 @@ def f_parallel_angle(target, level):
             f"$${_lin(a3, b3)} = {_fac(_lin(a1, b1))} + {_fac(_lin(a2, b2))}$$\n\n"
             f"따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parallel_bent(v1, v2, _plain(_ang(a1, b1)), _plain(_ang(a2, b2)), _plain(_ang(a3, b3)))), exp, str(target)
     x = random.randint(1, target - 1)
     y = target - x
     (a1, b1), (a2, b2) = _pair_equal(x)
@@ -3924,7 +5601,7 @@ def f_parallel_angle(target, level):
         f"동측내각의 합은 $180^\\circ$이므로 ${_lin(c1 + c2, d1 + d2, 'y')}=180$, 즉 $y={y}$\n\n"
         f"따라서 $x+y={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_parallel_two(_plain(_ang(a1, b1)), _plain(_ang(a2, b2)), _plain(_ang(c1, d1, 'y')), _plain(_ang(c2, d2, 'y')), a1 * x + b1, c1 * y + d1)), exp, str(target)
 
 
 # ---------- 6. 평면도형의 성질 ----------
@@ -3941,7 +5618,7 @@ def f_polygon_angle(target, level):
         f"{n}각형의 내각의 크기의 합은 $180^\\circ\\times({n}-2)={total}^\\circ$이므로\n\n"
         f"$${_lin(A, B)} = {total}$$\n\n따라서 $x={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_polygon_angles([_plain(_ang(a, b)) for a, b in exprs], [a * target + b for a, b in exprs])), exp, str(target)
 
 
 def f_sector(target, level):
@@ -3980,7 +5657,7 @@ def f_sector(target, level):
         formula = f"$$\\pi r^2\\times\\frac{{{X}}}{{360}}={pi}$$"
         head = "중심각의 크기의 합이 " + f"${X}^\\circ$이므로 반지름을 $r$ cm라 하면 넓이의 합은"
     exp = f"{head}\n\n{formula}\n\n따라서 $r={target}$"
-    return q, exp, str(target)
+    return q + fig_md(fig_sectors(angs)), exp, str(target)
 
 
 # ---------- 7. 입체도형의 성질 ----------
@@ -4008,7 +5685,7 @@ def f_cuboid_cut(target, level):
             f"${vol}$ cm³일 때, 이 직육면체의 높이를 구하시오."
         )
         exp = f"높이를 $h$ cm라 하면 ${a}\\times{b}\\times h={vol}$이므로 $h={target}$"
-        return q, exp, str(target)
+        return q + fig_md(fig_cuboid(a, b, target, [], f'{a} cm', f'{b} cm', 'h')), exp, str(target)
     if level == 2:
         c = cuts[0][0]
         cut_text = f"한 모서리의 길이가 ${c}$ cm인 정육면체 모양을 잘라 낸"
@@ -4029,7 +5706,9 @@ def f_cuboid_cut(target, level):
         f"$${a}\\times{b}\\times h - ({cut_expr}) = {vol}$$\n\n"
         f"$${a * b}h = {vol + cut_vol}$$\n\n따라서 $h={target}$"
     )
-    return q, exp, str(target)
+    pos_cuts = [('FL', cuts[0][0], cuts[0][1], cuts[0][2])] + ([('BR', cuts[1][0], cuts[1][1], cuts[1][2])] if len(cuts) > 1 else [])
+    cut_labels = [(f'{cuts[0][0]} cm', f'{cuts[0][2]} cm')] + ([(f'{cuts[1][0]} cm', f'{cuts[1][2]} cm')] if len(cuts) > 1 else [])
+    return q + fig_md(fig_cuboid(a, b, target, pos_cuts, f'{a} cm', f'{b} cm', 'h', cut_labels)), exp, str(target)
 
 
 def f_pour(target, level):
@@ -4041,7 +5720,7 @@ def f_pour(target, level):
             "이 원기둥의 높이를 구하시오."
         )
         exp = f"높이를 $h$ cm라 하면 $\\pi\\times{r}^2\\times h={r * r * target}\\pi$이므로 $h={target}$"
-        return q, exp, str(target)
+        return q + fig_md(fig_pour_cyl(f'{r} cm', 'h')), exp, str(target)
     h0 = random.randint(1, target - 1)  # 원기둥 그릇에 처음부터 들어 있던 물의 높이
     w = target - h0                     # 새로 부은 물이 더해 주는 높이
     r = random.randint(2, 5)
@@ -4059,7 +5738,7 @@ def f_pour(target, level):
             f"새로 부은 물이 더해 주는 높이를 $h$ cm라 하면 $\\pi\\times{r}^2\\times h={R * R * H // 3}\\pi$이므로 $h={w}$입니다.\n\n"
             f"따라서 물의 높이는 ${h0}+{w}={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_pour_cones([(R, H, f'{R} cm', f'{H} cm')], f'{r} cm', f'{h0} cm')), exp, str(target)
 
     def make():
         r_ = random.randint(2, 5)
@@ -4089,7 +5768,7 @@ def f_pour(target, level):
         f"새로 부은 물이 더해 주는 높이를 $h$ cm라 하면 $\\pi\\times{r}^2\\times h=\\frac{{1}}{{3}}\\pi\\times{v1 + v2}$이므로 $h={w}$입니다.\n\n"
         f"따라서 물의 높이는 ${h0}+{w}={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_pour_cones([(R1, H1, f'{R1} cm', f'{H1} cm'), (R2, H2, f'{R2} cm', f'{H2} cm')], f'{r} cm', f'{h0} cm')), exp, str(target)
 
 
 # ---------- 8. 자료의 정리와 해석 ----------
@@ -4557,7 +6236,7 @@ def f_func_intercept(target, level):
             f"$x$절편이 ${p}$이므로 $y=0$일 때 $x={p}$입니다.\n\n"
             f"$0={a}\\times({p})+b$에서 $b={target}$이므로 $y$절편은 ${target}$입니다."
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_icpt_x(p, target, _plain(f'y = {_coef(a)} + b'))), exp, str(target)
     if level == 2:
         n = random.choice([d for d in range(1, target + 1) if target % d == 0 and d >= 2 or target == 2])
         c = -target // n
@@ -4573,7 +6252,7 @@ def f_func_intercept(target, level):
             f"$y={_lin(m, c)}$의 $y$절편은 ${c}$입니다.\n\n"
             f"$y={_coef(n)} + a$의 $x$절편은 ${xi}$이므로 ${xi}={c}$, 즉 $a={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_icpt_eq(c, m, n, _plain(f'y = {_lin(m, c)}'), _plain(f'y = {_coef(n)} + a'))), exp, str(target)
     # 기울기 a 와 y절편 b 를 둘 다 구해야 하는 문제. (기울기만 비교하면 끝나는 문제는 상이라 하기에 너무 쉽다.)
     while True:
         m, e = _nonzero(-4, 4), _nonzero(-6, 6)
@@ -4589,7 +6268,7 @@ def f_func_intercept(target, level):
         f"$a={m}$, $b {_sgn(e)}={d}$에서 $b={d - e}$입니다.\n\n"
         f"따라서 $a+b={m} {_sgn(d - e)}={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_icpt_shift(m, d, e, _plain(f'y = {_lin(m, d)}'))), exp, str(target)
 
 
 def f_func_cross(target, level):
@@ -4609,7 +6288,7 @@ def f_func_cross(target, level):
             f"두 식의 $y$가 같을 때의 $x$의 값이 교점의 $x$좌표이므로\n\n"
             f"$${_lin(m1, b1)} = {_lin(m2, b2)}$$\n\n따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_cross([(m1, b1, _plain(f'y = {_lin(m1, b1)}'), _FIG_BLUE), (m2, b2, _plain(f'y = {_lin(m2, b2)}'), _FIG_RED)], (target, y0))), exp, str(target)
     if level == 2:
         while True:
             a1, b1, a2, b2 = _nonzero(-5, 5), _nonzero(-5, 5), _nonzero(-5, 5), _nonzero(-5, 5)
@@ -4627,7 +6306,8 @@ def f_func_cross(target, level):
             f"$$\\begin{{cases}}{e1}\\\\{e2}\\end{{cases}}$$\n\n"
             f"이 연립방정식의 해는 $x={target}$, $y={y0}$입니다."
         )
-        return q, exp, str(target)
+        lines = [(-a1 / b1, c1 / b1, _plain(e1), _FIG_BLUE), (-a2 / b2, c2 / b2, _plain(e2), _FIG_RED)]
+        return q + fig_md(fig_cross(lines, (target, y0))), exp, str(target)
     while True:
         m1, m2, m3 = random.sample([-4, -3, -2, -1, 1, 2, 3, 4], 3)
         X0 = random.randint(-4, 4)
@@ -4643,7 +6323,7 @@ def f_func_cross(target, level):
         f"앞의 두 직선의 교점은 $({X0}, {y0})$입니다.\n\n"
         f"세 번째 직선도 이 점을 지나므로 ${y0}={m3}\\times({X0})+k$에서 $k={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_cross_three([(m1, b1, _plain(f'y = {_lin(m1, b1)}'), _FIG_BLUE), (m2, b2, _plain(f'y = {_lin(m2, b2)}'), _FIG_RED), (m3, target, _plain(f'y = {_coef(m3)} + k'), _FIG_GREEN)], (X0, y0), (0, target), 'k')), exp, str(target)
 
 
 # ---------- 6. 삼각형과 사각형의 성질 ----------
@@ -4669,7 +6349,7 @@ def f_pythag(target, level):
             f"$$\\overline{{AB}}^2={pw[0]}^2+{pw[1]}^2={sq[0]}+{sq[1]}={T2}$$\n\n"
             f"따라서 $\\overline{{AB}}={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_right_triangle('C', 'B', 'A', math.sqrt(sq[1]), math.sqrt(sq[0]), _plain(sides[1]), _plain(sides[0]))), exp, str(target)
     tris = ["ABC", "ACD", "ADE"][: n - 1]
     angs = "=".join(f"\\angle {t_}" for t_ in tris)
     seg = ["AB", "BC", "CD", "DE"][:n]
@@ -4691,7 +6371,7 @@ def f_pythag(target, level):
         "피타고라스 정리를 차례로 이용하면\n\n" + "\n\n".join(lines)
         + f"\n\n따라서 $\\overline{{{end}}}={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_pythag_spiral('ABCDE'[:n + 1], [math.sqrt(s_) for s_ in sq], [_plain(sd) for sd in sides])), exp, str(target)
 
 
 def _eq_exprs(t, lo, hi):
@@ -4713,7 +6393,7 @@ def f_parallelogram(target, level):
             f"평행사변형의 두 쌍의 대변의 길이는 각각 같으므로\n\n$${_lin(a, b)} = {_lin(c, d)}$$\n\n"
             f"따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parallelogram('ABCD', random.randint(60, 75), ab=_plain(_fac(_lin(a, b))) + ' cm', dc=_plain(_fac(_lin(c, d))) + ' cm')), exp, str(target)
     if level == 2:
         while True:
             a, c = random.sample(range(1, 6), 2)
@@ -4732,7 +6412,7 @@ def f_parallelogram(target, level):
             f"$${_lin(e, f)} = 2\\left({_fac(_lin(a, b))} + {_fac(_lin(c, d))}\\right)$$\n\n"
             f"따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parallelogram('ABCD', random.randint(60, 75), ab=_plain(_fac(_lin(a, b))) + ' cm', ad=_plain(_fac(_lin(c, d))) + ' cm')), exp, str(target)
     x = random.randint(1, target - 1)
     y = target - x
     (a, b), (c, d), _ = _eq_exprs(x, 8, 40)
@@ -4747,7 +6427,7 @@ def f_parallelogram(target, level):
         f"이웃한 두 각의 크기의 합은 $180^\\circ$이므로 ${_lin(e + g, f + h, 'y')}=180$, 즉 $y={y}$\n\n"
         f"따라서 $x+y={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_parallelogram('ABCD', e * y + f, ab=_plain(_fac(_lin(a, b))) + ' cm', dc=_plain(_fac(_lin(c, d))) + ' cm', ang_a=_plain(_ang(e, f, 'y')), ang_b=_plain(_ang(g, h, 'y')))), exp, str(target)
 
 
 _RIGHT_TRIPLES = [(3, 4, 5), (5, 12, 13), (8, 15, 17), (7, 24, 25)]
@@ -4772,7 +6452,7 @@ def f_center(target, level):
             f"$$\\frac{{1}}{{2}}\\times{a}\\times{b}=\\frac{{1}}{{2}}\\times r\\times({a}+{b}+{c})$$\n\n"
             f"$$r=\\frac{{{a * b}}}{{{a + b + c}}}={target}$$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_right_triangle('A', 'B', 'C', a, b, f'{a} cm', f'{b} cm', f'{c} cm', incircle=True)), exp, str(target)
     if level == 2:
         while True:
             a, c = random.randint(1, 5), random.randint(1, 5)
@@ -4788,7 +6468,7 @@ def f_center(target, level):
             "외심 $O$에 대하여 $\\angle BOC$는 $\\angle A$의 2배이므로\n\n"
             f"$${_lin(c, d)} = 2{_fac(_lin(a, b))}$$\n\n따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_circumcenter(('A', 'B', 'C', 'O'), v, _plain(_ang(a, b)), _plain(_ang(c, d)))), exp, str(target)
     while True:
         B, C = random.randint(35, 90), random.randint(35, 90)
         if (B + C) % 2 == 0 and B + C < 170:
@@ -4808,7 +6488,7 @@ def f_center(target, level):
         f"$${_lin(e, f)} = 180 - \\frac{{1}}{{2}}\\left({_fac(_lin(a, b))} + {_fac(_lin(c, d))}\\right)$$\n\n"
         f"따라서 $x={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_incenter(('A', 'B', 'C', 'I'), B, C, _plain(_ang(a, b)), _plain(_ang(c, d)), _plain(_ang(e, f)))), exp, str(target)
 
 
 # ---------- 7. 도형의 닮음 ----------
@@ -4826,7 +6506,7 @@ def f_similar(target, level):
             f"넓이의 비는 닮음비의 제곱의 비이므로 $1:{n * n}$입니다.\n\n"
             f"작은 {shape}의 넓이는 ${S}\\times\\frac{{1}}{{{1 + n * n}}}={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_similar_plane(shape, n)), exp, str(target)
     # 부피의 합(target × (1+8+n³ …))이 네 자리 이상으로 커지지 않게 가장 큰 닮음비를 작게 잡는다.
     ratios = [1, random.choice([2, 3])] if level == 2 else [1, 2, 3]
     total = sum(r ** 3 for r in ratios)
@@ -4841,7 +6521,7 @@ def f_similar(target, level):
         f"부피의 비는 닮음비의 세제곱의 비이므로 ${':'.join(str(r ** 3) for r in ratios)}$입니다.\n\n"
         f"가장 작은 {solid}의 부피는 ${V}\\times\\frac{{1}}{{{total}}}={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_similar_solids(solid, ratios)), exp, str(target)
 
 
 def f_parallel_prop(target, level):
@@ -4862,7 +6542,7 @@ def f_parallel_prop(target, level):
             f"$\\overline{{AB}}:\\overline{{AD}}=\\overline{{BC}}:\\overline{{DE}}$이므로\n\n"
             f"$${a + b}:{a}=x:{d}$$\n\n따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parallel_prop1('ABCDE', f'{a} cm', f'{b} cm', f'{d} cm', a, b)), exp, str(target)
     if level == 2:
         while True:
             a, b = random.randint(1, 9), random.randint(1, 9)
@@ -4880,7 +6560,7 @@ def f_parallel_prop(target, level):
             f"$\\overline{{AB}}:\\overline{{BC}}=\\overline{{DE}}:\\overline{{EF}}$\n\n$${a}:{b}={d}:x$$\n\n"
             f"따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parallel_prop2('ABC', 'DEF', f'{a} cm', f'{b} cm', f'{d} cm', a, b)), exp, str(target)
     while True:
         m, n = random.randint(1, 4), random.randint(1, 4)
         u, v = random.randint(1, 30), random.randint(1, 30)
@@ -4898,7 +6578,7 @@ def f_parallel_prop(target, level):
         f"$$\\overline{{EF}}={u}+({v}-{u})\\times\\frac{{{m}}}{{{m + n}}}=\\frac{{{n}\\times{u}+{m}\\times{v}}}{{{m + n}}}$$\n\n"
         f"따라서 $\\overline{{EF}}={target}$ cm"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_trapezoid_mid('ABCDEF', f'{u} cm', f'{v} cm', str(m), str(n), u, v, m, n)), exp, str(target)
 
 
 # ---------- 8. 경우의 수와 확률 ----------
@@ -5329,7 +7009,7 @@ def f_quad_word(target, level):
             f"$$({W}-x)({H}-x)={A}$$\n\n$$x^2-{W + H}x+{W * H - A}=0$$\n\n"
             f"$(x-{target})(x-{W + H - target})=0$에서 $x<{min(W, H)}$이므로 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_garden_cross(W, H, target, f'{W} m', f'{H} m')), exp, str(target)
     while True:
         L = random.randint(target + 1, 2 * target - 1) if target > 1 else None
         if L:
@@ -5345,7 +7025,7 @@ def f_quad_word(target, level):
         f"$$x^2+({L}-x)^2={S}$$\n\n$$2x^2-{2 * L}x+{L * L - S}=0$$\n\n"
         f"$x={target}$ 또는 $x={L - target}$이고 $\\overline{{AP}}>\\overline{{BP}}$이므로 $x={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_two_squares(L, target, f'{L} cm')), exp, str(target)
 
 
 # ---------- 4. 이차함수와 그래프 ----------
@@ -5355,7 +7035,7 @@ def f_parabola_a(target, level):
         p = random.choice([-4, -3, -2, -1, 1, 2, 3, 4])
         q = f"이차함수 $y=ax^2$의 그래프가 점 $({p}, {target * p * p})$를 지날 때, 상수 $a$의 값을 구하시오."
         exp = f"$y=ax^2$에 $({p}, {target * p * p})$를 대입하면 ${target * p * p}=a\\times({p})^2$이므로 $a={target}$"
-        return q, exp, str(target)
+        return q + fig_md(fig_parabola(target, 0, 0, points=[(p, target * p * p, _pt_txt(p, target * p * p))])), exp, str(target)
     if level == 2:
         p, qv = _nonzero(-5, 5), _nonzero(-9, 9)
         m = p + random.choice([-3, -2, -1, 1, 2, 3])
@@ -5367,7 +7047,7 @@ def f_parabola_a(target, level):
             f"$({m}, {n})$을 대입하면 ${n}=a({m} {_sgn(-p)})^2 {_sgn(qv)}$이므로\n\n"
             f"${n - qv}=a\\times{(m - p) ** 2}$, 즉 $a={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parabola(target, p, qv, points=[(m, n, _pt_txt(m, n))], vertex_text=_pt_txt(p, qv))), exp, str(target)
     while True:
         a = random.choice([1, 2, 3, -1, -2, -3])
         p = random.randint(-3, 5)
@@ -5384,7 +7064,7 @@ def f_parabola_a(target, level):
         f"$$y={_lead(a)}(x {_sgn(-p)})^2 {_sgn(qv)}$$\n\n"
         f"이므로 꼭짓점의 좌표는 $({p}, {qv})$이고, $p+q={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_parabola(a, p, qv, vertex_text='(p, q)')), exp, str(target)
 
 
 def _expanded(a):
@@ -5409,7 +7089,7 @@ def f_parabola_shift(target, level):
             f"평행이동한 그래프의 식은 $y={_lead(a)}(x-p)^2$이고, 이것을 전개하면 $y={_expanded(a)}$ 꼴에서 $q=0$입니다.\n\n"
             f"일차항의 계수를 비교하면 ${-2 * a}p={b}$이므로 $p={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parabola_shift(a, p, 0, show_q=False)), exp, str(target)
     while True:
         p = random.randint(-3, max(target - 1, 1))      # p 가 크면 상수항 a·p² 가 세 자리 중반까지 커진다.
         qv = target - p
@@ -5428,7 +7108,7 @@ def f_parabola_shift(target, level):
             f"일차항과 상수항의 계수를 비교하면\n\n$${-2 * a}p={B}$$\n\n$${_lead(a)}p^2+q={C}$$\n\n"
             f"에서 $p={p}$, $q={qv}$입니다. 따라서 $p+q={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parabola_shift(a, p, qv)), exp, str(target)
     A, B, C = -a, 2 * a * p, -a * p * p + qv
     if B == 0 or C == 0:
         return f_parabola_shift(target, level)
@@ -5443,7 +7123,7 @@ def f_parabola_shift(target, level):
         f"$${-2 * A}p={B}$$\n\n$${_lead(A)}p^2+q={C}$$\n\n"
         f"에서 $p={p}$, $q={qv}$입니다. 따라서 $p+q={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_parabola_shift(a, p, qv, a2=-a)), exp, str(target)
 
 
 # ---------- 5. 삼각비 ----------
@@ -5464,7 +7144,7 @@ def f_trig_length(target, level):
             f"$\\triangle ABC=\\frac{{1}}{{2}}\\times{a}\\times{b}\\times\\sin {ang}^\\circ"
             f"=\\frac{{1}}{{2}}\\times{a}\\times{b}\\times\\frac{{1}}{{2}}={target}$ (cm²)"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_triangle_sas('ABC', a, b, ang, f'{a} cm', f'{b} cm', f'{ang}°')), exp, str(target)
     if level == 2:
         pairs = [
             (a, 2 * target // a)
@@ -5481,7 +7161,7 @@ def f_trig_length(target, level):
             f"평행사변형의 넓이는 $ab\\sin\\theta$이므로 ${a}\\times{b}\\times\\sin {ang}^\\circ"
             f"={a}\\times{b}\\times\\frac{{1}}{{2}}={target}$ (cm²)"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_parallelogram('ABCD', 180 - ang, ab=f'{a} cm', bc=f'{b} cm', ang_b=f'{ang}°', ticks=False, ratio=max(0.6, min(1.8, a / b)))), exp, str(target)
     A, B, C, D = random.choice([("A", "B", "C", "D"), ("P", "Q", "R", "S"), ("X", "Y", "Z", "T")])
     q = (
         f"$\\angle {C}=90^\\circ$, $\\angle {B}=30^\\circ$인 직각삼각형 ${A}{B}{C}$에서 $\\overline{{{A}{C}}}={2 * target}$ cm이다. "
@@ -5491,7 +7171,7 @@ def f_trig_length(target, level):
         f"$\\angle {A}=90^\\circ-30^\\circ=60^\\circ$이고, 직각삼각형 ${A}{C}{D}$에서\n\n"
         f"$$\\overline{{{A}{D}}}=\\overline{{{A}{C}}}\\cos 60^\\circ={2 * target}\\times\\frac{{1}}{{2}}={target}$$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_trig_right((A, B, C, D), 2 * target, f'{2 * target} cm', 30, '30°')), exp, str(target)
 
 
 # ---------- 6. 원의 성질 ----------
@@ -5520,7 +7200,7 @@ def f_circle_angle(target, level):
             "한 호에 대한 중심각의 크기는 원주각의 크기의 2배이므로\n\n"
             f"$${_lin(c, d)} = 2{_fac(_lin(a, b))}$$\n\n따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_inscribed_angle(a * target + b, _plain(_ang(a, b)), _plain(_ang(c, d)))), exp, str(target)
     if level == 2:
         (a, b), (c, d) = inscribed_pair(target)
         q = (
@@ -5531,7 +7211,7 @@ def f_circle_angle(target, level):
             "원에 내접하는 사각형의 마주 보는 두 각의 크기의 합은 $180^\\circ$이므로\n\n"
             f"$${_lin(a + c, b + d)} = 180$$\n\n따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_cyclic_quad('ABCD', a * target + b, _plain(_ang(a, b)), _plain(_ang(c, d)))), exp, str(target)
     x = random.randint(1, target - 1)
     y = target - x
     (a, b), (c, d) = central_pair(x)
@@ -5546,7 +7226,7 @@ def f_circle_angle(target, level):
         f"내접사각형의 대각의 크기의 합은 $180^\\circ$이므로 ${_lin(e + g, f + h, 'y')}=180$, 즉 $y={y}$\n\n"
         f"따라서 $x+y={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_stack([fig_inscribed_angle(a * x + b, _plain(_ang(a, b)), _plain(_ang(c, d))), fig_cyclic_quad('PQRS', e * y + f, _plain(_ang(e, f, 'y')), _plain(_ang(g, h, 'y')))])), exp, str(target)
 
 
 def f_circle_length(target, level):
@@ -5565,7 +7245,8 @@ def f_circle_length(target, level):
             f"직각삼각형 $OAM$에서 $\\overline{{AM}}^2=\\overline{{OA}}^2-\\overline{{OM}}^2={r2}-{d * d}={target * target}$이므로\n\n"
             f"$\\overline{{AM}}={target}$"
         )
-        return q, exp, str(target)
+        r_txt = str(math.isqrt(r2)) if math.isqrt(r2) ** 2 == r2 else f'√{r2}'
+        return q + fig_md(fig_chord(str(d), r_txt)), exp, str(target)
     if level == 2:
         while True:
             ab, bc = random.randint(3, 20), random.randint(3, 20)
@@ -5581,7 +7262,7 @@ def f_circle_length(target, level):
             f"$$\\overline{{AB}}+\\overline{{CD}}=\\overline{{BC}}+\\overline{{AD}}$$\n\n"
             f"$${ab}+{cd}={bc}+\\overline{{AD}}$$\n\n따라서 $\\overline{{AD}}={target}$ cm"
         )
-        return q, exp, str(target)
+        return q + fig_md(fig_circumscribed_quad('ABCD', {'AB': f'{ab} cm', 'BC': f'{bc} cm', 'CD': f'{cd} cm'})), exp, str(target)
     # 세 접선의 길이 AP=x, BQ=y, CR=z 라 하면 세 변은 x+y, y+z, z+x. 세 변의 길이만 주고 AP 를 묻는다. (연립 3개)
     y, z = random.randint(1, 8), random.randint(1, 8)
     ab, bc, ca = target + y, y + z, z + target
@@ -5597,7 +7278,7 @@ def f_circle_length(target, level):
         f"$\\overline{{AB}}+\\overline{{CA}}-\\overline{{BC}}=2x$이므로 $2x={ab}+{ca}-{bc}={2 * target}$\n\n"
         f"따라서 $\\overline{{AP}}={target}$ cm"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_incircle_triangle('ABC', ((ab, f'{ab} cm'), (bc, f'{bc} cm'), (ca, f'{ca} cm')))), exp, str(target)
 
 
 # ---------- 7. 통계 ----------
@@ -5839,7 +7520,8 @@ FAST_PASS_BY_GRADE = {
         (
             "좌표평면 위의 세 점 $\\mathrm{O}(0,\\,0)$, $\\mathrm{A}(78,\\,0)$, $\\mathrm{B}(8,\\,42)$를 꼭짓점으로 하는 "
             "삼각형 $\\mathrm{OAB}$의 내부에 있는 점 중에서 $x$좌표와 $y$좌표가 모두 정수인 점의 개수를 구하시오. "
-            "(삼각형의 변 위의 점은 내부에 포함하지 않는다.)",
+            "(삼각형의 변 위의 점은 내부에 포함하지 않는다.)"
+            + fig_md(fig_grid_polygon([(0, 0), (78, 0), (8, 42)], "OAB")),
             "*(일차함수와 그래프 · 도형의 성질 단원)*\n\n"
             "점 $\\mathrm{B}$에서 $x$축에 내린 수선의 발을 $\\mathrm{H}(8,\\,0)$이라 하면, 삼각형 $\\mathrm{OAB}$는 "
             "선분 $\\mathrm{BH}$에 의해 직각삼각형 $\\mathrm{OHB}$와 $\\mathrm{HAB}$로 나뉩니다.\n\n"

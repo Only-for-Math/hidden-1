@@ -799,6 +799,19 @@ READABLE_TEXT_CSS = """
     word-break: keep-all !important;
     overflow-wrap: break-word !important;
 }
+/* 방정식을 말로 풀어 쓴 목록(- 항목)도 문장과 같은 크기로 */
+.readable-box ul, .readable-box ol {
+    margin: 0 !important;
+    padding-left: 1.3rem !important;
+}
+.readable-box li {
+    color: #000000 !important;
+    font-weight: bold !important;
+    font-size: 1.05rem !important;
+    line-height: 1.6 !important;
+    word-break: keep-all !important;
+    overflow-wrap: break-word !important;
+}
 .readable-box hr {
     width: 100%;
     height: 0;
@@ -3086,7 +3099,7 @@ class _Fig:
         def ev(x):
             try:
                 y = fn(x)
-                return y if y == y and abs(y) < 1e9 else None
+                return y if y is not None and y == y and abs(y) < 1e9 else None
             except (ZeroDivisionError, ValueError, OverflowError):
                 return None
 
@@ -3538,6 +3551,1058 @@ def fig_normal(m, sigma, shades, ticks):
         f.xtick(x, t, size=13)
     f.line((m, 0), (m, 1), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
     return f.svg()
+
+
+# ==========================================
+# 방정식 풀어 쓰기(줄글) + 방정식 그림
+#  - 문제에 나오는 방정식·부등식·연립방정식을 (1) 말로 풀어 쓴 줄글과 (2) 그래프 그림으로 문제에 덧붙인다.
+#    수식($...$)이 깨져 보이는 기기에서도 문제를 알아볼 수 있도록 같은 내용을 글과 그림으로 한 번 더 보여 주는 것이다.
+#  - 수식을 작은 파서(_EaParser)로 읽어 식의 구조를 만든 뒤, 그 구조로 줄글(_ea_say)과 그림(fig_ea_graph·fig_ea_system)을 만든다.
+#    파서가 읽지 못하는 수식(행렬·집합·극한·적분 등)은 아무것도 덧붙이지 않고 그대로 둔다.
+#  - 그림에는 숫자 눈금을 쓰지 않는다. (그래프가 만나는 점의 값이 곧 정답이라, 값은 x·y 글자로만 가리킨다.)
+#  - 문제 하나를 만들 때 _ea_aids(문제 글) 한 번이면 된다. 어떤 오류가 나도 원래 문제 글을 그대로 돌려준다.
+# ==========================================
+class _EaErr(Exception):
+    """수식 파서·줄글 변환기가 처리하지 못하는 식."""
+
+
+_EA_REL_CMDS = {"\\le": "≤", "\\leq": "≤", "\\ge": "≥", "\\geq": "≥", "\\ne": "≠", "\\neq": "≠"}
+_EA_SPACES = ("\\,", "\\;", "\\:", "\\!", "\\ ", "\\quad", "\\qquad", "\\displaystyle", "\\left", "\\right")
+_EA_GREEK = {"\\pi": "π", "\\alpha": "α", "\\beta": "β", "\\theta": "θ", "\\sigma": "σ"}
+_EA_FUNCS = {"\\sin": "sin", "\\cos": "cos", "\\tan": "tan", "\\log": "log", "\\ln": "ln"}
+_EA_FRAC = ("\\frac", "\\dfrac", "\\tfrac")
+
+
+def _ea_tokens(s):
+    toks, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c.isspace():
+            i += 1
+        elif c.isdigit() or (c == "." and s[i + 1:i + 2].isdigit()):
+            m = re.match(r"\d+(?:\.\d+)?|\.\d+", s[i:])
+            toks.append(("num", m.group(0)))
+            i += m.end()
+        elif c.isascii() and c.isalpha():
+            toks.append(("id", c))
+            i += 1
+        elif c == "\\":
+            m = re.match(r"\\(?:begin|end)\{cases\}", s[i:])
+            if m:
+                toks.append(("env", "begin" if "begin" in m.group(0) else "end"))
+                i += m.end()
+                continue
+            m = re.match(r"\\overline\{([A-Z]{2})\}|\\angle\s*([A-Z]{1,3})", s[i:])      # 선분 \overline{AB}, 각 \angle C
+            if m:
+                toks.append(("seg", m.group(1)) if m.group(1) else ("ang", m.group(2)))
+                i += m.end()
+                continue
+            m = re.match(r"\\mathrm\{([A-Za-z])\}", s[i:])      # \mathrm{E} 는 글자 하나로 (기댓값 E(X) 같은 꼴)
+            if m:
+                toks.append(("id", m.group(1)))
+                i += m.end()
+                continue
+            m = re.match(r"\\(?:[A-Za-z]+|.)", s[i:])
+            name = m.group(0)
+            i += m.end()
+            if name in _EA_SPACES:
+                continue
+            toks.append(("nl", name) if name == "\\\\" else ("cmd", name))
+        elif c in "+-*^_()[]{}|:=<>":
+            toks.append(("op", c))
+            i += 1
+        elif c == "−":
+            toks.append(("op", "-"))
+            i += 1
+        else:
+            raise _EaErr(f"문자 {c!r}")
+    return toks
+
+
+class _EaParser:
+    """수식 글(LaTeX 일부)을 식의 구조(튜플)로 읽는다.
+
+    식 구조: ('num', '5') ('var', 'x') ('paren', e) ('neg', e) ('add', [(±1, e), ...]) ('mul', [e, ...], [붙여 쓴 곱인지, ...])
+    ('div', a, b) ('frac', a, b) ('pow', a, b) ('sqrt', e) ('abs', e) ('deg', e) ('pct', e) ('func', 이름, 인수, 밑)
+    ('call', 'f', 인수) ('ratio', [e, ...]) ('rel', [e, ...], [관계 기호, ...]) ('cases', [rel, ...])"""
+
+    def __init__(self, toks):
+        self.t, self.i, self.abs = toks, 0, 0
+
+    def pk(self, k=0):
+        j = self.i + k
+        return self.t[j] if j < len(self.t) else ("end", "")
+
+    def take(self):
+        tk = self.pk()
+        self.i += 1
+        return tk
+
+    def need(self, kind, val=None):
+        tk = self.take()
+        if tk[0] != kind or (val is not None and tk[1] != val):
+            raise _EaErr(f"{kind} {val} 필요, {tk} 나옴")
+        return tk
+
+    def is_op(self, v, k=0):
+        return self.pk(k) == ("op", v)
+
+    def starts_atom(self, no_func=False):
+        k, v = self.pk()
+        if k in ("num", "id", "seg", "ang"):
+            return True
+        if k == "op":
+            return v in ("(", "[") or (v == "|" and self.abs == 0)
+        if k == "cmd":
+            return v in _EA_GREEK or v in _EA_FRAC or v == "\\sqrt" or (not no_func and v in _EA_FUNCS)
+        return False
+
+    # ---- 관계 ----
+    def relation(self):
+        operands, ops = [self.side()], []
+        while True:
+            k, v = self.pk()
+            if k == "op" and v in ("=", "<", ">"):
+                op = v
+            elif k == "cmd" and v in _EA_REL_CMDS:
+                op = _EA_REL_CMDS[v]
+            else:
+                break
+            self.take()
+            ops.append(op)
+            operands.append(self.side())
+        if not ops:
+            return operands[0]
+        if len(ops) > 2:
+            raise _EaErr("관계 기호가 너무 많다")
+        if any(o[0] == "ratio" for o in operands) and not (ops == ["="] and all(o[0] == "ratio" for o in operands)):
+            raise _EaErr("비의 쓰임")
+        return ("rel", operands, ops)
+
+    def side(self):
+        parts = [self.expr()]
+        while self.is_op(":"):
+            self.take()
+            parts.append(self.expr())
+        return parts[0] if len(parts) == 1 else ("ratio", parts)
+
+    # ---- 식 ----
+    def expr(self):
+        terms = [(1, self.term())]
+        while self.pk()[0] == "op" and self.pk()[1] in ("+", "-"):
+            sign = 1 if self.take()[1] == "+" else -1
+            terms.append((sign, self.term()))
+        return terms[0][1] if len(terms) == 1 else ("add", terms)
+
+    def term(self):
+        factors, flags = [self.unary()], []
+        after_div = False
+        while True:
+            tk = self.pk()
+            if tk in (("cmd", "\\times"), ("cmd", "\\cdot"), ("op", "*")):
+                self.take()
+                factors.append(self.unary())
+                flags.append(False)
+                after_div = False
+            elif tk == ("cmd", "\\div"):
+                self.take()
+                left = factors[0] if len(factors) == 1 else ("mul", factors, flags)
+                factors, flags = [("div", left, self.unary())], []
+                after_div = True
+            elif self.starts_atom():
+                if after_div:
+                    raise _EaErr("÷ 뒤의 붙여 쓴 곱은 뜻이 모호하다")
+                factors.append(self.power())
+                flags.append(True)
+            else:
+                break
+        return factors[0] if len(factors) == 1 else ("mul", factors, flags)
+
+    def unary(self):
+        if self.is_op("-"):
+            self.take()
+            return ("neg", self.unary())
+        if self.is_op("+"):
+            self.take()
+            return self.unary()
+        return self.power()
+
+    def power(self):
+        base = self.atom()
+        if self.is_op("^"):
+            self.take()
+            if self.pk() == ("cmd", "\\circ"):
+                self.take()
+                base = ("deg", base)
+            elif self.is_op("{") and self.pk(1) == ("cmd", "\\circ") and self.is_op("}", 2):
+                self.i += 3
+                base = ("deg", base)
+            else:
+                base = ("pow", base, self.script())
+        if self.pk() == ("cmd", "\\%"):
+            self.take()
+            base = ("pct", base)
+        return base
+
+    def script(self):
+        if self.is_op("{"):
+            self.take()
+            e = self.expr()
+            self.need("op", "}")
+            return e
+        k, v = self.take()
+        if k == "num" and len(v) == 1:
+            return ("num", v)
+        if k == "id":
+            return ("var", v)
+        raise _EaErr("위·아래 첨자")
+
+    def group(self):
+        self.need("op", "{")
+        e = self.expr()
+        self.need("op", "}")
+        return e
+
+    def func_arg(self):
+        items = [self.power()]
+        while self.starts_atom(no_func=True):
+            items.append(self.power())
+        return items[0] if len(items) == 1 else ("mul", items, [True] * (len(items) - 1))
+
+    def atom(self):
+        k, v = self.take()
+        if k == "num":
+            return ("num", v)
+        if k in ("seg", "ang"):
+            return (k, v)
+        if k == "id":
+            if v in ("f", "g", "h", "n", "E", "V", "P") and self.is_op("("):
+                self.take()
+                arg = self.expr()
+                self.need("op", ")")
+                return ("call", v, arg)
+            if self.is_op("_"):
+                self.take()
+                return ("var", v + "_" + _ea_plain(self.script(), mk=False))
+            return ("var", v)
+        if k == "op" and v in ("(", "["):
+            e = self.expr()
+            self.need("op", ")" if v == "(" else "]")
+            return ("paren", e)
+        if k == "op" and v == "{":
+            e = self.expr()
+            self.need("op", "}")
+            return e
+        if k == "op" and v == "|":
+            self.abs += 1
+            e = self.expr()
+            self.abs -= 1
+            self.need("op", "|")
+            return ("abs", e)
+        if k == "cmd":
+            if v in _EA_GREEK:
+                return ("var", _EA_GREEK[v])
+            if v in _EA_FRAC:
+                a = self.group()
+                return ("frac", a, self.group())
+            if v == "\\sqrt":
+                if self.is_op("["):
+                    raise _EaErr("n제곱근")
+                return ("sqrt", self.group())
+            if v in _EA_FUNCS:
+                base = None
+                if v == "\\log" and self.is_op("_"):
+                    self.take()
+                    base = self.script()
+                if self.is_op("^"):
+                    raise _EaErr("함수의 거듭제곱")
+                return ("func", _EA_FUNCS[v], self.func_arg(), base)
+        raise _EaErr(f"읽을 수 없는 조각 {(k, v)}")
+
+
+def _ea_parse(s):
+    """수식 글 -> 식 구조. 읽을 수 없으면 _EaErr."""
+    p = _EaParser(_ea_tokens(s))
+    if p.pk() == ("env", "begin"):
+        p.take()
+        rows = []
+        while True:
+            rows.append(p.relation())
+            tk = p.take()
+            if tk[0] == "nl":
+                if p.pk() == ("env", "end"):
+                    p.take()
+                    break
+            elif tk == ("env", "end"):
+                break
+            else:
+                raise _EaErr("연립방정식 모양")
+        if p.pk()[0] != "end" or not all(r[0] == "rel" for r in rows):
+            raise _EaErr("연립방정식 모양")
+        return ("cases", rows)
+    node = p.relation()
+    if p.pk()[0] != "end":
+        raise _EaErr("끝에 남은 글자")
+    return node
+
+
+def _ea_nodes(n):
+    yield n
+    for c in n[1:]:
+        for item in (c if isinstance(c, list) else [c]):
+            if isinstance(item, tuple):
+                if item and isinstance(item[0], int):
+                    item = item[1]
+                yield from _ea_nodes(item)
+
+
+def _ea_vars(n):
+    """식에 나오는 문자(변수). 함수 f(x) 는 '#f' 로 센다. π 는 상수라서 뺀다."""
+    out = set()
+    for m in _ea_nodes(n):
+        if m[0] == "var" and m[1] != "π":
+            out.add(m[1])
+        elif m[0] == "call":
+            out.add("#" + m[1])
+    return out
+
+
+# ---------- 식을 평범한 글로 (그림 안의 식 이름, 줄글 속 괄호 설명) ----------
+def _ea_plain(n, mk=True, prec=0):
+    """식 구조 -> 글. mk=True 면 위 첨자를 '^{2}' 표시로 두어 그림 글자에서 작게 올려 쓰게 하고, False 면 유니코드 위 첨자."""
+    k = n[0]
+    if k in ("num", "var", "seg"):
+        return n[1]
+    if k == "ang":
+        return "∠" + n[1]
+    if k == "call":
+        return f"{n[1]}({_ea_plain(n[2], mk)})"
+    if k == "paren":
+        return "(" + _ea_plain(n[1], mk) + ")"
+    if k == "neg":
+        return "−" + _ea_plain(n[1], mk, 3)
+    if k == "add":
+        s = _ea_plain(n[1][0][1], mk, 1)
+        for sign, t in n[1][1:]:
+            s += (" + " if sign > 0 else " − ") + _ea_plain(t, mk, 1)
+        return f"({s})" if prec >= 2 else s
+    if k == "mul":
+        s = _ea_plain(n[1][0], mk, 2)
+        for f, imp in zip(n[1][1:], n[2]):
+            s += ("" if imp else " × ") + _ea_plain(f, mk, 2)
+        return f"({s})" if prec >= 3 else s
+    if k == "div":
+        return f"{_ea_plain(n[1], mk, 2)} ÷ {_ea_plain(n[2], mk, 3)}"
+    if k == "frac":
+        a, b = _ea_plain(n[1], mk), _ea_plain(n[2], mk)
+        return f"{a}/{b}" if n[1][0] in ("num", "var") and n[2][0] in ("num", "var") else f"({a})/({b})"
+    if k == "pow":
+        base = _ea_plain(n[1], mk, 3 if n[1][0] in ("add", "mul", "neg", "div", "frac") else 0)
+        e = _ea_plain(n[2], mk)
+        if mk:
+            return f"{base}^{{{e}}}"
+        return base + (e.translate(_FIG_SUP) if re.fullmatch(r"\d+", e) else f"^({e})")
+    if k == "sqrt":
+        inner = _ea_plain(n[1], mk)
+        return "√" + (inner if n[1][0] in ("num", "var") else f"({inner})")
+    if k == "abs":
+        return "|" + _ea_plain(n[1], mk) + "|"
+    if k == "deg":
+        return _ea_plain(n[1], mk, 3) + "°"
+    if k == "pct":
+        return _ea_plain(n[1], mk, 3) + "%"
+    if k == "func":
+        name = n[1]
+        if n[3] is not None:
+            name += (f"_{{{_ea_plain(n[3], mk)}}}" if mk else _ea_plain(n[3], mk))
+        arg = _ea_plain(n[2], mk, 2)
+        return f"{name} {arg}"
+    if k == "ratio":
+        return " : ".join(_ea_plain(p, mk) for p in n[1])
+    if k == "rel":
+        s = _ea_plain(n[1][0], mk)
+        for op, e in zip(n[2], n[1][1:]):
+            s += f" {op} " + _ea_plain(e, mk)
+        return s
+    raise _EaErr(k)
+
+
+# ---------- 식의 값 (그래프를 그리려고) ----------
+_EA_ENV = {
+    "__builtins__": {}, "abs": abs, "pi": math.pi, "_sqrt": math.sqrt, "_sin": math.sin, "_cos": math.cos,
+    "_tan": math.tan, "_ln": math.log, "_log": math.log, "_log10": math.log10, "_rad": math.radians,
+}
+
+
+def _ea_src(n, names):
+    """식 구조 -> 파이썬 식 글. 우리가 만든 구조에서 나온 글만 쓰므로 eval 해도 안전하다."""
+    k = n[0]
+    if k == "num":
+        return repr(float(n[1]))
+    if k == "var":
+        if n[1] == "π":
+            return "pi"
+        if n[1] in names:
+            return n[1]
+        raise _EaErr("모르는 문자 " + n[1])
+    if k == "paren":
+        return "(" + _ea_src(n[1], names) + ")"
+    if k == "neg":
+        return "(-" + _ea_src(n[1], names) + ")"
+    if k == "add":
+        return "(" + " ".join(("+" if s > 0 else "-") + "(" + _ea_src(t, names) + ")" for s, t in n[1]) + ")"
+    if k == "mul":
+        return "(" + "*".join("(" + _ea_src(f, names) + ")" for f in n[1]) + ")"
+    if k in ("div", "frac"):
+        return "((" + _ea_src(n[1], names) + ")/(" + _ea_src(n[2], names) + "))"
+    if k == "pow":
+        return "((" + _ea_src(n[1], names) + ")**(" + _ea_src(n[2], names) + "))"
+    if k == "sqrt":
+        return "_sqrt(" + _ea_src(n[1], names) + ")"
+    if k == "abs":
+        return "abs(" + _ea_src(n[1], names) + ")"
+    if k == "deg":
+        return "_rad(" + _ea_src(n[1], names) + ")"
+    if k == "pct":
+        return "((" + _ea_src(n[1], names) + ")/100.0)"
+    if k == "func":
+        name, arg, base = n[1], _ea_src(n[2], names), n[3]
+        if name in ("sin", "cos", "tan", "ln"):
+            return f"_{name}({arg})"
+        return f"_log({arg}, {_ea_src(base, names)})" if base is not None else f"_log10({arg})"
+    raise _EaErr(k)
+
+
+def _ea_compile(n, names=("x",)):
+    """식 구조 -> 값을 돌려주는 함수. 값이 없는 곳(0 으로 나눔·음수의 제곱근 등)에서는 None."""
+    f = eval(f"lambda {','.join(names)}: {_ea_src(n, names)}", dict(_EA_ENV))
+
+    def g(*a):
+        try:
+            v = f(*a)
+        except (ZeroDivisionError, ValueError, OverflowError, TypeError):
+            return None
+        if isinstance(v, complex) or v != v or abs(v) > 1e15:
+            return None
+        return float(v)
+
+    return g
+
+
+# ---------- 줄글 ----------
+_EA_PJ = {"을/를": ("을", "를"), "은/는": ("은", "는"), "과/와": ("과", "와"), "이/가": ("이", "가"), "으로/로": ("으로", "로")}
+
+
+def _ea_kind(s):
+    """글의 끝소리. V=받침 없음, C=받침 있음, L=ㄹ 받침."""
+    s = s.rstrip(" )]")
+    if not s:
+        return "V"
+    ch = s[-1]
+    if "가" <= ch <= "힣":
+        j = (ord(ch) - 0xAC00) % 28
+        return "V" if j == 0 else ("L" if j == 8 else "C")
+    if ch.isdigit():
+        return _DIGIT_END[ch]
+    if ch.isascii() and ch.isalpha():
+        return _LETTER_END.get(ch.lower(), "V")
+    return "V"
+
+
+def _ea_pj(s, pair):
+    """글 s 뒤에 받침에 맞는 조사를 붙인다."""
+    with_c, without_c = _EA_PJ[pair]
+    kind = _ea_kind(s)
+    if pair == "으로/로":
+        return s + (with_c if kind == "C" else without_c)
+    return s + (with_c if kind in ("C", "L") else without_c)
+
+
+def _ea_unparen(n):
+    while n[0] == "paren":
+        n = n[1]
+    return n
+
+
+def _ea_is_number(n):
+    n = _ea_unparen(n)
+    if n[0] == "neg":
+        n = _ea_unparen(n[1])
+    return n[0] == "num" or (n[0] == "frac" and all(_ea_is_number(p) for p in n[1:]))
+
+
+def _ea_atomic(n):
+    n = _ea_unparen(n)
+    if n[0] == "neg":
+        n = _ea_unparen(n[1])
+    return n[0] in ("num", "var", "call", "seg", "ang")
+
+
+_EA_FUNC_KO = {"sin": "사인", "cos": "코사인", "tan": "탄젠트"}
+
+
+def _ea_chain(n):
+    """a × b ÷ c × d 처럼 ×, ÷ 로만 이어진 식을 [(None, a), ('×', b), ('÷', c), ('×', d)] 로 편다. (붙여 쓴 곱 3x 는 한 덩어리)"""
+    if n[0] == "div":
+        return _ea_chain(n[1]) + [("÷", n[2])]
+    if n[0] == "mul" and not any(n[2]):
+        return _ea_chain(n[1][0]) + [("×", f) for f in n[1][1:]]
+    return [(None, n)]
+
+
+def _ea_say_chain(chain):
+    """×, ÷ 가 둘 이상 이어진 식은 앞에서부터 차례로 읽는다. 'A에 B를 곱하고 C로 나눈 수'."""
+    out = _ea_say(chain[0][1])
+    for i, (op, node) in enumerate(chain[1:]):
+        t = _ea_say(node)
+        if op == "×":
+            out += (f"에 {_ea_pj(t, '을/를')}" if i == 0 else f" {_ea_pj(t, '을/를')}") + " 곱하고"
+        else:
+            out = (_ea_pj(out, "을/를") if i == 0 else out) + f" {_ea_pj(t, '으로/로')} 나누고"
+    return out[:-len("곱하고")] + "곱한 수" if out.endswith("곱하고") else out[:-len("나누고")] + "나눈 수"
+
+
+def _ea_say(n):
+    """식 구조 -> '명사구'로 풀어 쓴 글. 3(x-5)-1 -> 'x에서 5를 뺀 수의 3배에서 1을 뺀 수'."""
+    k = n[0]
+    if k in ("num", "var"):
+        return n[1]
+    if k == "seg":
+        return f"선분 {n[1]}의 길이"
+    if k == "ang":
+        return f"각 {n[1]}의 크기"
+    if k == "call":
+        return f"{n[1]}({_ea_plain(n[2], False)})"
+    if k == "paren":
+        return _ea_say(n[1])
+    if k == "neg":
+        e = _ea_unparen(n[1])
+        if e[0] in ("num", "var"):
+            return "−" + e[1]
+        return f"{_ea_say(e)}의 부호를 바꾼 수"
+    if k == "add":
+        # 'x에서 5를 빼고 3을 더한 수' 처럼 앞에서부터 차례로 읽는다.
+        terms = n[1]
+        out = _ea_say(terms[0][1])
+        for i, (sign, t) in enumerate(terms[1:]):
+            tp = _ea_pj(_ea_say(t), "을/를")
+            if i == 0:
+                out += ("에 " if sign > 0 else "에서 ") + tp
+            else:
+                out += " " + tp
+            out += " 더하고" if sign > 0 else " 빼고"
+        return out[:-len("더하고")] + "더한 수" if out.endswith("더하고") else out[:-len("빼고")] + "뺀 수"
+    if k in ("mul", "div"):
+        chain = _ea_chain(n)
+        if len(chain) >= 3:
+            return _ea_say_chain(chain)
+    if k == "mul":
+        factors, flags = n[1], n[2]
+        first = _ea_unparen(factors[0])
+        rest = factors[1:]
+        if _ea_is_number(first) and not all(_ea_is_number(f) for f in rest) and rest:
+            c = _ea_say(first)
+            body = _ea_say(rest[0] if len(rest) == 1 else ("mul", rest, flags[1:]))
+            return body if c == "1" else f"{body}의 {c}배"
+        parts = [_ea_say(f) for f in factors]
+        if len(parts) == 2:
+            return f"{_ea_pj(parts[0], '과/와')} {parts[1]}의 곱"
+        return ", ".join(parts) + "의 곱"
+    if k == "div":
+        return f"{_ea_pj(_ea_say(n[1]), '을/를')} {_ea_pj(_ea_say(n[2]), '으로/로')} 나눈 수"
+    if k == "frac":
+        if all(_ea_atomic(p) for p in n[1:]):
+            return f"{_ea_say(n[2])}분의 {_ea_say(n[1])}"          # 2분의 1, x분의 b
+        return f"{_ea_pj(_ea_say(n[1]), '을/를')} {_ea_pj(_ea_say(n[2]), '으로/로')} 나눈 수"     # 분자가 식이면 나눗셈으로 읽는다
+    if k == "pow":
+        e = _ea_unparen(n[2])
+        if e[0] == "num":
+            tail = {"2": "제곱", "3": "세제곱"}.get(e[1], f"{e[1]}제곱")
+        elif e[0] == "var":
+            tail = f"{e[1]}제곱"
+        else:
+            tail = f"({_ea_plain(e, False)})제곱"
+        return f"{_ea_say(n[1])}의 {tail}"
+    if k == "sqrt":
+        return f"{_ea_say(n[1])}의 양의 제곱근"
+    if k == "abs":
+        return f"{_ea_say(n[1])}의 절댓값"
+    if k == "deg":
+        return f"{_ea_say(n[1])}도" if _ea_atomic(n[1]) else f"{_ea_say(n[1])}(도)"
+    if k == "pct":
+        return f"{_ea_say(n[1])}퍼센트"
+    if k == "func":
+        name, arg, base = n[1], _ea_say(n[2]), n[3]
+        if name in _EA_FUNC_KO:
+            return f"{arg}의 {_EA_FUNC_KO[name]} 값"
+        if name == "ln":
+            return f"{arg}의 자연로그"
+        if base is not None:
+            return f"{_ea_pj(_ea_say(base), '을/를')} 밑으로 하는 {arg}의 로그"
+        return f"{arg}의 상용로그"
+    raise _EaErr(k)
+
+
+_EA_CMP = {"<": "작다", ">": "크다", "≤": "작거나 같다", "≥": "크거나 같다"}
+
+
+def _ea_clause(rel):
+    """관계식 -> 한 문장. 'x에서 5를 뺀 수는 3과 같다.'"""
+    operands, ops = rel[1], rel[2]
+    if len(ops) == 2:
+        a, m, b = operands
+        if all(o in ("<", "≤") for o in ops):
+            lo, hi, lo_op, hi_op = a, b, ops[0], ops[1]
+        elif all(o in (">", "≥") for o in ops):
+            lo, hi, lo_op, hi_op = b, a, ops[1], ops[0]
+        else:
+            raise _EaErr("섞인 부등호")
+        lo_w = "초과" if lo_op in ("<", ">") else "이상"
+        hi_w = "미만" if hi_op in ("<", ">") else "이하"
+        return f"{_ea_pj(_ea_say(m), '은/는')} {_ea_say(lo)} {lo_w} {_ea_say(hi)} {hi_w}이다."
+    a, b = operands
+    op = ops[0]
+    if a[0] == "ratio":
+        sa = " 대 ".join(_ea_say(p) for p in a[1])
+        sb = " 대 ".join(_ea_say(p) for p in b[1])
+        return f"{sa}의 비는 {sb}의 비와 같다."
+    sa, sb = _ea_say(a), _ea_say(b)
+    if op == "=":
+        return f"{_ea_pj(sa, '은/는')} {_ea_pj(sb, '과/와')} 같다."
+    if op == "≠":
+        return f"{_ea_pj(sa, '은/는')} {_ea_pj(sb, '과/와')} 같지 않다."
+    return f"{_ea_pj(sa, '은/는')} {sb}보다 {_EA_CMP[op]}."
+
+
+def _ea_worth(rel):
+    """줄글·그림을 덧붙일 만한 관계식인가. (x=2·a<b 처럼 문자와 숫자만 있는 조건, 문자가 없는 식은 뺀다.)"""
+    def no_var(n):
+        return not any(m[0] in ("var", "call") and m[1] != "π" for m in _ea_nodes(n))
+
+    if no_var(rel):
+        return False
+    return not all(_ea_atomic(o) or no_var(o) for o in rel[1])
+
+
+# ---------- 그림 ----------
+def _ea_markup(s):
+    """'x^{2} + 1' -> SVG <text> 안쪽 글. ^{..} 는 작게 올리고 _{..} 는 작게 내려 쓴다."""
+    out, i, reset = [], 0, 0
+    for m in re.finditer(r"([\^_])\{([^{}]*)\}", s):
+        chunk = html_escape(s[i:m.start()])
+        if chunk:
+            out.append(f'<tspan dy="{reset}">{chunk}</tspan>' if reset else chunk)
+            reset = 0
+        up = m.group(1) == "^"
+        shift = -4.5 if up else 3.5
+        out.append(f'<tspan dy="{shift}" font-size="68%">{html_escape(m.group(2))}</tspan>')
+        reset = -shift
+        i = m.end()
+    chunk = html_escape(s[i:])
+    if chunk:
+        out.append(f'<tspan dy="{reset}">{chunk}</tspan>' if reset else chunk)
+    return "".join(out)
+
+
+def _ea_textlen(s):
+    return len(re.sub(r"[\^_]\{([^{}]*)\}", r"\1", s))
+
+
+def _ea_legend(f, rows, size=14):
+    """그림 위쪽에 '색 선 + 식 이름' 줄들을 적는다. 식이 길면 글자를 줄인다."""
+    for i, (color, txt) in enumerate(rows):
+        y = 18 + i * 20
+        sz = size
+        while sz > 10 and 0.5 * sz * _ea_textlen(txt) > f.W - 52:
+            sz -= 1
+        f.add(f'<line x1="12" y1="{y - 4}" x2="36" y2="{y - 4}" stroke="{color}" stroke-width="3" stroke-linecap="round"/>')
+        f.add(f'<text x="44" y="{y}" font-size="{sz}" fill="{_FIG_INK}">{_ea_markup(txt)}</text>')
+
+
+def _ea_roots(d, lo=-200.0, hi=200.0, n=4000):
+    """d(x)=0 의 해들. 부호가 바뀌는 곳과 닿기만 하는 곳(중근)을 찾는다."""
+    xs = [lo + (hi - lo) * i / n for i in range(n + 1)]
+    ys = [d(x) for x in xs]
+    roots = []
+    for i in range(n):
+        a, b = ys[i], ys[i + 1]
+        if a is None or b is None:
+            continue
+        if a == 0:
+            roots.append(xs[i])
+        elif a * b < 0:
+            l, h = xs[i], xs[i + 1]
+            for _ in range(60):
+                m = (l + h) / 2
+                v = d(m)
+                if v is None:
+                    break
+                if (v < 0) == (a < 0):
+                    l = m
+                else:
+                    h = m
+            roots.append((l + h) / 2)
+    for i in range(1, n):
+        a, b, c = ys[i - 1], ys[i], ys[i + 1]
+        # 부호가 안 바뀌고 0 에 아주 가까이 내려왔다 올라가는 곳만 중근(접점) 후보로 본다.
+        if None in (a, b, c) or a * c < 0 or abs(b) > 0.3 * min(abs(a), abs(c)):
+            continue
+        lo_, hi_ = xs[i - 1], xs[i + 1]      # |d| 가 가장 작은 곳을 삼분탐색으로 좁혀 0 에 닿는지 본다
+        for _ in range(60):
+            m1, m2 = lo_ + (hi_ - lo_) / 3, hi_ - (hi_ - lo_) / 3
+            v1, v2 = d(m1), d(m2)
+            if v1 is None or v2 is None:
+                break
+            if abs(v1) < abs(v2):
+                hi_ = m2
+            else:
+                lo_ = m1
+        mid_ = (lo_ + hi_) / 2
+        v = d(mid_)
+        if v is not None and abs(v) < 1e-7 * (1 + max(abs(a), abs(c))):
+            roots.append(mid_)
+    roots.sort()
+    out = []
+    for r in roots:
+        if not out or r - out[-1] > 0.04:
+            out.append(r)
+    return out
+
+
+def _ea_diff(a, b):
+    return None if a is None or b is None else a - b
+
+
+def _ea_cross(a, b):
+    """비례식 a:b = c:d 를 '내항의 곱 = 외항의 곱'인 두 식으로 바꾼다."""
+    def wrap(n):
+        return ("paren", n) if n[0] in ("add", "neg") else n
+    (p, q), (r, s) = a[1], b[1]
+    return ("mul", [wrap(p), wrap(s)], [False]), ("mul", [wrap(q), wrap(r)], [False])
+
+
+def fig_ea_graph(rel):
+    """x 하나만 든 방정식·부등식 -> 양쪽 식의 그래프. 만나는 점(해)은 숫자 없이 x 로만 가리킨다. 그릴 수 없으면 None."""
+    operands, ops = rel[1], rel[2]
+    if len(ops) == 2:
+        mid, lo_, hi_ = operands[1], operands[0], operands[2]
+        sides = [mid, lo_, hi_]
+    elif operands[0][0] == "ratio":
+        if len(operands[0][1]) != 2 or len(operands[1][1]) != 2:
+            return None
+        sides = list(_ea_cross(operands[0], operands[1]))
+    else:
+        sides = list(operands)
+    if any(_ea_vars(s) - {"x"} for s in sides) or not any("x" in _ea_vars(s) for s in sides):
+        return None
+    fns = [_ea_compile(s) for s in sides]
+    zero_right = len(sides) == 2 and _ea_is_number(sides[1]) and fns[1](0.0) == 0
+    zero_left = len(sides) == 2 and _ea_is_number(sides[0]) and fns[0](0.0) == 0
+    if zero_left and not zero_right:
+        sides, fns = sides[::-1], fns[::-1]
+        ops = [{"<": ">", ">": "<", "≤": "≥", "≥": "≤"}.get(ops[0], ops[0])]
+        zero_right = True
+    # 해(경계)를 찾는다.
+    pairs = [(0, 1)] if len(sides) == 2 else [(0, 1), (0, 2)]
+    bounds = []
+    for i, j in pairs:
+        bounds += _ea_roots(lambda x, i=i, j=j: _ea_diff(fns[i](x), fns[j](x)))
+    bounds = sorted(set(round(b, 9) for b in bounds), key=lambda r: (abs(r), r))[:4]
+    bounds.sort()
+    if not bounds:
+        return None
+    lo_x, hi_x = min(0.0, bounds[0]), max(0.0, bounds[-1])
+    span = max(hi_x - lo_x, 1.0)
+    pad = max(1.0, 0.2 * span)
+    x0, x1 = lo_x - pad, hi_x + pad
+    # 값이 아주 큰 그래프(지수함수 등)는 세로로 줄여서 그린다. 눈금 숫자가 없으니 모양만 같으면 된다.
+    peak = max([abs(v) for fn in fns for v in (fn(r) for r in bounds + [0.0]) if v is not None] + [1.0])
+    if peak > 1e4:
+        k = peak / 40.0
+        fns = [(lambda xv, fn=fn: None if fn(xv) is None else fn(xv) / k) for fn in fns]
+    # 세로 범위: 해와 원점, 해 사이 구간 전체, 양 끝에서의 값 (끝 값이 너무 크면 버린다)
+    keys, inner, ends = [0.0], [], []
+    for fn in fns:
+        for xv in bounds + [0.0]:
+            v = fn(xv)
+            if v is not None:
+                keys.append(v)
+        for i in range(121):
+            v = fn(lo_x + (hi_x - lo_x) * i / 120)
+            if v is not None:
+                inner.append(v)
+        for xv in (x0, x1):
+            v = fn(xv)
+            if v is not None:
+                ends.append(v)
+    base = max(abs(v) for v in keys)
+    vals = keys + [v for v in inner if abs(v) <= 6.0 * base + 1.0] + [v for v in ends if abs(v) <= 3.0 * base + 1.0]
+    y0, y1 = min(vals), max(vals)
+    ym = max(0.14 * (y1 - y0), 0.5)
+    y0, y1 = min(y0, 0.0) - ym, max(y1, 0.0) + ym
+    ineq = ops[0] != "="
+    rows = [(_FIG_BLUE, "y = " + _ea_plain(sides[0]))]
+    if not zero_right:
+        rows.append((_FIG_RED, "y = " + _ea_plain(sides[1])))
+    if len(sides) == 3:
+        rows.append((_FIG_GREEN, "y = " + _ea_plain(sides[2])))
+    T = 12 + 20 * len(rows)
+    f = _Fig(x0, x1, y0, y1, width=340, height=T + 190, equal=False, pad=(18, 24, T, 24))
+    f.axes(origin=None if any(abs(r) < 0.06 * (x1 - x0) for r in bounds) else "O")
+    colors = [_FIG_BLUE, _FIG_RED, _FIG_GREEN]
+    for idx, fn in enumerate(fns):
+        if idx == 1 and zero_right:
+            continue
+        f.curve(lambda xv, fn=fn: fn(xv), x0, x1, color=colors[idx], w=2.4)
+    _ea_legend(f, rows)
+    if not ineq:
+        for n_, r in enumerate(bounds):
+            yr = fns[0](r)
+            if yr is None:
+                continue
+            if abs(yr) > 1e-9:
+                f.line((r, 0), (r, yr), color=_FIG_GRAY, w=1.3, dash="4 4", cap="butt")
+            f.dot((r, yr), r=4.2, color=_FIG_INK, ring=True)
+            name = "x" if len(bounds) == 1 else f"x_{{{n_ + 1}}}"
+            f.add(_ea_label(f, r, 0, name, up=yr < 0))
+    else:
+        _ea_shade(f, fns, ops, bounds, x0, x1)
+    return f.svg()
+
+
+def _ea_label(f, x, y, name, up=False):
+    sx, sy = f.P((x, y))
+    sx = min(max(sx, 14), f.W - 14)
+    return (
+        f'<text x="{_fn(sx)}" y="{_fn(sy + (-8 if up else 17))}" font-size="15" font-style="italic" text-anchor="middle" '
+        f'fill="{_FIG_INK}" stroke="#fff" stroke-width="3.6" stroke-linejoin="round" paint-order="stroke">{_ea_markup(name)}</text>'
+    )
+
+
+def _ea_shade(f, fns, ops, bounds, x0, x1):
+    """부등식의 해가 되는 x 의 범위를 x 축 위에 굵은 초록 선으로 칠한다. (끝점은 값 없이 동그라미만)"""
+    def holds(x):
+        v = [fn(x) for fn in fns]
+        if any(t is None for t in v):
+            return False
+        if len(ops) == 2:
+            m, a, b = v
+            return _ea_cmp(a, ops[0], m) and _ea_cmp(m, ops[1], b)
+        return _ea_cmp(v[0], ops[0], v[1])
+
+    n = 400
+    tol = 2.0 * (x1 - x0) / n
+    xs = [x0 + (x1 - x0) * i / n for i in range(n + 1)]
+    flags = [holds(x) for x in xs]
+    runs, start = [], None
+    for i, ok in enumerate(flags):
+        if ok and start is None:
+            start = i
+        if (not ok or i == n) and start is not None:
+            end = i if ok else i - 1
+            runs.append(tuple(next((r for r in bounds if abs(r - xs[j]) < tol), xs[j]) for j in (start, end)))
+            start = None
+    for a, b in runs:
+        f.line((a, 0), (b, 0), color=_FIG_GREEN, w=6, cap="butt")
+        if a <= x0 + 1e-9:
+            f.add(_ea_arrow(f, x0, -1))
+        if b >= x1 - 1e-9:
+            f.add(_ea_arrow(f, x1, 1))
+        mid = (a + b) / 2
+        if b >= x1 - 1e-9 and a > x0 + 1e-9:
+            mid = a + 0.3 * (b - a)
+        elif a <= x0 + 1e-9 and b < x1 - 1e-9:
+            mid = b - 0.3 * (b - a)
+        f.add(_ea_label(f, mid, 0, "x", up=any(v is not None and v < 0 for v in (fn(mid) for fn in fns))))
+    # 끝점: 지나가는 쪽이 아닌 경계에는 동그라미 (strict 는 속이 빈 동그라미)
+    strict = all(o in ("<", ">") for o in ops)
+    for r in bounds:
+        if any(abs(r - a) < 1e-9 or abs(r - b) < 1e-9 for a, b in runs):
+            f.dot((r, 0), r=4.6, color=_FIG_GREEN, ring=strict)
+
+
+def _ea_cmp(a, op, b):
+    return {"<": a < b, ">": a > b, "≤": a <= b + 1e-9, "≥": a >= b - 1e-9}[op]
+
+
+def _ea_arrow(f, x, direction):
+    sx, sy = f.P((x, 0))
+    return (
+        f'<polygon points="{_fn(sx + 3 * direction)},{_fn(sy)} {_fn(sx - 5 * direction)},{_fn(sy - 5)} '
+        f'{_fn(sx - 5 * direction)},{_fn(sy + 5)}" fill="{_FIG_GREEN}"/>'
+    )
+
+
+def fig_ea_system(cases):
+    """두 일차방정식으로 된 연립방정식 -> 두 직선과 만나는 점. 만나는 점의 값은 숫자 없이 (x, y) 로만 가리킨다."""
+    rels = cases[1]
+    if len(rels) != 2 or any(r[2] != ["="] or r[1][0][0] == "ratio" for r in rels):
+        return None
+    if any(_ea_vars(r) - {"x", "y"} for r in rels):
+        return None
+    lines = []
+    for r in rels:
+        fn = _ea_compile(("add", [(1, r[1][0]), (-1, ("paren", r[1][1]))]), names=("x", "y"))
+        c = fn(0.0, 0.0)
+        a, b = (fn(1.0, 0.0) or 0) - c, (fn(0.0, 1.0) or 0) - c
+        if c is None or abs(fn(2.0, 3.0) - (a * 2 + b * 3 + c)) > 1e-7 or abs(fn(-1.5, 4.0) - (-1.5 * a + 4 * b + c)) > 1e-7:
+            return None
+        if abs(a) < 1e-12 and abs(b) < 1e-12:
+            return None
+        lines.append((a, b, c))
+    (a1, b1, c1), (a2, b2, c2) = lines
+    det = a1 * b2 - a2 * b1
+    if abs(det) < 1e-9:
+        return None
+    sx_, sy_ = (b1 * c2 - b2 * c1) / det, (c1 * a2 - c2 * a1) / det
+    span = max(abs(sx_), abs(sy_), 1.0)
+    m = 0.4 * span + 1.0
+    x0, x1 = min(0.0, sx_) - m, max(0.0, sx_) + m
+    y0, y1 = min(0.0, sy_) - m, max(0.0, sy_) + m
+    rows = [(_FIG_BLUE, _ea_plain(rels[0])), (_FIG_RED, _ea_plain(rels[1]))]
+    T = 12 + 20 * len(rows)
+    f = _Fig(x0, x1, y0, y1, width=340, height=T + 250, equal=True, pad=(20, 24, T, 22))
+    f.axes()
+    for (a, b, c), color in zip(lines, (_FIG_BLUE, _FIG_RED)):
+        p = (0.0, -c / b) if abs(b) >= abs(a) else (-c / a, 0.0)
+        f.clipped_line(p, (p[0] + b, p[1] - a), color=color, w=2.4)
+    _ea_legend(f, rows)
+    if abs(sx_) > 1e-9 or abs(sy_) > 1e-9:
+        if abs(sy_) > 1e-9:
+            f.line((sx_, 0), (sx_, sy_), color=_FIG_GRAY, w=1.3, dash="4 4", cap="butt")
+        if abs(sx_) > 1e-9:
+            f.line((0, sy_), (sx_, sy_), color=_FIG_GRAY, w=1.3, dash="4 4", cap="butt")
+    f.dot((sx_, sy_), r=4.4, color=_FIG_INK, ring=True)
+    px_, py_ = f.P((sx_, sy_))
+
+    def gap(cx, cy):
+        """화면 점 (cx, cy) 에서 두 직선까지의 거리(픽셀) 중 작은 값."""
+        X, Y = f.x0 + (cx - f.ox) / f.sx, f.y1 - (cy - f.oy) / f.sy
+        return min(abs(a * X + b * Y + c) / math.hypot(a / f.sx, b / f.sy) for a, b, c in lines)
+
+    tw = 0.5 * 15 * 6
+    cands = []
+    for ax_ in (1, -1):
+        for ay_ in (1, -1):
+            cx, cy = px_ + ax_ * (12 + tw / 2), py_ - ay_ * 14
+            if tw / 2 + 3 <= cx <= f.W - tw / 2 - 3 and f.oy + 8 <= cy <= f.H - 6:
+                cands.append((min(gap(cx, cy), gap(cx - tw / 2.2, cy), gap(cx + tw / 2.2, cy)), ax_, ay_))
+    if cands:
+        _, ax_, ay_ = max(cands)
+        f.text((px_ + ax_ * 12, py_ - ay_ * 11), "(x, y)", raw=True, anchor="start" if ax_ > 0 else "end", italic=False)
+    if abs(sx_) > 1e-9:
+        f.add(_ea_label(f, sx_, 0, "x", up=sy_ < 0))
+    if abs(sy_) > 1e-9:
+        sxp, syp = f.P((0, sy_))
+        f.text((sxp, syp + 5), "y", raw=True, dx=-9 if sx_ >= 0 else 9, anchor="end" if sx_ >= 0 else "start", size=15)
+    return f.svg()
+
+
+# ---------- 문제 글에 덧붙이기 ----------
+_EA_SEG = re.compile(r"\$\$(.*?)\$\$|\$([^$]+)\$", re.S)
+_EA_HAS_REL = re.compile(r"=|<|>|\\le|\\ge|\\ne")
+_EA_FIG_MARK = '\n\n<p style="text-align:center;margin:12px 0 4px">'
+_EA_MAX_ITEMS = 3
+
+
+def _ea_split(s):
+    """수식 글을 괄호 밖의 쉼표·\\quad·; 에서 나눈다. (두 식을 한 수식에 나란히 쓴 경우)"""
+    parts, depth, cur, i = [], 0, "", 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and s[i + 1:i + 2] in (",", ";", ":", "!", " "):
+            cur += s[i:i + 2]
+            i += 2
+            continue
+        if s.startswith("\\begin", i) or c in "([{":
+            depth += 1
+        elif s.startswith("\\end", i) or c in ")]}":
+            depth -= 1
+        if depth == 0 and c in ",;":
+            parts.append(cur)
+            cur = ""
+        elif depth == 0 and s.startswith("\\quad", i):
+            parts.append(cur)
+            cur = ""
+            i += len("\\quad")
+            continue
+        else:
+            cur += c
+        i += 1
+    parts.append(cur)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _ea_items(q):
+    """문제 글 속 방정식들 -> [(식 구조, [문장, ...])]. 읽을 수 없거나 덧붙일 필요 없는 식은 건너뛴다."""
+    items, seen = [], set()
+    for m in _EA_SEG.finditer(q):
+        body = m.group(1) if m.group(1) is not None else m.group(2)
+        if not _EA_HAS_REL.search(body):
+            continue
+        for piece in _ea_split(body):
+            if not _EA_HAS_REL.search(piece):
+                continue
+            cond = re.match(r"([pqr])\s*:\s*(.+)$", piece, re.S)      # '조건 p: 5x+9 ≤ 84'
+            if cond:
+                piece = cond.group(2)
+            try:
+                node = _ea_parse(piece)
+                if node[0] == "rel" and _ea_worth(node):
+                    sents = [(f"조건 {cond.group(1)}: " if cond else "") + _ea_clause(node)]
+                elif node[0] == "cases" and all(_ea_worth(r) for r in node[1]):
+                    sents = [_ea_clause(r) for r in node[1]]
+                else:
+                    continue
+            except _EaErr:
+                continue
+            if tuple(sents) not in seen:
+                seen.add(tuple(sents))
+                items.append((node, sents))
+    return items[:_EA_MAX_ITEMS]
+
+
+_EA_NTH = ("첫째", "둘째", "셋째", "넷째")
+
+
+def _ea_prose(items):
+    lines = []
+    for node, sents in items:
+        if node[0] == "cases":
+            ops = [o for r in node[1] for o in r[2]]
+            kind = "연립방정식" if all(o == "=" for o in ops) else "연립부등식" if all(o != "=" for o in ops) else "연립식"
+            lines += [f"{kind}의 {_EA_NTH[i]} 식: {s}" for i, s in enumerate(sents)]
+        else:
+            lines.append(sents[0])
+    if len(lines) == 1:
+        return f"\n\n**말로 풀면:** {lines[0]}"
+    return "\n\n**말로 풀면:**\n\n" + "\n".join(f"- {s}" for s in lines)
+
+
+def _ea_aids(q):
+    """문제 글 q 에 방정식을 말로 풀어 쓴 줄글과(그림이 아직 없으면) 방정식 그림을 덧붙여 돌려준다.
+
+    문제를 만드는 일이 이 덧붙임 때문에 멈추면 안 되므로, 어떤 오류가 나도 원래 글을 그대로 돌려준다."""
+    try:
+        items = _ea_items(q)
+        if not items:
+            return q
+        prose = _ea_prose(items)
+        at = q.find(_EA_FIG_MARK)
+        if at >= 0:
+            return q[:at] + prose + q[at:]
+        fig = ""
+        for node, _ in items:
+            try:
+                svg = fig_ea_system(node) if node[0] == "cases" else fig_ea_graph(node)
+            except (_EaErr, ValueError, TypeError, ZeroDivisionError, OverflowError):
+                svg = None
+            if svg:
+                fig = fig_md(svg, alt="방정식 그림")
+                break
+        return q + prose + fig
+    except Exception:
+        return q
 
 
 def _tidy_math(text):
@@ -5550,7 +6615,8 @@ def generate_grade_problems(grade, difficulty=1):
     problems = []
     for target, (unit, families) in zip(targets, units):
         question, explanation, answer = random.choice(families)(target, difficulty)
-        question, explanation = _tidy_math(_fix_josa(question)), _tidy_math(_fix_josa(explanation))
+        question = _ea_aids(_tidy_math(_fix_josa(question)))
+        explanation = _tidy_math(_fix_josa(explanation))
         problems.append((question, f"*({unit} 단원)*\n\n{explanation}", answer))
 
     return title, problems

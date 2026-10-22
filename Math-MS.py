@@ -616,7 +616,13 @@ def show_stopwatch():
 #    세션 표식을 내용에 넣고, 같은 번호는 두 번 더하지 않게 앱 화면 쪽에도 기록해 둔다.
 #  - 시간을 바꾸려면 WRONG_ANSWER_PENALTY_SECONDS 만 고친다.
 # ==========================================
-WRONG_ANSWER_PENALTY_SECONDS = 5
+WRONG_ANSWER_PENALTY_SECONDS = 60
+
+
+def penalty_label():
+    """오답 벌칙 시간을 화면에 적을 글자로. 60초 → '1분', 90초 → '90초'."""
+    s = WRONG_ANSWER_PENALTY_SECONDS
+    return f"{s // 60}분" if s % 60 == 0 else f"{s}초"
 
 WRONG_ANSWER_PENALTY_HTML = r"""
 <script>
@@ -6829,7 +6835,7 @@ else:
                     st.rerun()
                 else:
                     add_wrong_answer_penalty()
-                    st.error(f"아쉽지만 정답이 아니에요. 다시 풀어 보세요! (+{WRONG_ANSWER_PENALTY_SECONDS}초)")
+                    st.error(f"아쉽지만 정답이 아니에요. 다시 풀어 보세요! (+{penalty_label()})")
 
     # --- 화면 4: 완료 화면 ---
     elif st.session_state.step == "end":

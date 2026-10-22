@@ -906,12 +906,16 @@ MC_CHOICE_CSS = """
 """
 
 
-def mc_choice_input(count):
-    """둥근 단추 1~count 를 보여 주고 고른 번호(없으면 None)를 돌려준다."""
+MC_CIRCLED = "①②③④⑤"
+
+
+def mc_choice_input(choices):
+    """객관식 답란: 둥근 단추와 '① 5' 꼴의 보기(번호, 답 순서)를 세로로 보여 주고, 고른 번호(1부터, 없으면 None)를 돌려준다."""
     st.markdown(MC_CHOICE_CSS, unsafe_allow_html=True)
     return st.radio(
         "번호를 고르세요",
-        options=list(range(1, count + 1)),
+        options=list(range(1, len(choices) + 1)),
+        format_func=lambda i: f"{MC_CIRCLED[i - 1]} {choices[i - 1]}",
         index=None,
         horizontal=False,
         key="mc_choice",
@@ -7590,7 +7594,7 @@ def generate_grade_problems(grade, difficulty=1):
         question, explanation, answer = problems[i]
         choices = make_choices(answer)
         if choices:
-            problems[i] = (add_choices_to_question(question, choices), explanation, answer, choices)
+            problems[i] = (question, explanation, answer, choices)
 
     return title, problems
 
@@ -7599,8 +7603,8 @@ def generate_grade_problems(grade, difficulty=1):
 # 객관식 문제 섞기
 #  - 문제 3개 중 1~2개는 보기 5개 중에서 번호를 고르는 객관식으로 낸다. 풀이 화면에서는 둥근 단추 1~5 중 하나를 고르고 완료를 누른다.
 #  - 보기는 정답과 가까운 수 4개를 오답으로 섞어 작은 수부터 늘어놓는다. 그래서 정답 번호는 문제마다 달라진다.
-#  - 객관식 문제 묶음은 (문제, 풀이, 정답, 보기) 이고, 문제 글 끝에 보기가 붙는다. 정답은 번호가 아니라 값 그대로라서
-#    '정답을 기억하세요' 화면과 푼 문제 칸에는 번호 없이 값만 나온다.
+#  - 객관식 문제 묶음은 (문제, 풀이, 정답, 보기) 이다. 문제 상자에는 문제만 두고, 보기는 답란에 ① 5 ② 6 … (번호, 답 순서)로 보여 준다.
+#    정답은 번호가 아니라 값 그대로라서 '정답을 기억하세요' 화면과 푼 문제 칸에는 번호 없이 값만 나온다.
 # ==========================================
 MC_CHOICE_COUNT = 5
 
@@ -7616,12 +7620,6 @@ def make_choices(answer):
     below = random.choice([k for k in range(MC_CHOICE_COUNT) if k <= len(lower) and MC_CHOICE_COUNT - 1 - k <= len(higher)])
     wrong = random.sample(lower, below) + random.sample(higher, MC_CHOICE_COUNT - 1 - below)
     return [str(v) for v in sorted(wrong + [t])]
-
-
-def add_choices_to_question(question, choices):
-    """문제 글 끝에 보기를 (1) 11  (2) 13 … 꼴로 붙인다."""
-    line = "&emsp;".join(f"({i}) {c}" for i, c in enumerate(choices, 1))
-    return f"{question}\n\n{line}"
 
 
 # ==========================================
@@ -8970,7 +8968,7 @@ else:
 
         if choices:
             # 객관식: 둥근 단추 1~5 중 번호를 고르고 완료를 누른다.
-            picked = mc_choice_input(len(choices))
+            picked = mc_choice_input(choices)
             user_answer = choices[picked - 1] if picked else ""
         else:
             # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
@@ -8996,7 +8994,7 @@ else:
                 )
                 if pw == "0805":
                     st.success("암호가 확인되었습니다.")
-                    ans_label = f"{current_ans} ({choices.index(current_ans) + 1}번)" if choices else current_ans
+                    ans_label = f"{current_ans} ({MC_CIRCLED[choices.index(current_ans)]})" if choices else current_ans
                     readable_markdown(
                         f"▶ **정답:** {ans_label}\n\n▶ **풀이:**\n{current_exp}"
                     )

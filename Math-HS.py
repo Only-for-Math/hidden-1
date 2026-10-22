@@ -2874,6 +2874,7 @@ class _Fig:
             self.ox = L
         self.oy = T
         self.parts = []
+        self.under = []          # 맨 아래 층: 치수선처럼 다른 선·글자 밑에 깔 것
 
     # ----- 좌표 변환 -----
     def X(self, x):
@@ -2978,17 +2979,54 @@ class _Fig:
             off += abs(ux) * 0.26 * kw["size"] * len(s) + abs(uy) * kw["size"] * 0.5
         self.text((px_ + ux * off, py_ + uy * off + kw["size"] * 0.34), s, raw=True, **kw)
 
-    def side_label(self, p, q, s, away, off=12, **kw):
-        """선분 pq 의 가운데에서 away 의 반대쪽으로 수직으로 띄워 길이 글자를 적는다."""
+    def dim(self, p, q, s, away, off=13, size=13, color=None, italic=None, top=False):
+        """치수선: 선분 pq 의 길이가 s 임을 '어디서부터 어디까지'인지 보여 준다.
+        선분에서 away 의 반대쪽으로 off 픽셀 떨어진 곳에 양 끝에 화살촉이 달린 점선을 긋고, 선분의 두 끝에서 그 점선까지
+        가는 보조선을 잇는다. 길이 글자는 점선 가운데에 적는다. (선분이 짧아 글자가 안 들어가면 점선 바깥쪽에 적는다.)
+        top=False 면 그림의 맨 아래 층에 깔아 다른 선·글자가 그 위에 놓이게 한다. (면이 불투명한 입체 그림은 top=True)"""
         (ax, ay), (bx, by), (cx, cy) = self.P(p), self.P(q), self.P(away)
+        L = math.hypot(bx - ax, by - ay)
+        if L < 1e-6:
+            return
+        ux, uy = (bx - ax) / L, (by - ay) / L
+        nx, ny = -uy, ux
         mx, my = (ax + bx) / 2, (ay + by) / 2
-        nx, ny = -(by - ay), bx - ax
-        n = math.hypot(nx, ny) or 1.0
-        nx, ny = nx / n, ny / n
         if (mx - cx) * nx + (my - cy) * ny < 0:
             nx, ny = -nx, -ny
-        kw.setdefault("size", 13)
-        self.text((mx + nx * off, my + ny * off + kw["size"] * 0.34), s, raw=True, **kw)
+        col = color or _FIG_AXIS
+        layer = self.parts if top else self.under
+        a2, b2 = (ax + nx * off, ay + ny * off), (bx + nx * off, by + ny * off)
+        for x, y in ((ax, ay), (bx, by)):                                    # 보조선: 선분의 끝 -> 점선
+            layer.append(
+                f'<line x1="{_fn(x + nx * 2)}" y1="{_fn(y + ny * 2)}" x2="{_fn(x + nx * (off + 4))}" y2="{_fn(y + ny * (off + 4))}" '
+                f'stroke="{col}" stroke-width="1" stroke-opacity="0.75"/>'
+            )
+        tw, th = 0.52 * size * len(s), size                                  # 글자 상자의 대략적인 가로·세로
+        half = abs(ux) * tw / 2 + abs(uy) * th / 2 + 4                       # 글자가 점선 방향으로 차지하는 반쪽 길이
+        mid = (mx + nx * off, my + ny * off)
+        halfn = abs(nx) * tw / 2 + abs(ny) * th / 2 + 2                      # 글자 상자가 점선에서 선분 쪽·바깥쪽으로 뻗는 반쪽 두께
+        if halfn <= off - 2.5 and L >= 2 * half + 28:                        # 점선 한가운데에 글자를 앉힌다 (점선은 글자 자리만 비운다)
+            segs = [(a2, (mid[0] - ux * half, mid[1] - uy * half)), ((mid[0] + ux * half, mid[1] + uy * half), b2)]
+            tpos = mid
+        else:                                                                # 글자가 선분을 가리거나 점선이 짧으면 점선 바깥쪽에 적는다
+            segs = [(a2, b2)]
+            tpos = (mid[0] + nx * (halfn + 3), mid[1] + ny * (halfn + 3))
+        for (x1, y1), (x2, y2) in segs:
+            layer.append(
+                f'<line x1="{_fn(x1)}" y1="{_fn(y1)}" x2="{_fn(x2)}" y2="{_fn(y2)}" stroke="{col}" stroke-width="1.5" '
+                f'stroke-dasharray="4 3" stroke-linecap="butt"/>'
+            )
+        hl = min(7.0, L * 0.3)                                               # 화살촉 (끝이 보조선과 만나는 곳을 가리킨다)
+        for (x, y), d in ((a2, 1), (b2, -1)):
+            bx_, by_ = x + ux * hl * d, y + uy * hl * d
+            layer.append(
+                f'<polygon points="{_fn(x)},{_fn(y)} {_fn(bx_ + nx * 3)},{_fn(by_ + ny * 3)} {_fn(bx_ - nx * 3)},{_fn(by_ - ny * 3)}" fill="{col}"/>'
+            )
+        self.text((tpos[0], tpos[1] + size * 0.34), s, raw=True, size=size, color=color or _FIG_INK, italic=italic)
+
+    def side_label(self, p, q, s, away, off=12, **kw):
+        """선분 pq 의 길이 s 를 치수선(점선 화살표)과 함께 적는다. away 의 반대쪽에 선분과 off 픽셀 떨어져 그린다."""
+        self.dim(p, q, s, away, off=max(off, 12), size=kw.get("size", 13), color=kw.get("color"), italic=kw.get("italic"))
 
     def tickmark(self, p, q, n=1, size=4.5, color=_FIG_INK):
         """선분 pq 의 가운데에 같은 길이 표시(짧은 선 n 개)."""
@@ -3159,7 +3197,7 @@ class _Fig:
 
     # ----- 마무리 -----
     def inner(self):
-        return "".join(self.parts)
+        return "".join(self.under) + "".join(self.parts)
 
     def svg(self):
         return (

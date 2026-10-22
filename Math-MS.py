@@ -2954,6 +2954,7 @@ class _Fig:
             self.ox = L
         self.oy = T
         self.parts = []
+        self.under = []          # 맨 아래 층: 치수선처럼 다른 선·글자 밑에 깔 것
 
     # ----- 좌표 변환 -----
     def X(self, x):
@@ -3058,17 +3059,54 @@ class _Fig:
             off += abs(ux) * 0.26 * kw["size"] * len(s) + abs(uy) * kw["size"] * 0.5
         self.text((px_ + ux * off, py_ + uy * off + kw["size"] * 0.34), s, raw=True, **kw)
 
-    def side_label(self, p, q, s, away, off=12, **kw):
-        """선분 pq 의 가운데에서 away 의 반대쪽으로 수직으로 띄워 길이 글자를 적는다."""
+    def dim(self, p, q, s, away, off=13, size=13, color=None, italic=None, top=False):
+        """치수선: 선분 pq 의 길이가 s 임을 '어디서부터 어디까지'인지 보여 준다.
+        선분에서 away 의 반대쪽으로 off 픽셀 떨어진 곳에 양 끝에 화살촉이 달린 점선을 긋고, 선분의 두 끝에서 그 점선까지
+        가는 보조선을 잇는다. 길이 글자는 점선 가운데에 적는다. (선분이 짧아 글자가 안 들어가면 점선 바깥쪽에 적는다.)
+        top=False 면 그림의 맨 아래 층에 깔아 다른 선·글자가 그 위에 놓이게 한다. (면이 불투명한 입체 그림은 top=True)"""
         (ax, ay), (bx, by), (cx, cy) = self.P(p), self.P(q), self.P(away)
+        L = math.hypot(bx - ax, by - ay)
+        if L < 1e-6:
+            return
+        ux, uy = (bx - ax) / L, (by - ay) / L
+        nx, ny = -uy, ux
         mx, my = (ax + bx) / 2, (ay + by) / 2
-        nx, ny = -(by - ay), bx - ax
-        n = math.hypot(nx, ny) or 1.0
-        nx, ny = nx / n, ny / n
         if (mx - cx) * nx + (my - cy) * ny < 0:
             nx, ny = -nx, -ny
-        kw.setdefault("size", 13)
-        self.text((mx + nx * off, my + ny * off + kw["size"] * 0.34), s, raw=True, **kw)
+        col = color or _FIG_AXIS
+        layer = self.parts if top else self.under
+        a2, b2 = (ax + nx * off, ay + ny * off), (bx + nx * off, by + ny * off)
+        for x, y in ((ax, ay), (bx, by)):                                    # 보조선: 선분의 끝 -> 점선
+            layer.append(
+                f'<line x1="{_fn(x + nx * 2)}" y1="{_fn(y + ny * 2)}" x2="{_fn(x + nx * (off + 4))}" y2="{_fn(y + ny * (off + 4))}" '
+                f'stroke="{col}" stroke-width="1" stroke-opacity="0.75"/>'
+            )
+        tw, th = 0.52 * size * len(s), size                                  # 글자 상자의 대략적인 가로·세로
+        half = abs(ux) * tw / 2 + abs(uy) * th / 2 + 4                       # 글자가 점선 방향으로 차지하는 반쪽 길이
+        mid = (mx + nx * off, my + ny * off)
+        halfn = abs(nx) * tw / 2 + abs(ny) * th / 2 + 2                      # 글자 상자가 점선에서 선분 쪽·바깥쪽으로 뻗는 반쪽 두께
+        if halfn <= off - 2.5 and L >= 2 * half + 28:                        # 점선 한가운데에 글자를 앉힌다 (점선은 글자 자리만 비운다)
+            segs = [(a2, (mid[0] - ux * half, mid[1] - uy * half)), ((mid[0] + ux * half, mid[1] + uy * half), b2)]
+            tpos = mid
+        else:                                                                # 글자가 선분을 가리거나 점선이 짧으면 점선 바깥쪽에 적는다
+            segs = [(a2, b2)]
+            tpos = (mid[0] + nx * (halfn + 3), mid[1] + ny * (halfn + 3))
+        for (x1, y1), (x2, y2) in segs:
+            layer.append(
+                f'<line x1="{_fn(x1)}" y1="{_fn(y1)}" x2="{_fn(x2)}" y2="{_fn(y2)}" stroke="{col}" stroke-width="1.5" '
+                f'stroke-dasharray="4 3" stroke-linecap="butt"/>'
+            )
+        hl = min(7.0, L * 0.3)                                               # 화살촉 (끝이 보조선과 만나는 곳을 가리킨다)
+        for (x, y), d in ((a2, 1), (b2, -1)):
+            bx_, by_ = x + ux * hl * d, y + uy * hl * d
+            layer.append(
+                f'<polygon points="{_fn(x)},{_fn(y)} {_fn(bx_ + nx * 3)},{_fn(by_ + ny * 3)} {_fn(bx_ - nx * 3)},{_fn(by_ - ny * 3)}" fill="{col}"/>'
+            )
+        self.text((tpos[0], tpos[1] + size * 0.34), s, raw=True, size=size, color=color or _FIG_INK, italic=italic)
+
+    def side_label(self, p, q, s, away, off=12, **kw):
+        """선분 pq 의 길이 s 를 치수선(점선 화살표)과 함께 적는다. away 의 반대쪽에 선분과 off 픽셀 떨어져 그린다."""
+        self.dim(p, q, s, away, off=max(off, 12), size=kw.get("size", 13), color=kw.get("color"), italic=kw.get("italic"))
 
     def tickmark(self, p, q, n=1, size=4.5, color=_FIG_INK):
         """선분 pq 의 가운데에 같은 길이 표시(짧은 선 n 개)."""
@@ -3239,7 +3277,7 @@ class _Fig:
 
     # ----- 마무리 -----
     def inner(self):
-        return "".join(self.parts)
+        return "".join(self.under) + "".join(self.parts)
 
     def svg(self):
         return (
@@ -4094,8 +4132,8 @@ def fig_chord(d_txt, r_txt, names=("O", "A", "B", "M")):
         f.label_out(p, nm, c, off=13, size=15)
     f.dot((0, 0), r=3)
     f.text((0, 0), O_, dx=0, dy=-9, italic=True)
-    f.text((0, -d / 2), d_txt, dx=-12, dy=5, anchor="end", italic=False, size=13)
-    f.text((-half / 2, -d / 2), r_txt, dx=-12, dy=-12, anchor="end", italic=False, size=13)
+    f.dim((0, 0), M, d_txt, away=B, off=14, size=13, italic=False)
+    f.dim((0, 0), A, r_txt, away=M, off=14, size=13, italic=False)
     return f.svg()
 
 
@@ -4212,9 +4250,9 @@ def fig_parallel_prop2(names1, names2, lab_ab, lab_bc, lab_de, a, b):
     for nm, p in zip(names2, (D, E, F)):
         f.dot(p, r=2.8)
         f.text(p, nm, dx=12, dy=-7, italic=True)
-    f.text(((A[0] + B[0]) / 2, (A[1] + B[1]) / 2), lab_ab, dx=-8, dy=4, anchor="end", italic=False, size=13)
-    f.text(((B[0] + C[0]) / 2, (B[1] + C[1]) / 2), lab_bc, dx=-8, dy=4, anchor="end", italic=False, size=13)
-    f.text(((D[0] + E[0]) / 2, (D[1] + E[1]) / 2), lab_de, dx=8, dy=4, anchor="start", italic=False, size=13)
+    f.dim(A, B, lab_ab, away=D, off=14, size=13, italic=False)
+    f.dim(B, C, lab_bc, away=D, off=14, size=13, italic=False)
+    f.dim(D, E, lab_de, away=A, off=14, size=13, italic=False)
     return f.svg()
 
 
@@ -4436,21 +4474,23 @@ def fig_cuboid(a, b, h, cuts, lab_a, lab_b, lab_h, cut_labels=()):
                 if S(up) or not S(nb):
                     f.line(proj(*p), proj(*q), color=_FIG_INK, w=1.7, cap="round")
     # 길이 글자
-    f.text(proj(a / 2, 0, 0), lab_a, dy=19, size=14, italic=False)
-    f.text(proj(a + 0.0, b / 2, 0), lab_b, dx=16, dy=12, size=14, italic=False, anchor="start")
-    f.text(proj(0, 0, h / 2), lab_h, dx=-10, dy=5, size=14, italic=False, anchor="end")
+    inner = proj(a / 2, b / 2, h / 2)
+    f.dim(proj(0, 0, 0), proj(a, 0, 0), lab_a, away=inner, off=16, size=14, italic=False, top=True)
+    f.dim(proj(a, 0, 0), proj(a, b, 0), lab_b, away=inner, off=16, size=14, italic=False, top=True)
+    f.dim(proj(0, 0, 0), proj(0, 0, h), lab_h, away=inner, off=16, size=14, italic=False, top=True)
     for (pos, cw, cl, ch), (t1, t2) in zip(cuts, cut_labels):
         if pos == "FL":
-            base = proj(0, 0, h)
+            notch = proj(cw / 2, 0, h - ch / 2)            # 잘려 나간 자리 (치수선은 이 반대쪽, 곧 바깥에 긋는다)
             if t1:
-                f.text(proj(cw / 2, 0, h), t1, dy=-8, size=12, italic=False, color=_FIG_RED)
+                f.dim(proj(0, 0, h), proj(cw, 0, h), t1, away=notch, off=13, size=12, italic=False, color=_FIG_RED, top=True)
             if t2:
-                f.text(proj(0, 0, h - ch / 2), t2, dx=-6, dy=4, size=12, italic=False, color=_FIG_RED, anchor="end")
+                f.dim(proj(0, 0, h - ch), proj(0, 0, h), t2, away=notch, off=13, size=12, italic=False, color=_FIG_RED, top=True)
         else:
+            notch = proj(a - cw / 2, b, h - ch / 2)
             if t1:
-                f.text(proj(a - cw / 2, b, h), t1, dy=-8, size=12, italic=False, color=_FIG_RED)
+                f.dim(proj(a - cw, b, h), proj(a, b, h), t1, away=notch, off=13, size=12, italic=False, color=_FIG_RED, top=True)
             if t2:
-                f.text(proj(a, b, h - ch / 2), t2, dx=6, dy=4, size=12, italic=False, color=_FIG_RED, anchor="start")
+                f.dim(proj(a, b, h - ch), proj(a, b, h), t2, away=notch, off=13, size=12, italic=False, color=_FIG_RED, top=True)
     return f.svg()
 
 
@@ -4459,8 +4499,8 @@ def fig_pour_cyl(r_text, h_text):
     f = _Fig(-1.4, 1.4, -0.45, 2.1, width=260, equal=True, pad=(14, 14, 14, 14))
     _cylinder(f, 0, 0, 0.8, 1.7)
     f.line((0, 1.7), (0.8, 1.7), color=_FIG_RED, w=1.5)
-    f.text((0.4, 1.7), r_text, dy=-14, size=13, italic=False, color=_FIG_RED)
-    f.text((-0.8, 0.85), h_text, dx=-8, dy=4, size=13, italic=False, anchor="end", color=_FIG_RED)
+    f.dim((0, 1.7), (0.8, 1.7), r_text, away=(0.4, 3.0), off=14, size=13, italic=False, color=_FIG_RED)
+    f.dim((-0.8, 0), (-0.8, 1.7), h_text, away=(0, 0.85), off=14, size=13, italic=False, color=_FIG_RED)
     return f.svg()
 
 
@@ -4479,9 +4519,9 @@ def fig_pour_cones(cones, r_text, h0_text):
         cx = x + w
         _cone(f, cx, 0, w, hh)
         f.line((cx, 0), (cx + w, 0), color=_FIG_RED, w=1.4)
-        f.text((cx + w / 2, 0), rt, dy=19, size=12, italic=False, color=_FIG_RED)
+        f.dim((cx, 0), (cx + w, 0), rt, away=(cx + w / 2, hh / 2), off=14, size=12, italic=False, color=_FIG_RED)
         f.line((cx, 0), (cx, hh), color=_FIG_RED, w=1.4, dash="4 3")
-        f.text((cx, hh / 2), ht, dx=-4, dy=4, size=12, italic=False, color=_FIG_RED, anchor="end")
+        f.dim((cx, 0), (cx, hh), ht, away=(cx + w / 2, hh / 2), off=14, size=12, italic=False, color=_FIG_RED)
         x += 2 * w + 0.5
     ax0 = x - 0.35
     x += 0.35
@@ -4489,8 +4529,8 @@ def fig_pour_cones(cones, r_text, h0_text):
     wl = h_cyl * 0.36
     _cylinder(f, cx, 0, r_cyl, h_cyl, water=wl)
     f.line((cx, h_cyl), (cx + r_cyl, h_cyl), color=_FIG_RED, w=1.4)
-    f.text((cx + r_cyl / 2, h_cyl), r_text, dy=-13, size=12, italic=False, color=_FIG_RED)
-    f.text((cx + r_cyl, wl / 2), h0_text, dx=8, dy=4, size=12, italic=False, color=_FIG_RED, anchor="start")
+    f.dim((cx, h_cyl), (cx + r_cyl, h_cyl), r_text, away=(cx + r_cyl / 2, h_cyl + 2), off=14, size=12, italic=False, color=_FIG_RED)
+    f.dim((cx + r_cyl, 0), (cx + r_cyl, wl), h0_text, away=(cx, wl / 2), off=14, size=12, italic=False, color=_FIG_RED)
     y_ar = h_cyl * 0.62
     f.line((ax0, y_ar), (x - 0.12, y_ar), color=_FIG_GRAY, w=1.8)
     px_, py_ = f.X(x - 0.04), f.Y(y_ar)
@@ -4503,7 +4543,7 @@ def fig_garden_cross(W, H, road, lab_w, lab_h):
     ux, uy = _clamp_len([W, H], 0.6)
     w, h = ux * 4.6, uy * 4.6
     rw = max(0.28, road / max(W, H) * 4.6)
-    f = _fit([(0, 0), (w, h)], pad=(40, 56, 24, 34))
+    f = _fit([(0, 0), (w, h)], pad=(40, 74, 24, 34))
     cx, cy = w * 0.38, h * 0.42                           # 길의 왼쪽·아래쪽 위치
     f.poly([(0, 0), (w, 0), (w, h), (0, h)], fill=_FIG_GREEN, fo=0.16, w=2.0)
     f.poly([(cx, 0), (cx + rw, 0), (cx + rw, h), (cx, h)], fill="#9ca3af", fo=0.55, stroke=None)
@@ -4515,8 +4555,8 @@ def fig_garden_cross(W, H, road, lab_w, lab_h):
     f.line((0, cy + rw), (w, cy + rw), color=_FIG_INK, w=1.3, dash="5 3")
     f.text((cx + rw / 2, h * 0.86), "x", italic=True, color=_FIG_RED, size=16)
     f.text((w * 0.84, cy + rw / 2), "x", dy=5, italic=True, color=_FIG_RED, size=16)
-    f.text((w / 2, 0), lab_w, dy=22, size=14, italic=False)
-    f.text((w, h / 2), lab_h, dx=10, dy=5, size=14, italic=False, anchor="start")
+    f.dim((0, 0), (w, 0), lab_w, away=(w / 2, h), off=16, size=14, italic=False)
+    f.dim((w, 0), (w, h), lab_h, away=(0, h / 2), off=16, size=14, italic=False)
     return f.svg()
 
 
@@ -4532,8 +4572,7 @@ def fig_two_squares(L, ap, lab_ab, names=("A", "P", "B")):
     for nm, p in ((A_, A), (P_, P), (B_, B)):
         f.dot(p, r=3)
         f.text(p, nm, dy=19, italic=True)
-    f.line((0, -L * 0.09), (L, -L * 0.09), color=_FIG_GRAY, w=1.3)
-    f.text((L / 2, -L * 0.09), lab_ab, dy=19, size=13, italic=False)
+    f.dim(A, B, lab_ab, away=(L / 2, ap / 2), off=38, size=13, italic=False)
     return f.svg()
 
 

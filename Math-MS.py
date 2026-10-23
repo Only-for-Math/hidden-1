@@ -866,6 +866,70 @@ def readable_markdown(md_text):
     )
 
 
+# 객관식 번호 고르기: 둥근 단추 1~5 중 하나를 고르고 "완료 ❯" 를 누르면 맞는지 확인한다.
+#  - 처음에는 아무 번호도 골라져 있지 않다. (st.radio 의 index=None)
+MC_CHOICE_CSS = """
+<style>
+.st-key-mc_choice {
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 12px;
+    padding: 12px 10px;
+    min-width: min(100%, 360px);     /* 보기 글자가 짧아도 눌리는 칸이 좁아지지 않게 한다. */
+    box-sizing: border-box;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.st-key-mc_choice [data-testid="stRadioGroup"] {
+    display: flex; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 4px; width: 100%;
+}
+/* 터치(갤럭시 탭 등)에서 잘 눌리도록 한 줄 전체를 누르는 칸으로 만든다. (가로는 상자 끝까지, 세로는 56px 이상)
+   touch-action: manipulation 은 두 번 탭 확대를 기다리지 않게 하고, user-select: none 은 길게 눌렀을 때 글자가 선택되는 것을 막는다. */
+.st-key-mc_choice [data-testid="stRadioOption"] {
+    display: flex; justify-content: flex-start; align-items: center; box-sizing: border-box;
+    width: 100%; min-height: 56px; margin: 0; padding: 10px 16px; border-radius: 10px; cursor: pointer;
+    touch-action: manipulation; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0.12);
+}
+.st-key-mc_choice [data-testid="stRadioOption"]:active,
+.st-key-mc_choice [data-testid="stRadioOption"][data-selected="true"] {
+    background: rgba(0, 0, 0, 0.08);
+}
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div { align-items: center; gap: 12px; }
+/* 둥근 칸: 흰 바탕에 검은 테두리, 고르면 가운데가 검게 찬다. */
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child {
+    width: 28px !important; height: 28px !important; min-width: 28px;
+    border: 2px solid #000000 !important; background: #ffffff !important; border-radius: 50% !important;
+    box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child > div {
+    width: 14px !important; height: 14px !important; border-radius: 50% !important; background: transparent !important;
+}
+.st-key-mc_choice [data-testid="stRadioOption"][data-selected="true"] > div > div > div:first-child > div {
+    background: #000000 !important;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] p {
+    font-size: 1.2rem !important; font-weight: 900 !important; color: #000000 !important; margin: 0;
+}
+</style>
+"""
+
+
+MC_CIRCLED = "①②③④⑤"
+
+
+def mc_choice_input(choices):
+    """객관식 답란: 둥근 단추와 '① 5' 꼴의 보기(번호, 답 순서)를 세로로 보여 주고, 고른 번호(1부터, 없으면 None)를 돌려준다."""
+    st.markdown(MC_CHOICE_CSS, unsafe_allow_html=True)
+    return st.radio(
+        "번호를 고르세요",
+        options=list(range(1, len(choices) + 1)),
+        format_func=lambda i: f"{MC_CIRCLED[i - 1]} {choices[i - 1]}",
+        index=None,
+        horizontal=False,
+        key="mc_choice",
+        label_visibility="collapsed",
+    )
+
+
 # ==========================================
 # 타임머신 이후 화면에 삽입되는 미니게임: 나무 파이프 슬라이딩 퍼즐 (난이도별 하 4x4 · 중 5x5 · 상 6x6)
 # (원본 게임의 버그 3건을 수정한 버전)
@@ -1833,7 +1897,7 @@ PRISON_KEY_PUZZLE_HTML = """
   /* ========================================================
      파이프 퍼즐 게임 (원본 로직)
   ======================================================== */
-  // 한 변의 칸 수: 파이썬이 난이도에 맞춰 채워 준다. (하=4, 중=5, 상=6 / PIPE_PUZZLE_GRID_SIZE)
+  // 한 변의 칸 수: 파이썬이 난이도에 맞춰 채워 준다. (하=4, 중=5, 상=6, 상에서 2분 이내 도착이면 10 / pipe_puzzle_grid_size)
   const PUZZLE_GRID_SIZE = Number('__GRID_SIZE__') || 4;
   let canvas, ctx;
   let boardGrid = [];
@@ -1902,6 +1966,24 @@ PRISON_KEY_PUZZLE_HTML = """
     let path = [];
     let visited = new Set();
 
+    // (r,c) 에서 아직 안 지나간 칸만 밟고 도착 칸까지 갈 수 있는지 본다.
+    // 갈 수 없는 쪽으로 들어가면 막다른 곳을 끝없이 되짚게 되어 10x10 처럼 큰 판에서는 화면이 멈추므로, 들어가기 전에 거른다.
+    function canReachEnd(r,c){
+      const seen = new Set([r*GRID_SIZE+c]);
+      const stack = [[r,c]];
+      while(stack.length){
+        const [cr,cc] = stack.pop();
+        if(cr===GRID_SIZE-1 && cc===GRID_SIZE-1) return true;
+        for(const [dr,dc] of [[0,1],[1,0],[-1,0],[0,-1]]){
+          const nr=cr+dr, nc=cc+dc, nidx=nr*GRID_SIZE+nc;
+          if(nr>=0 && nr<GRID_SIZE && nc>=0 && nc<GRID_SIZE && !visited.has(nidx) && !seen.has(nidx)){
+            seen.add(nidx); stack.push([nr,nc]);
+          }
+        }
+      }
+      return false;
+    }
+
     function findPath(r,c,currentPath){
       const idx = r*GRID_SIZE+c;
       currentPath.push({r,c,idx}); visited.add(idx);
@@ -1910,7 +1992,7 @@ PRISON_KEY_PUZZLE_HTML = """
       dirs.sort(()=>Math.random()-.5);
       for(const d of dirs){
         const nr=r+d.dr, nc=c+d.dc, nidx=nr*GRID_SIZE+nc;
-        if(nr>=0 && nr<GRID_SIZE && nc>=0 && nc<GRID_SIZE && !visited.has(nidx)){
+        if(nr>=0 && nr<GRID_SIZE && nc>=0 && nc<GRID_SIZE && !visited.has(nidx) && canReachEnd(nr,nc)){
           if(findPath(nr,nc,currentPath)) return true;
         }
       }
@@ -2894,6 +2976,10 @@ _FIG_GRAY = "#9ca3af"
 _FIG_FONT = "'Times New Roman','Noto Serif KR','Noto Serif',Georgia,serif"
 
 
+# 그림 속 모든 글자(식·눈금·이름)를 이 배수만큼 키워서 굵게 쓴다. 더 크게 하려면 이 값만 올린다.
+FIG_TEXT_SCALE = 1.25
+
+
 _FIG_SUP = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 
@@ -3028,24 +3114,47 @@ class _Fig:
         else:
             self.add(f'<circle cx="{_fn(x)}" cy="{_fn(y)}" r="{r}" fill="{color}"/>')
 
-    def text(self, p, s, dx=0, dy=0, size=15, anchor="middle", italic=None, color=_FIG_INK, bold=False, raw=False):
-        """글자. p 는 수학 좌표(raw=True 면 화면 좌표), dx, dy 는 화면 픽셀 어긋남. 글자 둘레에 흰 테두리를 둘러 선과 겹쳐도 읽힌다."""
-        x, y = (p if raw else self.P(p))
-        # 글자가 그림 틀 밖으로 잘리지 않게 안쪽으로 밀어 넣는다. (글자 폭은 어림한다)
-        w = 0.52 * size * len(s)
+    def _fit_text(self, x, y, s, dx, dy, fs, anchor):
+        """글자를 그림 틀 안으로 밀어 넣은 (dx, dy) 와 그 글자 상자 (왼쪽, 오른쪽, 위, 아래)를 돌려준다. (글자 폭은 어림한다)"""
+        w = 0.6 * fs * len(s)
         left = x + dx - (w if anchor == "end" else w / 2 if anchor == "middle" else 0)
         if left < 2:
             dx += 2 - left
         elif left + w > self.W - 2:
             dx -= left + w - (self.W - 2)
-        dy = min(max(dy, size - y + 1), self.H - 3 - y)
+        dy = min(max(dy, fs - y + 1), self.H - 3 - y)
+        left = x + dx - (w if anchor == "end" else w / 2 if anchor == "middle" else 0)
+        base = y + dy
+        return dx, dy, (left, left + w, base - fs * 0.85, base + fs * 0.25)
+
+    def _hits(self, box):
+        """이 글자 상자가 이미 놓인 글자와 겹치는가."""
+        return any(box[0] < b[1] - 1 and box[1] > b[0] + 1 and box[2] < b[3] - 1 and box[3] > b[2] + 1
+                   for b in self.__dict__.setdefault("_boxes", []))
+
+    def text(self, p, s, dx=0, dy=0, size=15, anchor="middle", italic=None, color=_FIG_INK, bold=False, raw=False, nudge=True):
+        """글자. p 는 수학 좌표(raw=True 면 화면 좌표), dx, dy 는 화면 픽셀 어긋남. 글자 둘레에 흰 테두리를 둘러 선과 겹쳐도 읽힌다.
+        nudge=True 면 이미 놓인 글자와 겹칠 때 위아래·옆으로 조금 옮겨서 글자끼리 가리거나 붙어 보이지 않게 한다."""
+        x, y = (p if raw else self.P(p))
+        # 그림 속 글자는 수식 그림 글자처럼 두껍고 또렷하게 보이도록 굵게 쓰고 조금 키운다. (bold 인자와 상관없이 늘 굵게)
+        fs = round(size * FIG_TEXT_SCALE, 1)
+        dx0, dy0 = dx, dy
+        dx, dy, box = self._fit_text(x, y, s, dx0, dy0, fs, anchor)
+        if nudge and self._hits(box):
+            w = 0.6 * fs * len(s)
+            for ox, oy in ((0, -1), (0, 1), (1, 0), (-1, 0), (1, -1), (-1, -1), (1, 1), (-1, 1),
+                           (0, -2), (0, 2), (2, 0), (-2, 0), (2, -1), (-2, -1), (2, 1), (-2, 1)):
+                cdx, cdy, cbox = self._fit_text(x, y, s, dx0 + ox * (w * 0.5 + 8), dy0 + oy * (fs * 0.95 + 2), fs, anchor)
+                if not self._hits(cbox):
+                    dx, dy, box = cdx, cdy, cbox
+                    break
+        self.__dict__.setdefault("_boxes", []).append(box)
         if italic is None:
             italic = bool(re.fullmatch(r"[A-Za-z]{1,2}'?", s))
         st = ' font-style="italic"' if italic else ""
-        wt = ' font-weight="700"' if bold else ""
         self.add(
-            f'<text x="{_fn(x + dx)}" y="{_fn(y + dy)}" font-size="{size}" text-anchor="{anchor}" fill="{color}"{st}{wt} '
-            f'stroke="#fff" stroke-width="3.6" stroke-linejoin="round" paint-order="stroke">{html_escape(s)}</text>'
+            f'<text x="{_fn(x + dx)}" y="{_fn(y + dy)}" font-size="{fs}" text-anchor="{anchor}" fill="{color}"{st} font-weight="900" '
+            f'stroke="#fff" stroke-width="4.6" stroke-linejoin="round" paint-order="stroke">{html_escape(s)}</text>'
         )
 
     def label_out(self, p, s, center, off=13, fit=False, **kw):
@@ -3217,7 +3326,16 @@ class _Fig:
         if abs(x) < 1e-9 and getattr(self, "_ax", None) == 0:   # 원점은 O 글자가 있으므로 0 은 쓰지 않는다
             return
         self.add(f'<line x1="{_fn(X)}" y1="{_fn(Y - 3.5)}" x2="{_fn(X)}" y2="{_fn(Y + 3.5)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
-        self.text((X, Y), label if label is not None else _fn(x).replace("-", "−"), raw=True, dy=17, size=size, italic=False)
+        label = label if label is not None else _fn(x).replace("-", "−")
+        # 눈금 숫자가 서로 가깝거나 다른 글자와 겹쳐 붙어 보이면(예: 101, 102 → 101102) 겹치는 글자를 아랫줄로 내린다.
+        fs = round(size * FIG_TEXT_SCALE, 1)
+        for row in range(4):
+            dy = 17 + row * (fs + 2)
+            if not self._hits(self._fit_text(X, Y, label, 0, dy, fs, "middle")[2]):
+                break
+        if row:
+            self.add(f'<line x1="{_fn(X)}" y1="{_fn(Y + 3.5)}" x2="{_fn(X)}" y2="{_fn(Y + dy - fs * 0.8)}" stroke="{_FIG_AXIS}" stroke-width="1"/>')
+        self.text((X, Y), label, raw=True, dy=dy, size=size, italic=False, nudge=False)
 
     def ytick(self, y, label=None, size=12):
         ax = getattr(self, "_ax", 0)
@@ -3227,7 +3345,14 @@ class _Fig:
         if abs(y) < 1e-9 and getattr(self, "_ay", None) == 0:
             return
         self.add(f'<line x1="{_fn(X - 3.5)}" y1="{_fn(Y)}" x2="{_fn(X + 3.5)}" y2="{_fn(Y)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
-        self.text((X, Y), label if label is not None else _fn(y).replace("-", "−"), raw=True, dx=-8, dy=size * 0.34, size=size, anchor="end", italic=False)
+        label = label if label is not None else _fn(y).replace("-", "−")
+        # 눈금 숫자가 위아래로 가깝거나 다른 글자(원점 O, x축 눈금 등)와 겹치면 축 오른쪽으로 옮기고, 그래도 겹치면 더 바깥으로 옮긴다.
+        fs = round(size * FIG_TEXT_SCALE, 1)
+        w = 0.6 * fs * len(label)
+        for dx, anchor in ((-8, "end"), (8, "start"), (-16 - w, "end"), (16 + w, "start")):
+            if not self._hits(self._fit_text(X, Y, label, dx, size * 0.34, fs, anchor)[2]):
+                break
+        self.text((X, Y), label, raw=True, dx=dx, dy=size * 0.34, size=size, anchor=anchor, italic=False, nudge=False)
 
     # ----- 함수 그래프 -----
     def curve(self, fn, x0, x1, n=320, color=_FIG_BLUE, w=2.3, dash=None, ylo=None, yhi=None):
@@ -9043,6 +9168,16 @@ DIFFICULTY_LABELS = {1: "하", 2: "중", 3: "상"}
 DIFFICULTY_PLAYTIME_MIN = {1: 10, 2: 15, 3: 20}
 # 물길 연결(파이프) 퍼즐 한 변의 칸 수: 하=4x4, 중=5x5, 상=6x6. (감옥 열쇠 퍼즐 화면이 난이도에 맞춰 쓴다)
 PIPE_PUZZLE_GRID_SIZE = {1: 4, 2: 5, 3: 6}
+# 난이도 '상'에서 스톱워치 합계(오답 벌칙 시간 포함)가 이 시간 이하인 채로 퍼즐에 도착하면 퍼즐이 더 크게 나온다.
+PIPE_PUZZLE_FAST_SECONDS = 120
+PIPE_PUZZLE_FAST_GRID_SIZE = 10
+
+
+def pipe_puzzle_grid_size(difficulty, total_ms):
+    """물길 연결 퍼즐 한 변의 칸 수. 난이도 '상'이고 스톱워치 합계(total_ms, 밀리초)가 PIPE_PUZZLE_FAST_SECONDS 이하면 10x10."""
+    if difficulty == 3 and total_ms <= PIPE_PUZZLE_FAST_SECONDS * 1000:
+        return PIPE_PUZZLE_FAST_GRID_SIZE
+    return PIPE_PUZZLE_GRID_SIZE[difficulty]
 
 
 def generate_grade_problems(grade, difficulty=1):
@@ -9061,7 +9196,39 @@ def generate_grade_problems(grade, difficulty=1):
         explanation = _tidy_math(_fix_josa(explanation))
         problems.append((question, f"*({unit} 단원)*\n\n{explanation}", answer))
 
+    # 난이도 하·중에서는 1~2문제를 객관식으로 섞는다. (나머지와 난이도 '상'의 문제는 숫자를 직접 쓰는 주관식)
+    for i in (random.sample(range(len(problems)), random.choice([1, 2])) if difficulty in MC_DIFFICULTIES else []):
+        question, explanation, answer = problems[i]
+        choices = make_choices(answer)
+        if choices:
+            problems[i] = (question, explanation, answer, choices)
+
     return title, problems
+
+
+# ==========================================
+# 객관식 문제 섞기
+#  - 난이도 하·중에서는 문제 3개 중 1~2개를 보기 5개 중에서 번호를 고르는 객관식으로 낸다. (난이도 상은 모두 주관식)
+#    풀이 화면에서는 둥근 단추 1~5 중 하나를 고르고 완료를 누른다.
+#  - 보기는 정답과 가까운 수 4개를 오답으로 섞어 작은 수부터 늘어놓는다. 그래서 정답 번호는 문제마다 달라진다.
+#  - 객관식 문제 묶음은 (문제, 풀이, 정답, 보기) 이다. 문제 상자에는 문제만 두고, 보기는 답란에 ① 5 ② 6 … (번호, 답 순서)로 보여 준다.
+#    정답은 번호가 아니라 값 그대로라서 '정답을 기억하세요' 화면과 푼 문제 칸에는 번호 없이 값만 나온다.
+# ==========================================
+MC_CHOICE_COUNT = 5
+MC_DIFFICULTIES = (1, 2)      # 객관식을 섞는 난이도: 하·중. 난이도 '상'(3)은 모두 주관식으로 낸다.
+
+
+def make_choices(answer):
+    """객관식 보기 5개: 정답과 가까운 오답 4개를 섞어 작은 수부터 늘어놓은 글자 목록. 정답이 자연수가 아니면 None."""
+    if not str(answer).isdigit():
+        return None
+    t = int(answer)
+    lower = [t - d for d in (1, 2, 3, 4) if t - d >= 0]
+    higher = [t + d for d in (1, 2, 3, 4)]
+    # 정답보다 작은 오답을 몇 개 둘지(= 정답이 몇 번째에 놓일지)를 고르게 뽑아, 정답 번호가 한쪽으로 쏠리지 않게 한다.
+    below = random.choice([k for k in range(MC_CHOICE_COUNT) if k <= len(lower) and MC_CHOICE_COUNT - 1 - k <= len(higher)])
+    wrong = random.sample(lower, below) + random.sample(higher, MC_CHOICE_COUNT - 1 - below)
+    return [str(v) for v in sorted(wrong + [t])]
 
 
 # ==========================================
@@ -9723,7 +9890,9 @@ elif st.session_state.step == "prison_key":
     if "prison_key_html" not in st.session_state:
         started = st.session_state.get("stopwatch_start", time.monotonic())
         elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
-        grid_size = PIPE_PUZZLE_GRID_SIZE[st.session_state.get("difficulty", 1)]
+        # 화면에 보이는 스톱워치 합계에는 오답 벌칙 시간이 더해져 있으므로, 퍼즐 크기도 같은 값으로 정한다.
+        total_ms = elapsed_ms + st.session_state.get("wrong_answer_count", 0) * WRONG_ANSWER_PENALTY_SECONDS * 1000
+        grid_size = pipe_puzzle_grid_size(st.session_state.get("difficulty", 1), total_ms)
         st.session_state.prison_key_html = PRISON_KEY_PUZZLE_HTML.replace(
             "__ELAPSED_BEFORE_MS__", str(elapsed_ms)
         ).replace("__PRISON_CLUE__", html_escape(prison_clue_text())).replace("__GRID_SIZE__", str(grid_size))
@@ -10133,7 +10302,8 @@ else:
 
     # --- 화면 3: 문제 풀이 ---
     elif st.session_state.step == "solve":
-        current_q, current_exp, current_ans = st.session_state.current_problem
+        current_q, current_exp, current_ans = st.session_state.current_problem[:3]
+        choices = st.session_state.current_problem[3] if len(st.session_state.current_problem) > 3 else None   # 객관식이면 보기
 
         # 제목 · 구분선 · 문제(수식 포함)를 흰 상자 하나에 담는다.
         readable_markdown(
@@ -10141,14 +10311,19 @@ else:
         )
         st.write("")
 
-        # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
-        user_answer = st.text_input(
-            "정답을 입력하세요 (숫자만 입력):",
-            autocomplete="off",
-            key="user_answer",
-            label_visibility="collapsed",
-            placeholder="정답을 입력하세요 (숫자만 입력)",
-        )
+        if choices:
+            # 객관식: 둥근 단추 1~5 중 번호를 고르고 완료를 누른다.
+            picked = mc_choice_input(choices)
+            user_answer = choices[picked - 1] if picked else ""
+        else:
+            # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
+            user_answer = st.text_input(
+                "정답을 입력하세요 (숫자만 입력):",
+                autocomplete="off",
+                key="user_answer",
+                label_visibility="collapsed",
+                placeholder="정답을 입력하세요 (숫자만 입력)",
+            )
         st.markdown("---")
 
         if st.session_state.is_dev_mode:
@@ -10164,8 +10339,9 @@ else:
                 )
                 if pw == "0805":
                     st.success("암호가 확인되었습니다.")
+                    ans_label = f"{current_ans} ({MC_CIRCLED[choices.index(current_ans)]})" if choices else current_ans
                     readable_markdown(
-                        f"▶ **정답:** {current_ans}\n\n▶ **풀이:**\n{current_exp}"
+                        f"▶ **정답:** {ans_label}\n\n▶ **풀이:**\n{current_exp}"
                     )
                 elif pw != "":
                     st.error("암호가 맞지 않아요. 다시 입력해 주세요.")
@@ -10187,7 +10363,9 @@ else:
             if lucky_button(
                 "완료 ❯", type="primary", use_container_width=True
             ):
-                if user_answer.strip() == current_ans:
+                if choices and not user_answer:
+                    st.warning("번호를 먼저 골라 주세요.")     # 아무것도 고르지 않았을 때는 벌점 없이 안내만 한다.
+                elif user_answer.strip() == current_ans:
                     if "pw_single" in st.session_state:
                         del st.session_state["pw_single"]
                     st.session_state.dev_panel_open = False

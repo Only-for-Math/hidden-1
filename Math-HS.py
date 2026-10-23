@@ -870,6 +870,70 @@ def readable_markdown(md_text):
     )
 
 
+# 객관식 번호 고르기: 둥근 단추 1~5 중 하나를 고르고 "완료 ❯" 를 누르면 맞는지 확인한다.
+#  - 처음에는 아무 번호도 골라져 있지 않다. (st.radio 의 index=None)
+MC_CHOICE_CSS = """
+<style>
+.st-key-mc_choice {
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 12px;
+    padding: 12px 10px;
+    min-width: min(100%, 360px);     /* 보기 글자가 짧아도 눌리는 칸이 좁아지지 않게 한다. */
+    box-sizing: border-box;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.st-key-mc_choice [data-testid="stRadioGroup"] {
+    display: flex; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 4px; width: 100%;
+}
+/* 터치(갤럭시 탭 등)에서 잘 눌리도록 한 줄 전체를 누르는 칸으로 만든다. (가로는 상자 끝까지, 세로는 56px 이상)
+   touch-action: manipulation 은 두 번 탭 확대를 기다리지 않게 하고, user-select: none 은 길게 눌렀을 때 글자가 선택되는 것을 막는다. */
+.st-key-mc_choice [data-testid="stRadioOption"] {
+    display: flex; justify-content: flex-start; align-items: center; box-sizing: border-box;
+    width: 100%; min-height: 56px; margin: 0; padding: 10px 16px; border-radius: 10px; cursor: pointer;
+    touch-action: manipulation; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0.12);
+}
+.st-key-mc_choice [data-testid="stRadioOption"]:active,
+.st-key-mc_choice [data-testid="stRadioOption"][data-selected="true"] {
+    background: rgba(0, 0, 0, 0.08);
+}
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div { align-items: center; gap: 12px; }
+/* 둥근 칸: 흰 바탕에 검은 테두리, 고르면 가운데가 검게 찬다. */
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child {
+    width: 28px !important; height: 28px !important; min-width: 28px;
+    border: 2px solid #000000 !important; background: #ffffff !important; border-radius: 50% !important;
+    box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child > div {
+    width: 14px !important; height: 14px !important; border-radius: 50% !important; background: transparent !important;
+}
+.st-key-mc_choice [data-testid="stRadioOption"][data-selected="true"] > div > div > div:first-child > div {
+    background: #000000 !important;
+}
+.st-key-mc_choice [data-testid="stRadioOption"] p {
+    font-size: 1.2rem !important; font-weight: 900 !important; color: #000000 !important; margin: 0;
+}
+</style>
+"""
+
+
+MC_CIRCLED = "①②③④⑤"
+
+
+def mc_choice_input(choices):
+    """객관식 답란: 둥근 단추와 '① 5' 꼴의 보기(번호, 답 순서)를 세로로 보여 주고, 고른 번호(1부터, 없으면 None)를 돌려준다."""
+    st.markdown(MC_CHOICE_CSS, unsafe_allow_html=True)
+    return st.radio(
+        "번호를 고르세요",
+        options=list(range(1, len(choices) + 1)),
+        format_func=lambda i: f"{MC_CIRCLED[i - 1]} {choices[i - 1]}",
+        index=None,
+        horizontal=False,
+        key="mc_choice",
+        label_visibility="collapsed",
+    )
+
+
 # ==========================================
 # 타임머신 이후 화면에 삽입되는 미니게임: 나무 파이프 슬라이딩 퍼즐 (난이도별 하 4x4 · 중 5x5 · 상 6x6)
 # (원본 게임의 버그 3건을 수정한 버전)
@@ -1837,7 +1901,7 @@ PRISON_KEY_PUZZLE_HTML = """
   /* ========================================================
      파이프 퍼즐 게임 (원본 로직)
   ======================================================== */
-  // 한 변의 칸 수: 파이썬이 난이도에 맞춰 채워 준다. (하=4, 중=5, 상=6 / PIPE_PUZZLE_GRID_SIZE)
+  // 한 변의 칸 수: 파이썬이 난이도에 맞춰 채워 준다. (하=4, 중=5, 상=6, 상에서 2분 이내 도착이면 10 / pipe_puzzle_grid_size)
   const PUZZLE_GRID_SIZE = Number('__GRID_SIZE__') || 4;
   let canvas, ctx;
   let boardGrid = [];
@@ -1906,6 +1970,24 @@ PRISON_KEY_PUZZLE_HTML = """
     let path = [];
     let visited = new Set();
 
+    // (r,c) 에서 아직 안 지나간 칸만 밟고 도착 칸까지 갈 수 있는지 본다.
+    // 갈 수 없는 쪽으로 들어가면 막다른 곳을 끝없이 되짚게 되어 10x10 처럼 큰 판에서는 화면이 멈추므로, 들어가기 전에 거른다.
+    function canReachEnd(r,c){
+      const seen = new Set([r*GRID_SIZE+c]);
+      const stack = [[r,c]];
+      while(stack.length){
+        const [cr,cc] = stack.pop();
+        if(cr===GRID_SIZE-1 && cc===GRID_SIZE-1) return true;
+        for(const [dr,dc] of [[0,1],[1,0],[-1,0],[0,-1]]){
+          const nr=cr+dr, nc=cc+dc, nidx=nr*GRID_SIZE+nc;
+          if(nr>=0 && nr<GRID_SIZE && nc>=0 && nc<GRID_SIZE && !visited.has(nidx) && !seen.has(nidx)){
+            seen.add(nidx); stack.push([nr,nc]);
+          }
+        }
+      }
+      return false;
+    }
+
     function findPath(r,c,currentPath){
       const idx = r*GRID_SIZE+c;
       currentPath.push({r,c,idx}); visited.add(idx);
@@ -1914,7 +1996,7 @@ PRISON_KEY_PUZZLE_HTML = """
       dirs.sort(()=>Math.random()-.5);
       for(const d of dirs){
         const nr=r+d.dr, nc=c+d.dc, nidx=nr*GRID_SIZE+nc;
-        if(nr>=0 && nr<GRID_SIZE && nc>=0 && nc<GRID_SIZE && !visited.has(nidx)){
+        if(nr>=0 && nr<GRID_SIZE && nc>=0 && nc<GRID_SIZE && !visited.has(nidx) && canReachEnd(nr,nc)){
           if(findPath(nr,nc,currentPath)) return true;
         }
       }
@@ -2600,7 +2682,7 @@ def get_timemachine_animation_html(
 # 고등학교 교과서 단원별 문제
 #  - 고1: 공통수학1·2 (다항식, 방정식과 부등식, 행렬, 경우의 수 / 도형의 방정식, 집합과 명제, 함수와 그래프)
 #  - 고2: 수학Ⅰ·수학Ⅱ (지수함수와 로그함수, 삼각함수, 수열 / 함수의 극한과 연속, 미분, 적분)
-#  - 고3: 확률과 통계 (순열과 조합, 확률, 통계)
+#  - 고3: 확률과 통계 (순열과 조합, 통계 — 공을 꺼내는 확률 문제는 뺐다) / 미적분 (수열의 극한, 미분법, 적분법)
 #  - 학년 버튼을 누르면 그 학년의 단원 중 '서로 다른 3개 단원'을 무작위로 뽑고, 단원마다 문제 유형(함수) 하나를
 #    무작위로 뽑는다. 정답은 언제나 15, 9, 2 (타임머신 암호 '1592' 유지).
 #  - 문제 함수는 모두 (target, level) 을 받는다. level: 1=하, 2=중, 3=상. 난이도는 식의 길이가 아니라
@@ -2814,6 +2896,10 @@ _FIG_GRAY = "#9ca3af"
 _FIG_FONT = "'Times New Roman','Noto Serif KR','Noto Serif',Georgia,serif"
 
 
+# 그림 속 모든 글자(식·눈금·이름)를 이 배수만큼 키워서 굵게 쓴다. 더 크게 하려면 이 값만 올린다.
+FIG_TEXT_SCALE = 1.25
+
+
 _FIG_SUP = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 
@@ -2948,24 +3034,47 @@ class _Fig:
         else:
             self.add(f'<circle cx="{_fn(x)}" cy="{_fn(y)}" r="{r}" fill="{color}"/>')
 
-    def text(self, p, s, dx=0, dy=0, size=15, anchor="middle", italic=None, color=_FIG_INK, bold=False, raw=False):
-        """글자. p 는 수학 좌표(raw=True 면 화면 좌표), dx, dy 는 화면 픽셀 어긋남. 글자 둘레에 흰 테두리를 둘러 선과 겹쳐도 읽힌다."""
-        x, y = (p if raw else self.P(p))
-        # 글자가 그림 틀 밖으로 잘리지 않게 안쪽으로 밀어 넣는다. (글자 폭은 어림한다)
-        w = 0.52 * size * len(s)
+    def _fit_text(self, x, y, s, dx, dy, fs, anchor):
+        """글자를 그림 틀 안으로 밀어 넣은 (dx, dy) 와 그 글자 상자 (왼쪽, 오른쪽, 위, 아래)를 돌려준다. (글자 폭은 어림한다)"""
+        w = 0.6 * fs * len(s)
         left = x + dx - (w if anchor == "end" else w / 2 if anchor == "middle" else 0)
         if left < 2:
             dx += 2 - left
         elif left + w > self.W - 2:
             dx -= left + w - (self.W - 2)
-        dy = min(max(dy, size - y + 1), self.H - 3 - y)
+        dy = min(max(dy, fs - y + 1), self.H - 3 - y)
+        left = x + dx - (w if anchor == "end" else w / 2 if anchor == "middle" else 0)
+        base = y + dy
+        return dx, dy, (left, left + w, base - fs * 0.85, base + fs * 0.25)
+
+    def _hits(self, box):
+        """이 글자 상자가 이미 놓인 글자와 겹치는가."""
+        return any(box[0] < b[1] - 1 and box[1] > b[0] + 1 and box[2] < b[3] - 1 and box[3] > b[2] + 1
+                   for b in self.__dict__.setdefault("_boxes", []))
+
+    def text(self, p, s, dx=0, dy=0, size=15, anchor="middle", italic=None, color=_FIG_INK, bold=False, raw=False, nudge=True):
+        """글자. p 는 수학 좌표(raw=True 면 화면 좌표), dx, dy 는 화면 픽셀 어긋남. 글자 둘레에 흰 테두리를 둘러 선과 겹쳐도 읽힌다.
+        nudge=True 면 이미 놓인 글자와 겹칠 때 위아래·옆으로 조금 옮겨서 글자끼리 가리거나 붙어 보이지 않게 한다."""
+        x, y = (p if raw else self.P(p))
+        # 그림 속 글자는 수식 그림 글자처럼 두껍고 또렷하게 보이도록 굵게 쓰고 조금 키운다. (bold 인자와 상관없이 늘 굵게)
+        fs = round(size * FIG_TEXT_SCALE, 1)
+        dx0, dy0 = dx, dy
+        dx, dy, box = self._fit_text(x, y, s, dx0, dy0, fs, anchor)
+        if nudge and self._hits(box):
+            w = 0.6 * fs * len(s)
+            for ox, oy in ((0, -1), (0, 1), (1, 0), (-1, 0), (1, -1), (-1, -1), (1, 1), (-1, 1),
+                           (0, -2), (0, 2), (2, 0), (-2, 0), (2, -1), (-2, -1), (2, 1), (-2, 1)):
+                cdx, cdy, cbox = self._fit_text(x, y, s, dx0 + ox * (w * 0.5 + 8), dy0 + oy * (fs * 0.95 + 2), fs, anchor)
+                if not self._hits(cbox):
+                    dx, dy, box = cdx, cdy, cbox
+                    break
+        self.__dict__.setdefault("_boxes", []).append(box)
         if italic is None:
             italic = bool(re.fullmatch(r"[A-Za-z]{1,2}'?", s))
         st = ' font-style="italic"' if italic else ""
-        wt = ' font-weight="700"' if bold else ""
         self.add(
-            f'<text x="{_fn(x + dx)}" y="{_fn(y + dy)}" font-size="{size}" text-anchor="{anchor}" fill="{color}"{st}{wt} '
-            f'stroke="#fff" stroke-width="3.6" stroke-linejoin="round" paint-order="stroke">{html_escape(s)}</text>'
+            f'<text x="{_fn(x + dx)}" y="{_fn(y + dy)}" font-size="{fs}" text-anchor="{anchor}" fill="{color}"{st} font-weight="900" '
+            f'stroke="#fff" stroke-width="4.6" stroke-linejoin="round" paint-order="stroke">{html_escape(s)}</text>'
         )
 
     def label_out(self, p, s, center, off=13, fit=False, **kw):
@@ -3137,7 +3246,16 @@ class _Fig:
         if abs(x) < 1e-9 and getattr(self, "_ax", None) == 0:   # 원점은 O 글자가 있으므로 0 은 쓰지 않는다
             return
         self.add(f'<line x1="{_fn(X)}" y1="{_fn(Y - 3.5)}" x2="{_fn(X)}" y2="{_fn(Y + 3.5)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
-        self.text((X, Y), label if label is not None else _fn(x).replace("-", "−"), raw=True, dy=17, size=size, italic=False)
+        label = label if label is not None else _fn(x).replace("-", "−")
+        # 눈금 숫자가 서로 가깝거나 다른 글자와 겹쳐 붙어 보이면(예: 101, 102 → 101102) 겹치는 글자를 아랫줄로 내린다.
+        fs = round(size * FIG_TEXT_SCALE, 1)
+        for row in range(4):
+            dy = 17 + row * (fs + 2)
+            if not self._hits(self._fit_text(X, Y, label, 0, dy, fs, "middle")[2]):
+                break
+        if row:
+            self.add(f'<line x1="{_fn(X)}" y1="{_fn(Y + 3.5)}" x2="{_fn(X)}" y2="{_fn(Y + dy - fs * 0.8)}" stroke="{_FIG_AXIS}" stroke-width="1"/>')
+        self.text((X, Y), label, raw=True, dy=dy, size=size, italic=False, nudge=False)
 
     def ytick(self, y, label=None, size=12):
         ax = getattr(self, "_ax", 0)
@@ -3147,7 +3265,14 @@ class _Fig:
         if abs(y) < 1e-9 and getattr(self, "_ay", None) == 0:
             return
         self.add(f'<line x1="{_fn(X - 3.5)}" y1="{_fn(Y)}" x2="{_fn(X + 3.5)}" y2="{_fn(Y)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
-        self.text((X, Y), label if label is not None else _fn(y).replace("-", "−"), raw=True, dx=-8, dy=size * 0.34, size=size, anchor="end", italic=False)
+        label = label if label is not None else _fn(y).replace("-", "−")
+        # 눈금 숫자가 위아래로 가깝거나 다른 글자(원점 O, x축 눈금 등)와 겹치면 축 오른쪽으로 옮기고, 그래도 겹치면 더 바깥으로 옮긴다.
+        fs = round(size * FIG_TEXT_SCALE, 1)
+        w = 0.6 * fs * len(label)
+        for dx, anchor in ((-8, "end"), (8, "start"), (-16 - w, "end"), (16 + w, "start")):
+            if not self._hits(self._fit_text(X, Y, label, dx, size * 0.34, fs, anchor)[2]):
+                break
+        self.text((X, Y), label, raw=True, dx=dx, dy=size * 0.34, size=size, anchor=anchor, italic=False, nudge=False)
 
     # ----- 함수 그래프 -----
     def curve(self, fn, x0, x1, n=320, color=_FIG_BLUE, w=2.3, dash=None, ylo=None, yhi=None):
@@ -3593,12 +3718,207 @@ def fig_inverse(kind, a, b, k=None):
     return f.svg()
 
 
+# ---------- 함수 문제 그림: 합성함수·역함수의 경로, 로그·지수·삼각함수의 그래프 ----------
+#  - 문제에 주어진 값만 눈금으로 적는다. 구해야 하는 값(답이나 답을 구하는 중간값)은 글자로만 적는다.
+_FIG_SUB = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def _sup(n):
+    """정수를 윗첨자 숫자 글자로. 12 -> '¹²'"""
+    return str(n).translate(_FIG_SUP)
+
+
+def _label_spot(fn, x0, x1, y0, y1, frac=0.14):
+    """곡선 y=fn(x) 가 그림 안쪽(위아래 frac 만큼 여유)에 있는 곳 중 오른쪽 끝에 가장 가까운 점 (x, y). 없으면 None."""
+    lo, hi = y0 + (y1 - y0) * frac, y1 - (y1 - y0) * frac
+    for i in range(200, -1, -1):
+        x = x0 + (x1 - x0) * i / 200
+        try:
+            y = fn(x)
+        except (ValueError, ZeroDivisionError, OverflowError):
+            continue
+        if y == y and lo <= y <= hi:
+            return x, y
+    return None
+
+
+def _curve_name(F, fn, x0, x1, y0, y1, text, color, dy=-9):
+    spot = _label_spot(fn, x0, x1, y0, y1)
+    if spot:
+        F.text(spot, text, dx=-6, dy=dy, anchor="end", italic=False, size=13, color=color)
+
+
+def fig_comp_path(first, second, k, names, end_text):
+    """합성함수 (second∘first)(k) 의 길: x=k 에서 y=first(x) 까지 올라가, y=x 에서 옆으로 꺾고, 다시 y=second(x) 까지 간다.
+    그래프 두 개와 점선 y=x, 길(초록 점선)을 그린다. 중간값과 답은 적지 않고 x=k 만 눈금으로 적는다."""
+    v = first(k)
+    w = second(v)
+    path = [(k, 0), (k, v), (v, v), (v, w)]
+    x0, x1, y0, y1 = _view_pts(path, 3.0, 3.0)
+    F = _Fig(x0, x1, y0, y1, width=340, equal=False, height=290)
+    F.axes()
+    F.clipped_line((0, 0), (1, 1), color=_FIG_GRAY, w=1.4, dash="5 4")
+    F.curve(first, x0, x1, color=_FIG_BLUE, w=2.1)
+    F.curve(second, x0, x1, color=_FIG_RED, w=2.1)
+    F.poly(path, stroke=_FIG_GREEN, w=1.7, close=False, dash="5 3")
+    for p in path[1:]:
+        F.dot(p, color=_FIG_GREEN, r=3.2)
+    F.xtick(k, _tx_num(k))
+    _curve_name(F, first, x0, x1, y0, y1, names[0], _FIG_BLUE)
+    _curve_name(F, second, x0, x1, y0, y1, names[1], _FIG_RED)
+    F.text(path[-1], end_text, dx=9, dy=-9, anchor="start", italic=False, size=13, color=_FIG_GREEN)
+    return F.svg()
+
+
+def fig_inverse_path(f, finv, g, k, names):
+    """(f⁻¹∘g)(k) 의 길: x=k 에서 y=g(x) 까지 올라가, 옆으로 가서 y=f(x) 와 만나고, 아래로 x축까지 내려온다. 끝점은 '?' 로 적는다."""
+    w = g(k)
+    m = finv(w)
+    path = [(k, 0), (k, w), (m, w), (m, 0)]
+    x0, x1, y0, y1 = _view_pts(path, 3.0, 3.0)
+    F = _Fig(x0, x1, y0, y1, width=340, equal=False, height=290)
+    F.axes()
+    F.clipped_line((0, 0), (1, 1), color=_FIG_GRAY, w=1.4, dash="5 4")
+    F.curve(f, x0, x1, color=_FIG_BLUE, w=2.1)
+    F.curve(g, x0, x1, color=_FIG_RED, w=2.1)
+    F.poly(path, stroke=_FIG_GREEN, w=1.7, close=False, dash="5 3")
+    for p in path[1:]:
+        F.dot(p, color=_FIG_GREEN, r=3.2)
+    F.xtick(k, _tx_num(k))
+    F.text((m, 0), "?", dx=0, dy=20, italic=False, size=14, color=_FIG_GREEN)
+    _curve_name(F, f, x0, x1, y0, y1, names[0], _FIG_BLUE)
+    _curve_name(F, g, x0, x1, y0, y1, names[1], _FIG_RED)
+    return F.svg()
+
+
+def fig_line_diag(p, q, name):
+    """직선 y=px+q (식은 문제에 주어졌다)와 점선 y=x. y절편을 눈금으로 적는다."""
+    x0, x1, y0, y1 = _view_pts([(0, q), (-q / p, 0)], 3.0, 3.0)
+    F = _Fig(x0, x1, y0, y1, width=340, equal=False, height=290)
+    F.axes()
+    F.clipped_line((0, 0), (1, 1), color=_FIG_GRAY, w=1.4, dash="5 4")
+    seg = F.clipped_line((0, q), (1, p + q), color=_FIG_BLUE, w=2.2)
+    _line_label(F, seg, name, _FIG_BLUE, side="top")
+    F.dot((0, q), color=_FIG_RED)
+    F.ytick(q, _tx_num(q))
+    return F.svg()
+
+
+def fig_log_curves(curves, xmax, points=(), ymin=-2.6):
+    """로그함수의 그래프. curves = [(밑, 글자, 색)], points = [(x, 눈금 글자)] 는 첫 곡선 위의 점이다. (점의 y값은 적지 않는다.)"""
+    ymax = max(math.log(xmax, b) for b, _, _ in curves) + 0.8
+    F = _Fig(-0.04 * xmax, xmax, ymin, ymax, width=340, equal=False, height=250)
+    F.axes()
+    # 곡선이 여러 개면 글자끼리 겹치지 않게, 위쪽 곡선부터 차례로 위·아래로 엇갈려 적는다.
+    for n, (b, text, color) in enumerate(sorted(curves, key=lambda c: c[0])):
+        fn = lambda x, b=b: math.log(x, b)
+        F.curve(fn, xmax * 0.012, xmax, color=color, w=2.2, ylo=ymin)
+        _curve_name(F, fn, xmax * 0.012, xmax, ymin, ymax, text, color, dy=(-9, 17, 31)[min(n, 2)])
+    base0 = curves[0][0]
+    last = -1e9
+    for x, text in sorted(points):
+        y = math.log(x, base0)
+        F.line((x, 0), (x, y), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+        F.dot((x, y), color=_FIG_RED)
+        if F.X(x) - last >= 22:
+            F.xtick(x, text)
+            last = F.X(x)
+    return F.svg()
+
+
+def fig_log_equation(b, p, qv, m, root):
+    """로그방정식 log_b(x+p)+log_b(x-qv)=m: 왼쪽 식의 그래프와 수평선 y=m. 교점의 x 는 'x' 로만 적는다."""
+    bound = max(qv, -p)
+    fn = lambda x: math.log((x + p) * (x - qv), b)
+    x0, x1 = bound + 0.25, root + 3.0
+    ylo = max(fn(x0), -3.0) - 0.6
+    F = _Fig(min(x0, 0) - 0.4, x1, min(ylo, 0) - 0.3, m + 1.4, width=340, equal=False, height=250)
+    F.axes()
+    F.curve(fn, x0, x1, color=_FIG_BLUE, w=2.3)
+    F.line((F.x0, m), (x1, m), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    F.line((root, 0), (root, m), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    F.dot((root, m), color=_FIG_RED)
+    F.ytick(m, str(m))
+    F.xtick(root, "x")
+    F.line((bound, F.y0), (bound, F.y1), color=_FIG_GRAY, w=1.1, dash="2 4", cap="butt")
+    return F.svg()
+
+
+def fig_exp_schematic(curve_text, line_text):
+    """지수방정식 그림(개략도): 지수함수의 그래프와 수평선의 교점에서 x 의 위치를 점선으로 내린다. 교점의 x 는 'x' 로만 적는다."""
+    fn = lambda x: 0.45 * 2 ** x
+    root, height = 2.9, 3.4
+    F = _Fig(-1.2, 5.4, -0.9, 5.2, width=340, equal=False, height=240)
+    F.axes()
+    F.curve(fn, -1.2, 5.4, color=_FIG_BLUE, w=2.3)
+    F.line((-1.2, height), (5.4, height), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    F.line((root, 0), (root, height), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    F.dot((root, height), color=_FIG_RED)
+    F.xtick(root, "x")
+    F.text((-1.2, height), line_text, dx=6, dy=-8, anchor="start", italic=False, size=13, color=_FIG_AXIS)
+    F.text((4.4, fn(4.4)), curve_text, dx=-8, dy=4, anchor="end", italic=False, size=13, color=_FIG_BLUE)
+    return F.svg()
+
+
+def fig_exp_quadratic(fn, a, i, j):
+    """4^(x-a) - S·2^(x-a) + P 의 그래프. x축과 만나는 두 점은 α, β 로만 적는다."""
+    x0, x1 = a - 1.0, a + j + 0.6
+    yl, yh = _auto_view(fn, x0, x1, pts=[(a + i, 0), (a + j, 0)])
+    F = _Fig(x0 - 0.3, x1, yl, yh, width=340, equal=False, height=250)
+    F.axes()
+    F.curve(fn, x0, x1, color=_FIG_BLUE, w=2.3)
+    for x, name in ((a + i, "α"), (a + j, "β")):
+        F.dot((x, 0), color=_FIG_RED)
+        F.xtick(x, name)
+    return F.svg()
+
+
+def fig_trig_points(items):
+    """삼각함수 값 문제의 그림. items = [(종류 'sin'/'cos'/'tan', 각(라디안), 각 글자)]. 그 그래프와, 각에 해당하는 점을 찍는다. (값은 적지 않는다.)"""
+    kinds = []
+    for kind, _, _ in items:
+        if kind not in kinds:
+            kinds.append(kind)
+    fns = {"sin": math.sin, "cos": math.cos, "tan": math.tan}
+    colors = {"sin": _FIG_BLUE, "cos": _FIG_RED, "tan": _FIG_GREEN}
+    top = 2.4 if "tan" in kinds else 1.5
+    F = _Fig(-0.5, 2 * math.pi + 0.6, -top, top, width=350, equal=False, height=230)
+    F.axes()
+    F.ytick(1, "1")
+    F.ytick(-1, "−1")
+    for kind in kinds:
+        F.curve(fns[kind], -0.5, 2 * math.pi + 0.6, n=500, color=colors[kind], w=2.2)
+    for kind, ang, text in items:
+        F.line((ang, 0), (ang, fns[kind](ang)), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+        F.dot((ang, fns[kind](ang)), color=_FIG_INK)
+        F.xtick(ang, text)
+    for n, kind in enumerate(kinds):
+        F.text((2 * math.pi + 0.55, top), f"y = {kind} x", dx=-6, dy=16 + 16 * n, anchor="end", italic=False, size=13, color=colors[kind])
+    return F.svg()
+
+
+def fig_trig_roots(kind, k, big_l, rv):
+    """구간 [0, Lπ) 에서 y=sin kx (또는 cos kx) 의 그래프와 수평선 y=rv. 오른쪽 끝은 속이 빈 점으로 나타낸다."""
+    fn = (lambda x: math.sin(k * x)) if kind == "sin" else (lambda x: math.cos(k * x))
+    end = big_l * math.pi
+    F = _Fig(-0.4, end + 0.9, -1.7, 1.7, width=350, equal=False, height=210)
+    F.axes()
+    F.line((-0.4, rv), (end + 0.9, rv), color=_FIG_GRAY, w=1.2, dash="4 3", cap="butt")
+    F.curve(fn, 0, end, n=max(600, 40 * k * big_l), color=_FIG_BLUE, w=1.8)
+    F.dot((end, fn(end)), ring=True)
+    F.ytick(1, "1")
+    F.ytick(-1, "−1")
+    F.xtick(end, "π" if big_l == 1 else "2π")
+    F.text((end + 0.85, 1.7), f"y = {kind} {k}x", dx=0, dy=16, anchor="end", italic=False, size=13, color=_FIG_BLUE)
+    return F.svg()
+
+
 def fig_normal(m, sigma, shades, ticks):
     """정규분포 곡선(평균 m, 표준편차 sigma). shades = [(왼쪽 끝, 오른쪽 끝)] 구간을 색칠하고, ticks = [(x, 글자)] 를 x축에 적는다."""
     xs = [t[0] for t in ticks] + [m - 3.2 * sigma, m + 3.2 * sigma]
     x0, x1 = min(xs) - 0.7 * sigma, max(xs) + 0.7 * sigma
     fn = lambda x: math.exp(-((x - m) ** 2) / (2 * sigma * sigma))
-    f = _Fig(x0, x1, -0.2, 1.25, width=350, equal=False, height=220, pad=(14, 22, 14, 34))
+    f = _Fig(x0, x1, -0.2, 1.25, width=350, equal=False, height=240, pad=(14, 22, 14, 58))   # 아랫줄로 내려간 눈금 글자 자리를 둔다
     for lo, hi in shades:
         a, b = max(lo, x0), min(hi, x1)
         if a < b:
@@ -6062,7 +6382,8 @@ def h_composite(target, level):
             f"$f({k})={a}\\times{_p(k)} {_sgn(b)}={v}$이므로\n\n"
             f"$(g\\circ f)({k})=g(f({k}))=g({v})={c}\\times{_p(v)} {_sgn(d)}={target}$"
         )
-        return q, exp, str(target)
+        fig = fig_comp_path(lambda x: a * x + b, lambda x: c * x + d, k, ("y = f(x)", "y = g(x)"), f"g(f({_tx_num(k)}))")
+        return q + fig_md(fig), exp, str(target)
     if level == 2:
         while True:
             c, d, k = _nonzero(-3, 3), random.randint(-5, 5), random.randint(-2, 3)
@@ -6080,7 +6401,8 @@ def h_composite(target, level):
             + _j(f"{_p(v)}^{{2}}", f"{'+' if a > 0 else '-'} {abs(a)}\\times{_p(v)}", _sgn(b))
             + f"={target}$"
         )
-        return q, exp, str(target)
+        fig = fig_comp_path(lambda x: c * x + d, lambda x: x * x + a * x + b, k, ("y = g(x)", "y = f(x)"), f"f(g({_tx_num(k)}))")
+        return q + fig_md(fig), exp, str(target)
     while True:
         a, k = random.choice([2, 3]), random.randint(1, 5)
         b = target - a * k
@@ -6096,7 +6418,7 @@ def h_composite(target, level):
         f"$a^{{2}}={px}$, $(a+1)b={qx}$입니다. $a>0$이므로 $a={a}$, $b={b}$입니다.\n\n"
         f"따라서 $f({k})={a}\\times{k} {_sgn(b)}={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_line_diag(px, qx, "y = f(f(x))")), exp, str(target)
 
 
 def h_inverse(target, level):
@@ -6142,7 +6464,8 @@ def h_inverse(target, level):
         f"$g({k})={k}^{{2}}-1={k * k - 1}$이므로 $(f^{{-1}}\\circ g)({k})=f^{{-1}}({k * k - 1})$입니다.\n\n"
         f"$f^{{-1}}({k * k - 1})=m$이라 하면 $f(m)={k * k - 1}$이므로 ${_lin(a, b, 'm')}={k * k - 1}$, 즉 $m={target}$"
     )
-    return q, exp, str(target)
+    fig = fig_inverse_path(lambda x: a * x + b, lambda y: (y - b) / a, lambda x: x * x - 1, k, ("y = f(x)", "y = g(x)"))
+    return q + fig_md(fig), exp, str(target)
 
 
 def h_rational(target, level):
@@ -6243,7 +6566,9 @@ def s_log(target, level):
             "로그의 성질 $\\log_{a}x+\\log_{a}y=\\log_{a}xy$에 의하여\n\n"
             f"$$\\log_{{{B}}}({prod})=\\log_{{{B}}}{B}^{{{target}}}={target}$$"
         )
-        return q, exp, str(target)
+        fig = fig_log_curves([(B, f"y = log{str(B).translate(_FIG_SUB)} x", _FIG_BLUE)], max(args) * 1.2,
+                             points=[(v, str(v)) for v in sorted(set(args))])
+        return q + fig_md(fig), exp, str(target)
     if level == 2:
         if random.random() < 0.5:
             B, k = random.choice([2, 3]), random.choice([2, 3])
@@ -6252,7 +6577,9 @@ def s_log(target, level):
             exp = (
                 f"$\\log_{{{B ** k}}}{B}^{{{m}}}=\\log_{{{B}^{{{k}}}}}{B}^{{{m}}}=\\frac{{{m}}}{{{k}}}\\log_{{{B}}}{B}={target}$"
             )
-            return q, exp, str(target)
+            fig = fig_log_curves([(B ** k, f"y = log{str(B ** k).translate(_FIG_SUB)} x", _FIG_BLUE)], B ** k * 1.6,
+                                 points=[(B ** k, str(B ** k))])
+            return q + fig_md(fig), exp, str(target)
         a, b, c = random.sample([2, 3, 5, 7], 3)
         q = f"$\\log_{{{a}}} {b}\\times\\log_{{{b}}} {c}\\times\\log_{{{c}}} {a}^{{{target}}}$의 값을 구하시오."
         exp = (
@@ -6260,7 +6587,9 @@ def s_log(target, level):
             f"$$\\log_{{{a}}}{b}\\times\\log_{{{b}}}{c}\\times\\log_{{{c}}}{a}^{{{target}}}"
             f"=\\log_{{{a}}}{a}^{{{target}}}={target}$$"
         )
-        return q, exp, str(target)
+        sub = lambda n: str(n).translate(_FIG_SUB)
+        fig = fig_log_curves([(a, f"log{sub(a)} x", _FIG_BLUE), (b, f"log{sub(b)} x", _FIG_RED), (c, f"log{sub(c)} x", _FIG_GREEN)], 10.0)
+        return q + fig_md(fig), exp, str(target)
 
     def make():
         return random.choice([2, 3, 5]), random.randint(2, 4), random.randint(-8, 10), random.randint(-3, 14)
@@ -6292,7 +6621,7 @@ def s_log(target, level):
         f"정리하면 ${_fprod(_lin(1, -target), _lin(1, -other))}=0$이므로 $x={target}$ 또는 $x={other}$이고, "
         f"진수의 조건을 만족시키는 해는 $x={target}$"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_log_equation(b, p, qv, m, target)), exp, str(target)
 
 
 def s_exp(target, level):
@@ -6308,7 +6637,9 @@ def s_exp(target, level):
         exp = (
             f"${pw(m)}\\times {pw(n)}=2^{{{m + n}}}$이므로 ${_lin(1, -p)}={m + n}$\n\n따라서 $x={target}$"
         )
-        return q, exp, str(target)
+        sp2 = lambda e: "2" if e == 1 else "2" + _sup(e)
+        fig = fig_exp_schematic(f"y = 2^({_plain(_lin(1, -p))})", f"y = {sp2(m)} × {sp2(n)}")
+        return q + " (단, 그림은 개략적인 모양이다.)" + fig_md(fig), exp, str(target)
     if level == 2:
         # (2^α)^(x-p) = (2^β)^s  =>  α(x-p) = βs.  좌변·우변의 밑을 2 의 거듭제곱으로 서로 다르게 준다.
         while True:
@@ -6326,7 +6657,8 @@ def s_exp(target, level):
             f"$$2^{{{al}{_fac(_lin(1, -p))}}}=2^{{{be}\\times {s}}}$$\n\n"
             f"${al}{_fac(_lin(1, -p))}={be * s}$이므로 $x={target}$"
         )
-        return q, exp, str(target)
+        fig = fig_exp_schematic(f"y = {base(al)}^({_plain(_lin(1, -p))})", f"y = {base(be)}{_sup(s)}")
+        return q + " (단, 그림은 개략적인 모양이다.)" + fig_md(fig), exp, str(target)
     # 상: 2^(x-a) = t 로 치환하면 t^2 - (2^i + 2^j) t + 2^(i+j) = 0.  두 근은 x = a+i, a+j 이므로
     # 두 근의 합 = 2a + i + j = target.  (큰 거듭제곱이 나오지 않도록 평행이동 a 를 쓴다.)
     while True:
@@ -6346,7 +6678,8 @@ def s_exp(target, level):
         f"$\\alpha={a + i}$, $\\beta={a + j}$입니다.\n\n"
         f"따라서 $\\alpha+\\beta={target}$"
     )
-    return q, exp, str(target)
+    fig = fig_exp_quadratic(lambda x: 4.0 ** (x - a) - S * 2.0 ** (x - a) + P, a, i, j)
+    return q + fig_md(fig), exp, str(target)
 
 
 # ---------- 삼각함수 ----------
@@ -6382,7 +6715,13 @@ def s_trig(target, level):
             f"${t1}={f1}$, ${t2}={f2}$이므로\n\n"
             f"$${a}\\times({f1}) {sign} {abs(b)}\\times({f2})={target}$$"
         )
-        return q, exp, str(target)
+        meta = {
+            r"\sin\frac{\pi}{6}": ("sin", math.pi / 6, "π/6"), r"\cos\frac{\pi}{3}": ("cos", math.pi / 3, "π/3"),
+            r"\sin\frac{\pi}{2}": ("sin", math.pi / 2, "π/2"), r"\cos\pi": ("cos", math.pi, "π"),
+            r"\tan\frac{\pi}{4}": ("tan", math.pi / 4, "π/4"), r"\cos 0": ("cos", 0.0, "0"),
+            r"\sin\frac{3\pi}{2}": ("sin", 3 * math.pi / 2, "3π/2"),
+        }
+        return q + fig_md(fig_trig_points([meta[t1], meta[t2]])), exp, str(target)
     if level == 2:
         while True:
             a, bq, c = random.randint(1, 8), random.choice([2, 3, 4]), random.randint(-6, 6)
@@ -6420,7 +6759,7 @@ def s_trig(target, level):
         f"$t={k}x$이고 $0\\le x<{big_l_tex}$이므로 $0\\le t<{top}\\pi$입니다.\n\n"
         f"이 범위에서 $t={sol}$인 $t$의 개수를 세면 {ns_}이므로 모두 ${target}$개"
     )
-    return q, exp, str(target)
+    return q + fig_md(fig_trig_roots(kind, k, big_l, rv)), exp, str(target)
 
 
 # ---------- 수열 ----------
@@ -6836,54 +7175,6 @@ def p_binomial_coef(target, level):
     return sw(q), sw(exp), str(T)
 
 
-# ---------- 확률 ----------
-def p_prob_unknown(target, level):
-    """확률 (하: 한 개를 꺼낼 때, 중: 복원추출로 두 번, 상: 두 개를 동시에 꺼낼 때 — 이차방정식을 풀어야 한다)."""
-    # 중·상은 확률이 제곱·곱 꼴이라 분모가 커지므로 처음 공의 개수를 작게 잡는다.
-    a = random.randint(2, 9) if level == 1 else random.randint(2, 5)
-    colors = random.choice([("빨간", "파란"), ("흰", "검은"), ("노란", "초록")])
-    c1, c2 = colors
-    base = f"주머니에 {c1} 공이 ${a}$개, {c2} 공이 $x$개 들어 있다. 이 주머니에서 "
-    if level == 1:
-        P = Fraction(a, a + target)
-        q = (
-            base + f"공 한 개를 임의로 꺼낼 때, {c1} 공일 확률이 ${_frac(P.numerator, P.denominator)}$이다. "
-            "$x$의 값을 구하시오."
-        )
-        exp = (
-            f"전체 공의 개수는 ${a}+x$이므로 {c1} 공일 확률은 $\\frac{{{a}}}{{{a}+x}}={_frac(P.numerator, P.denominator)}$입니다.\n\n"
-            f"${a}+x={a + target}$이므로 $x={target}$"
-        )
-        return q, exp, str(target)
-    if level == 2:
-        P = Fraction(a, a + target) ** 2
-        q = (
-            base + f"공 한 개를 꺼내 색을 확인하고 다시 넣은 후 또 한 개를 꺼낼 때, 두 번 모두 {c1} 공일 확률이 "
-            f"${_frac(P.numerator, P.denominator)}$이다. $x$의 값을 구하시오."
-        )
-        exp = (
-            f"한 번 꺼낼 때 {c1} 공일 확률은 $\\frac{{{a}}}{{{a}+x}}$이고, 두 번 모두 {c1} 공일 확률은\n\n"
-            f"$$\\left(\\frac{{{a}}}{{{a}+x}}\\right)^{{2}}={_frac(P.numerator, P.denominator)}$$\n\n"
-            f"이므로 $\\frac{{{a}}}{{{a}+x}}={_frac(a, a + target)}$, 즉 $x={target}$"
-        )
-        return q, exp, str(target)
-    # 두 개를 동시에 꺼내 모두 c1 공일 확률: C(a,2)/C(a+x,2) = a(a-1) / {(a+x)(a+x-1)}
-    # → (a+x)(a+x-1) = a(a-1)/P 를 풀면 연속한 두 자연수의 곱이 되어 a+x 가 나온다.
-    tot = a + target
-    P = Fraction(a * (a - 1), tot * (tot - 1))
-    q = (
-        base + f"공 두 개를 동시에 꺼낼 때, 두 공이 모두 {c1} 공일 확률이 ${_frac(P.numerator, P.denominator)}$이다. "
-        "$x$의 값을 구하시오."
-    )
-    exp = (
-        f"전체 공은 $({a}+x)$개이므로 두 공이 모두 {c1} 공일 확률은\n\n"
-        f"$$\\frac{{{{}}_{{{a}}}\\mathrm{{C}}_{{2}}}}{{{{}}_{{{a}+x}}\\mathrm{{C}}_{{2}}}}"
-        f"=\\frac{{{a * (a - 1)}}}{{({a}+x)({a}+x-1)}}={_frac(P.numerator, P.denominator)}$$\n\n"
-        f"$({a}+x)({a}+x-1)={tot * (tot - 1)}={tot}\\times{tot - 1}$이므로 ${a}+x={tot}$, 즉 $x={target}$"
-    )
-    return q, exp, str(target)
-
-
 # ---------- 통계 ----------
 def p_binomial_dist(target, level):
     """이항분포 (하: E(aX+b), 중: V(aX+b), 상: E(aX+b)와 V(aX+b)가 주어질 때 n)."""
@@ -7087,6 +7378,231 @@ def p_expectation(target, level):
 
 
 # ==========================================
+# [고3] 미적분 (수열의 극한 / 미분법 / 적분법)
+#  - 난이도는 '매우 어려움' 문제 수준에 맞췄다. 하·중·상 모두 공식 하나로 끝나지 않고 여러 단계를 거쳐야 풀린다.
+#  - 답(target)에서 거꾸로 조건을 정해 정답이 15, 9, 2 가 되게 한다. 분수가 나오는 조건은 분모가 작은 것만 쓴다.
+# ==========================================
+def _e_pow(p, var="x"):
+    """e^{px}. p 가 1 이면 e^{x}."""
+    return f"e^{{{var}}}" if p == 1 else f"e^{{{p}{var}}}"
+
+
+def fig_extrema_pair(fn, x0, x1, xs):
+    """곡선 y=fn(x) 와 극값을 갖는 점들. 점의 x좌표만 눈금으로 적는다. (y좌표는 구해야 하는 값에 쓰이므로 적지 않는다.)"""
+    pts = [(x, fn(x)) for x in xs]
+    yl, yh = _auto_view(fn, x0, x1, pts=pts, ycap=60)
+    f = _Fig(x0, x1, yl, yh, width=340, equal=False, height=250)
+    f.axes()
+    f.curve(fn, x0, x1)
+    for x, y in pts:
+        f.line((x, 0), (x, y), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+        f.dot((x, y), color=_FIG_RED)
+        f.xtick(x, _tx_num(x))
+    return f.svg()
+
+
+# ---------- 수열의 극한 ----------
+_GEO_RATIOS = [Fraction(1, 2), Fraction(-1, 2), Fraction(1, 3), Fraction(-1, 3), Fraction(2, 3), Fraction(-2, 3),
+               Fraction(1, 4), Fraction(-1, 4), Fraction(3, 4)]
+
+
+def c_seq_limit(target, level):
+    """수열의 극한 (하: 근호가 있는 두 수열의 차의 극한으로 상수, 중: 등비급수의 합과 제곱의 합으로 첫째항,
+    상: 등비급수의 합과 교대급수의 합으로 첫째항)."""
+    if level == 1:
+        p, b, c = _roll(lambda: (random.choice([1, 2, 3]), random.randint(1, 6), random.randint(2, 24)),
+                        lambda s: 2 * s[0] * s[2] - s[1], target)
+        P = p * p
+        nn = "n^{2}" if P == 1 else f"{P}n^{{2}}"
+        bn = _coef(b, "n")
+        q = (
+            f"$\\displaystyle\\lim_{{n\\to\\infty}}\\left(\\sqrt{{{nn}+an}}-\\sqrt{{{nn}-{bn}}}\\right)={c}$일 때, "
+            "상수 $a$의 값을 구하시오."
+        )
+        exp = (
+            "분자를 유리화하면\n\n"
+            f"$$\\sqrt{{{nn}+an}}-\\sqrt{{{nn}-{bn}}}=\\frac{{(a+{b})n}}{{\\sqrt{{{nn}+an}}+\\sqrt{{{nn}-{bn}}}}}$$\n\n"
+            "분자와 분모를 $n$으로 나누면\n\n"
+            f"$$\\lim_{{n\\to\\infty}}\\frac{{a+{b}}}{{\\sqrt{{{P}+\\frac{{a}}{{n}}}}+\\sqrt{{{P}-\\frac{{{b}}}{{n}}}}}}"
+            f"=\\frac{{a+{b}}}{{{p}+{p}}}=\\frac{{a+{b}}}{{{2 * p}}}={c}$$\n\n"
+            f"이므로 $a+{b}={2 * p * c}$, 즉 $a={target}$"
+        )
+        return q, exp, str(target)
+    sums = "\\displaystyle\\sum_{n=1}^{\\infty}"
+    if level == 2:
+        def ok(r):
+            S1, S2 = Fraction(target) / (1 - r), Fraction(target) ** 2 / (1 - r * r)
+            return target if S1.denominator <= 2 and S2.denominator <= 3 else None
+
+        r = _roll(lambda: random.choice(_GEO_RATIOS), ok, target)
+        S1, S2 = Fraction(target) / (1 - r), Fraction(target) ** 2 / (1 - r * r)
+        qq = S2 / (S1 * S1)
+        q = (
+            f"수열 $\\{{a_{{n}}\\}}$은 등비수열이고 두 급수 ${sums}a_{{n}}$, ${sums}a_{{n}}^{{2}}$이 모두 수렴한다. "
+            f"${sums}a_{{n}}={_frac(S1)}$, ${sums}a_{{n}}^{{2}}={_frac(S2)}$일 때, $a_{{1}}$의 값을 구하시오."
+        )
+        exp = (
+            "공비를 $r$ ($|r|<1$)라 하면\n\n"
+            "$$\\sum_{n=1}^{\\infty}a_{n}=\\frac{a_{1}}{1-r}$$\n\n"
+            "수열 $\\{a_{n}^{2}\\}$은 첫째항이 $a_{1}^{2}$, 공비가 $r^{2}$인 등비수열이므로\n\n"
+            "$$\\sum_{n=1}^{\\infty}a_{n}^{2}=\\frac{a_{1}^{2}}{1-r^{2}}$$\n\n"
+            "두 식에서 $\\dfrac{\\sum a_{n}^{2}}{\\left(\\sum a_{n}\\right)^{2}}=\\dfrac{1-r}{1+r}$이고, "
+            f"이 값은 $\\dfrac{{{_frac(S2)}}}{{\\left({_frac(S1)}\\right)^{{2}}}}={_frac(qq)}$이므로 $r={_frac(r)}$입니다.\n\n"
+            f"따라서 $a_{{1}}=(1-r)\\times{_frac(S1)}={_frac(1 - r)}\\times{_frac(S1)}={target}$"
+        )
+        return q, exp, str(target)
+
+    def ok3(r):
+        S, D = Fraction(target) / (1 - r), Fraction(target) / (1 + r)
+        return target if S.denominator <= 4 and D.denominator <= 4 else None
+
+    r = _roll(lambda: random.choice(_GEO_RATIOS), ok3, target)
+    S, D = Fraction(target) / (1 - r), Fraction(target) / (1 + r)
+    q = (
+        "공비의 절댓값이 $1$보다 작은 등비수열 $\\{a_{n}\\}$에 대하여 "
+        f"${sums}a_{{n}}={_frac(S)}$, ${sums}(-1)^{{n-1}}a_{{n}}={_frac(D)}$일 때, $a_{{1}}$의 값을 구하시오."
+    )
+    exp = (
+        "공비를 $r$라 하면 수열 $\\{(-1)^{n-1}a_{n}\\}$은 첫째항이 $a_{1}$, 공비가 $-r$인 등비수열이므로\n\n"
+        "$$\\sum_{n=1}^{\\infty}a_{n}=\\frac{a_{1}}{1-r},\\qquad\\sum_{n=1}^{\\infty}(-1)^{n-1}a_{n}=\\frac{a_{1}}{1+r}$$\n\n"
+        f"두 식의 역수를 더하면 $\\dfrac{{1}}{{{_frac(S)}}}+\\dfrac{{1}}{{{_frac(D)}}}"
+        "=\\dfrac{(1-r)+(1+r)}{a_{1}}=\\dfrac{2}{a_{1}}$입니다.\n\n"
+        f"따라서 $\\dfrac{{2}}{{a_{{1}}}}={_frac(1 / S + 1 / D)}$이므로 $a_{{1}}={target}$"
+    )
+    return q, exp, str(target)
+
+
+# ---------- 미분법 ----------
+def c_deriv(target, level):
+    """미분법 (하: 곱의 미분법과 삼각함수의 도함수로 상수, 중: 접선이 한 점을 지나는 조건으로 상수,
+    상: 두 점에서 극값을 갖는 조건으로 두 상수의 합)."""
+    if level == 1:
+        p, qc = random.choice([1, 2, 3]), random.choice([1, 2, 3])
+        m = p * (qc + target) + 1
+        ex, pc = _e_pow(p), ("" if p == 1 else str(p))
+        cs = "\\cos x" if qc == 1 else f"{qc}\\cos x"
+        sn = "\\sin x" if qc == 1 else f"{qc}\\sin x"
+        q = f"함수 $f(x)={ex}(\\sin x+{cs}+a)$에 대하여 $f'(0)={m}$일 때, 상수 $a$의 값을 구하시오."
+        exp = (
+            f"곱의 미분법에 의하여 $f'(x)={pc}{ex}(\\sin x+{cs}+a)+{ex}(\\cos x-{sn})$입니다.\n\n"
+            f"$x=0$을 대입하면 $f'(0)={pc}({qc}+a)+1={m}$이므로 ${pc}({qc}+a)={m - 1}$, "
+            f"${qc}+a={qc + target}$입니다.\n\n따라서 $a={target}$"
+        )
+        fig = fig_curve_tangent(
+            lambda x: math.exp(p * x) * (math.sin(x) + qc * math.cos(x) + target), -2.4, 1.2 / p, 0, "",
+            dfn=lambda x: math.exp(p * x) * (p * (math.sin(x) + qc * math.cos(x) + target) + math.cos(x) - qc * math.sin(x)),
+            point_text="(0, f(0))",
+        )
+        return q + fig_md(fig), exp, str(target)
+    if level == 2:
+        p, u = random.choice([(1, 1), (1, 2), (2, 1), (1, 3), (3, 1), (2, 2)])
+        w = target * (1 + p * u) + u
+        ex, pc = _e_pow(p), ("" if p == 1 else str(p))
+        q = (
+            f"곡선 $y=(x+a){ex}$ 위의 점 $(0,\\ a)$에서의 접선이 점 $({u},\\ {w})$를 지날 때, 양수 $a$의 값을 구하시오."
+        )
+        exp = (
+            f"$f(x)=(x+a){ex}$라 하면 $f'(x)={ex}+{pc}(x+a){ex}$이므로 $f'(0)=1+{pc}a$입니다.\n\n"
+            f"점 $(0,\\ a)$에서의 접선의 방정식은 $y=(1+{pc}a)x+a$이고, 이 직선이 점 $({u},\\ {w})$를 지나므로\n\n"
+            f"$${w}=(1+{pc}a)\\times{u}+a$$\n\n"
+            f"${_coef(1 + p * u, 'a')}={w - u}$이므로 $a={target}$"
+        )
+        fig = fig_curve_tangent(lambda x: (x + target) * math.exp(p * x), -target - 1.5, 1.2, 0, "",
+                                dfn=lambda x: (1 + p * (x + target)) * math.exp(p * x), point_text="(0, a)")
+        return q + fig_md(fig), exp, str(target)
+    # 상: f'(x) = {-c x^2 + (2c-a)x + (a-b)} e^{-x} 의 두 근이 극값을 갖는 점. a+b = c(r1-2)(r2-2)
+    c, r1, r2 = _roll(lambda: (random.choice([1, 2, 3]), random.randint(-4, 8), random.randint(-4, 8)),
+                      lambda s: s[0] * (s[1] - 2) * (s[2] - 2) if s[1] < s[2] else None, target)
+    a = c * (2 - (r1 + r2))
+    b = a + c * r1 * r2
+    cc = "" if c == 1 else str(c)
+    cx2 = f"{cc}x^{{2}}"
+    pre = "\\times" if c > 1 else ""
+    q = (
+        f"함수 $f(x)=({cx2}+ax+b)e^{{-x}}$이 $x={r1}$과 $x={r2}$에서 극값을 가질 때, "
+        "상수 $a$, $b$에 대하여 $a+b$의 값을 구하시오."
+    )
+    exp = (
+        f"$f'(x)=({2 * c}x+a)e^{{-x}}-({cx2}+ax+b)e^{{-x}}=-\\{{{cx2}-({2 * c}-a)x-(a-b)\\}}e^{{-x}}$입니다.\n\n"
+        f"$e^{{-x}}>0$이므로 $f(x)$가 $x={r1}$, $x={r2}$에서 극값을 가지려면 이차방정식 "
+        f"${cx2}-({2 * c}-a)x-(a-b)=0$의 두 근이 ${r1}$, ${r2}$이어야 합니다.\n\n"
+        f"근과 계수의 관계에서 ${cc}({r1}+{_p(r2)})={2 * c}-a$이므로 $a={a}$이고, "
+        f"${cc}{pre}{_p(r1)}\\times{_p(r2)}=-(a-b)$이므로 $a-b={-c * r1 * r2}$, 즉 $b={b}$입니다.\n\n"
+        f"따라서 $a+b={a}+{_p(b)}={target}$"
+    )
+    fig = fig_extrema_pair(lambda x: (c * x * x + a * x + b) * math.exp(-x), min(r1, r2) - 2.2, max(r1, r2) + 2.2, [r1, r2])
+    return q + fig_md(fig), exp, str(target)
+
+
+# ---------- 적분법 ----------
+def c_integral(target, level):
+    """적분법 (하: e^x 치환적분으로 함숫값, 중: ln x 치환적분으로 함숫값, 상: 회전체의 부피로 상수)."""
+    if level == 1:
+        def ok(s):
+            m, c, t = s
+            return target if abs(target - ((t + c) ** (m + 1) - (1 + c) ** (m + 1))) <= 40 else None
+
+        m, c, t = _roll(lambda: (random.choice([1, 2]), random.choice([1, 2, 3]), random.choice([2, 3, 4])), ok, target)
+        k = m + 1
+        f0 = target - ((t + c) ** (m + 1) - (1 + c) ** (m + 1))
+        K = f0 - (1 + c) ** (m + 1)
+        pw = "" if m == 1 else f"^{{{m}}}"
+        q = (
+            f"모든 실수 $x$에 대하여 함수 $f(x)$가 $f'(x)={k}e^{{x}}(e^{{x}}+{c}){pw}$이고 $f(0)={f0}$일 때, "
+            f"$f(\\ln {t})$의 값을 구하시오."
+        )
+        exp = (
+            f"$u=e^{{x}}+{c}$로 놓으면 $du=e^{{x}}dx$이므로\n\n"
+            f"$$\\int {k}e^{{x}}(e^{{x}}+{c}){pw}\\,dx=\\int {k}u{pw}\\,du=u^{{{m + 1}}}+C=(e^{{x}}+{c})^{{{m + 1}}}+C$$\n\n"
+            f"$f(0)=({c}+1)^{{{m + 1}}}+C={(c + 1) ** (m + 1)}+C={f0}$에서 $C={K}$이므로\n\n"
+            f"$$f(\\ln {t})=({t}+{c})^{{{m + 1}}}+C={(t + c) ** (m + 1)}+{_p(K)}={target}$$"
+        )
+        fig = fig_area_curve(lambda x: k * math.exp(x) * (math.exp(x) + c) ** m, -0.6, math.log(t) + 0.6, 0, math.log(t),
+                             ticks=[(math.log(t), f"ln {t}")], curve_text="y = f′(x)")
+        return q + fig_md(fig), exp, str(target)
+    if level == 2:
+        def ok2(s):
+            m, c, t = s
+            return target if abs(target - ((t + c) ** (m + 1) - c ** (m + 1))) <= 40 else None
+
+        m, c, t = _roll(lambda: (random.choice([1, 2, 3]), random.choice([-1, 0, 1, 2]), random.choice([1, 2, 3])), ok2, target)
+        k = m + 1
+        f0 = target - ((t + c) ** (m + 1) - c ** (m + 1))
+        K = f0 - c ** (m + 1)
+        lg = _j("\\ln x", _sgn(c))
+        q = (
+            f"$x>0$에서 정의된 함수 $f(x)$가 $f'(x)=\\dfrac{{{k}({lg})^{{{m}}}}}{{x}}$이고 $f(1)={f0}$일 때, "
+            f"$f(e^{{{t}}})$의 값을 구하시오."
+        )
+        exp = (
+            f"$u={lg}$로 놓으면 $du=\\dfrac{{1}}{{x}}dx$이므로\n\n"
+            f"$$\\int\\frac{{{k}({lg})^{{{m}}}}}{{x}}\\,dx=\\int {k}u^{{{m}}}\\,du=u^{{{m + 1}}}+C=({lg})^{{{m + 1}}}+C$$\n\n"
+            f"$f(1)=({c})^{{{m + 1}}}+C={c ** (m + 1)}+C={f0}$에서 $C={K}$이므로\n\n"
+            f"$$f(e^{{{t}}})=({_j(str(t), _sgn(c))})^{{{m + 1}}}+C={(t + c) ** (m + 1)}+{_p(K)}={target}$$"
+        )
+        fig = fig_area_curve(lambda x: k * (math.log(x) + c) ** m / x, 0.8, math.e ** t + 0.8, 1, math.e ** t,
+                             ticks=[(1, "1"), (math.e ** t, "e" + _sup(t))], curve_text="y = f′(x)")
+        return q + fig_md(fig), exp, str(target)
+    c = random.choice([1, 2, 3])
+    cc = "" if c == 1 else str(c)
+    V = c * c * (target - 1)
+    pi_v = "\\pi" if V == 1 else f"{V}\\pi"
+    q = (
+        f"곡선 $y={cc}e^{{\\frac{{x}}{{2}}}}$과 $x$축, $y$축 및 직선 $x=\\ln k$ ($k>1$)로 둘러싸인 부분을 $x$축의 둘레로 "
+        f"한 바퀴 회전시켜 생기는 입체도형의 부피가 ${pi_v}$일 때, 상수 $k$의 값을 구하시오."
+    )
+    exp = (
+        f"회전체의 부피는\n\n$$V=\\pi\\int_{{0}}^{{\\ln k}}\\left({cc}e^{{\\frac{{x}}{{2}}}}\\right)^{{2}}dx"
+        f"=\\pi\\int_{{0}}^{{\\ln k}}{c * c if c > 1 else ''}e^{{x}}dx={c * c if c > 1 else ''}\\pi\\left[e^{{x}}\\right]_{{0}}^{{\\ln k}}"
+        f"={c * c if c > 1 else ''}\\pi(k-1)$$\n\n"
+        f"${c * c if c > 1 else ''}\\pi(k-1)={pi_v}$에서 $k-1={target - 1}$이므로 $k={target}$"
+    )
+    fig = fig_area_curve(lambda x: c * math.exp(x / 2), -0.9, math.log(target) + 0.9, 0, math.log(target),
+                         ticks=[(math.log(target), "ln k")])
+    return q + fig_md(fig), exp, str(target)
+
+
+# ==========================================
 # 학년별 단원과 단원마다 쓸 문제 유형 (교과서 목차 순서)
 # ==========================================
 UNIT_FAMILIES = {
@@ -7109,8 +7625,10 @@ UNIT_FAMILIES = {
     ],
     3: [
         ("순열과 조합", [p_perm, p_binomial_coef]),
-        ("확률", [p_prob_unknown]),
         ("통계", [p_binomial_dist, p_normal, p_expectation]),
+        ("수열의 극한", [c_seq_limit]),
+        ("미분법", [c_deriv]),
+        ("적분법", [c_integral]),
     ],
 }
 
@@ -7125,6 +7643,16 @@ DIFFICULTY_LABELS = {1: "하", 2: "중", 3: "상"}
 DIFFICULTY_PLAYTIME_MIN = {1: 10, 2: 15, 3: 20}
 # 물길 연결(파이프) 퍼즐 한 변의 칸 수: 하=4x4, 중=5x5, 상=6x6. (감옥 열쇠 퍼즐 화면이 난이도에 맞춰 쓴다)
 PIPE_PUZZLE_GRID_SIZE = {1: 4, 2: 5, 3: 6}
+# 난이도 '상'에서 스톱워치 합계(오답 벌칙 시간 포함)가 이 시간 이하인 채로 퍼즐에 도착하면 퍼즐이 더 크게 나온다.
+PIPE_PUZZLE_FAST_SECONDS = 120
+PIPE_PUZZLE_FAST_GRID_SIZE = 10
+
+
+def pipe_puzzle_grid_size(difficulty, total_ms):
+    """물길 연결 퍼즐 한 변의 칸 수. 난이도 '상'이고 스톱워치 합계(total_ms, 밀리초)가 PIPE_PUZZLE_FAST_SECONDS 이하면 10x10."""
+    if difficulty == 3 and total_ms <= PIPE_PUZZLE_FAST_SECONDS * 1000:
+        return PIPE_PUZZLE_FAST_GRID_SIZE
+    return PIPE_PUZZLE_GRID_SIZE[difficulty]
 
 
 def generate_grade_problems(grade, difficulty=1):
@@ -7143,7 +7671,39 @@ def generate_grade_problems(grade, difficulty=1):
         explanation = _tidy_math(_fix_josa(explanation))
         problems.append((question, f"*({unit} 단원)*\n\n{explanation}", answer))
 
+    # 난이도 하·중에서는 1~2문제를 객관식으로 섞는다. (나머지와 난이도 '상'의 문제는 숫자를 직접 쓰는 주관식)
+    for i in (random.sample(range(len(problems)), random.choice([1, 2])) if difficulty in MC_DIFFICULTIES else []):
+        question, explanation, answer = problems[i]
+        choices = make_choices(answer)
+        if choices:
+            problems[i] = (question, explanation, answer, choices)
+
     return title, problems
+
+
+# ==========================================
+# 객관식 문제 섞기
+#  - 난이도 하·중에서는 문제 3개 중 1~2개를 보기 5개 중에서 번호를 고르는 객관식으로 낸다. (난이도 상은 모두 주관식)
+#    풀이 화면에서는 둥근 단추 1~5 중 하나를 고르고 완료를 누른다.
+#  - 보기는 정답과 가까운 수 4개를 오답으로 섞어 작은 수부터 늘어놓는다. 그래서 정답 번호는 문제마다 달라진다.
+#  - 객관식 문제 묶음은 (문제, 풀이, 정답, 보기) 이다. 문제 상자에는 문제만 두고, 보기는 답란에 ① 5 ② 6 … (번호, 답 순서)로 보여 준다.
+#    정답은 번호가 아니라 값 그대로라서 '정답을 기억하세요' 화면과 푼 문제 칸에는 번호 없이 값만 나온다.
+# ==========================================
+MC_CHOICE_COUNT = 5
+MC_DIFFICULTIES = (1, 2)      # 객관식을 섞는 난이도: 하·중. 난이도 '상'(3)은 모두 주관식으로 낸다.
+
+
+def make_choices(answer):
+    """객관식 보기 5개: 정답과 가까운 오답 4개를 섞어 작은 수부터 늘어놓은 글자 목록. 정답이 자연수가 아니면 None."""
+    if not str(answer).isdigit():
+        return None
+    t = int(answer)
+    lower = [t - d for d in (1, 2, 3, 4) if t - d >= 0]
+    higher = [t + d for d in (1, 2, 3, 4)]
+    # 정답보다 작은 오답을 몇 개 둘지(= 정답이 몇 번째에 놓일지)를 고르게 뽑아, 정답 번호가 한쪽으로 쏠리지 않게 한다.
+    below = random.choice([k for k in range(MC_CHOICE_COUNT) if k <= len(lower) and MC_CHOICE_COUNT - 1 - k <= len(higher)])
+    wrong = random.sample(lower, below) + random.sample(higher, MC_CHOICE_COUNT - 1 - below)
+    return [str(v) for v in sorted(wrong + [t])]
 
 
 # ==========================================
@@ -7157,9 +7717,295 @@ def generate_grade_problems(grade, difficulty=1):
 #    · 세 번에 한 번쯤: 아래 FAST_PASS_BY_GRADE 에 손으로 만들어 둔 학년별 문제.
 #    · 한 번 정한 문제는 학년마다 세션 동안 그대로 쓰고, 학년 버튼을 다시 누르면 새로 정한다.
 #  - 문제를 바꾸려면 정답이 1592 가 되도록 맞춰야 한다. 정답이 곧 타임머신 암호이기 때문이다.
-#    (고1: g(49)=2401-809 / 고2: 798+794 / 고3: f(x)=(e^x+1)^3+C, f(0)=600 에서 C=592, f(ln 9)=1000+592)
-#    고3 미적분 문제는 처음 그대로 둔다.
+#    (고1: g(49)=2401-809 / 고2: 798+794 / 고3: 어려운 미적분 문제 세 개의 답 15, 9, 2 를 이어 쓴 수)
+#  - 고3 은 훨씬 어렵게 했다. 여러 단원에서 뽑지 않고 언제나 아래의 손으로 만든 문제 세 개 (가)(나)(다)를 낸다.
+#    세 문제 모두 그림을 보고 여러 단계를 거쳐야 하고, 하나라도 틀리면 암호가 맞지 않는다.
+#    같은 유형만 계속 나오지 않도록, 답마다 유형이 다른 후보를 두고 문제를 만들 때마다 하나씩 무작위로 섞는다. (_G3_POOL)
+#    답 15: 역함수의 미분과 정적분 / 주기함수의 제곱을 급수로 쓴 정적분
+#    답 9 : 합성함수 f(f(x))=t 의 실근의 개수 g(t) 가 불연속인 점 / 점화식 a_{n+1}=(a_n+k/a_n)/2 의 극한과 수렴 속도
+#    답 2 : 접선과 삼각형의 넓이, 극값, 극한 / 정사각형의 중점을 이어 만든 도형과 등비급수
+#    후보를 바꾸거나 더하면 그 문제의 답이 15, 9, 2 중 맞는 것인지 다시 확인해야 한다.
 # ==========================================
+def fig_g3_inverse(a):
+    """(가) 그림: f(x)=e^x+ax 와 그 역함수 g, 직선 y=x. 정적분에 나오는 두 띠(f 아래 0≤x≤1, g 아래 f(0)≤x≤f(1))를 칠한다."""
+    f = lambda x: math.exp(x) + a * x
+
+    def g(y):
+        lo, hi = -200.0, 60.0
+        for _ in range(120):
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if f(mid) < y else (lo, mid)
+        return (lo + hi) / 2
+
+    top = f(1) + 4
+    F = _Fig(-3, top, -3, top, width=340, equal=True, height=330, pad=(30, 18, 18, 28))
+    F.axes()
+    F.line((-3, -3), (top, top), color=_FIG_GRAY, w=1.4, dash="5 4")
+    F.area(f, 0, 1, color=_FIG_BLUE, fo=0.34)
+    F.area(g, 1, f(1), color=_FIG_RED, fo=0.34)
+    F.curve(f, -1.2, 1.3, color=_FIG_BLUE, w=2.3)
+    F.curve(g, -3, top, color=_FIG_RED, w=2.3)
+    F.xtick(1, "f(0)")
+    F.xtick(f(1), "f(1)")
+    F.text((0.55, f(0.55)), "y = f(x)", dx=-6, anchor="end", italic=False, size=13, color=_FIG_BLUE)
+    F.text((top * 0.72, g(top * 0.72)), "y = g(x)", dy=-12, italic=False, size=13, color=_FIG_RED)
+    F.text((top, top), "y = x", dx=-6, dy=14, anchor="end", italic=False, size=12, color=_FIG_AXIS)
+    return F.svg()
+
+
+def fig_g3_cubic():
+    """(나) 그림: 삼차함수 y=f(x) 의 그래프. 문제에 주어진 두 점 (0, 0), (2, -4) 만 표시한다."""
+    f = lambda x: x ** 3 - 3 * x * x
+    F = _Fig(-1.8, 3.8, -6.2, 3.4, width=340, equal=False, height=260)
+    F.axes()
+    F.curve(f, -1.8, 3.8)
+    F.line((2, 0), (2, -4), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    F.line((0, -4), (2, -4), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    F.dot((0, 0), color=_FIG_RED)
+    F.dot((2, -4), color=_FIG_RED)
+    F.xtick(2, "2")
+    F.ytick(-4, "−4")
+    F.text((2, -4), "(2, −4)", dx=10, dy=4, anchor="start", italic=False, size=13, color=_FIG_RED)
+    F.text((3.2, f(3.2)), "y = f(x)", dx=-8, dy=-10, anchor="end", italic=False, size=13, color=_FIG_BLUE)
+    return F.svg()
+
+
+def fig_g3_tangent(t=-0.75):
+    """(다) 그림: 곡선 y=e^x, 점 P(t, e^t)에서의 접선, 삼각형 OAB (색칠)."""
+    e_t = math.exp(t)
+    A, B, P, O = (t - 1, 0), (0, e_t * (1 - t)), (t, e_t), (0, 0)
+    F = _Fig(-3.2, 1.8, -0.7, 3.1, width=340, equal=True, height=300)
+    F.axes()
+    F.poly([O, A, B], fill=_FIG_BLUE, fo=0.2, stroke=None)
+    F.curve(math.exp, -3.2, 1.8)
+    F.clipped_line(P, (t + 1, 2 * e_t), color=_FIG_RED, w=1.8)
+    for pt in (P, A, B):
+        F.dot(pt, color=_FIG_RED)
+    F.text(P, "P", dx=-10, dy=-9, color=_FIG_INK)
+    F.text(A, "A", dx=0, dy=17, color=_FIG_INK)
+    F.text(B, "B", dx=11, dy=-3, color=_FIG_INK)
+    F.text((1.5, math.exp(1.5)), "y = exp(x)", dx=-8, dy=4, anchor="end", italic=False, size=13, color=_FIG_BLUE)
+    return F.svg()
+
+
+def fig_g3_zigzag():
+    """(답 15 후보) 그림: 주기가 2 인 지그재그 함수. 문제에 주어진 점 (1/3, 1) 만 표시한다. (꼭대기의 높이 a 는 구해야 한다.)"""
+    a = 3
+    f = lambda x: a * (x % 2) if (x % 2) <= 1 else a * (2 - (x % 2))
+    F = _Fig(-0.5, 6.0, -0.9, 3.9, width=340, equal=False, height=230)
+    F.axes()
+    F.curve(f, 0, 5.8, n=580)
+    F.line((1 / 3, 0), (1 / 3, 1), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    F.line((0, 1), (1 / 3, 1), color=_FIG_GRAY, w=1.2, dash="3 3", cap="butt")
+    F.dot((1 / 3, 1), color=_FIG_RED)
+    F.ytick(1, "1")
+    for x in range(1, 6):
+        F.xtick(x, str(x))
+    F.text((1 / 3, 1), "(1/3, 1)", dx=10, dy=-8, anchor="start", italic=False, size=13, color=_FIG_RED)
+    F.text((5, f(5)), "y = f(x)", dy=-10, italic=False, size=13, color=_FIG_BLUE)
+    return F.svg()
+
+
+def fig_g3_cobweb():
+    """(답 9 후보) 그림: 곡선 y=(x+k/x)/2 와 직선 y=x 위에서 a_1, a_2, a_3 … 을 거미줄 모양으로 잇는다. (k 는 구해야 하므로 적지 않는다.)"""
+    k = 81
+    f = lambda x: 0.5 * (x + k / x)
+    xs = [20.0]
+    for _ in range(4):
+        xs.append(f(xs[-1]))
+    top = 23
+    F = _Fig(0, top, 0, top, width=340, equal=True, height=330, pad=(30, 18, 18, 28))
+    F.axes()
+    F.line((0, 0), (top, top), color=_FIG_GRAY, w=1.4, dash="5 4")
+    F.curve(f, 2.5, top, color=_FIG_BLUE, w=2.3)
+    pts = [(xs[0], 0)]
+    for i in range(len(xs) - 1):
+        pts += [(xs[i], xs[i + 1]), (xs[i + 1], xs[i + 1])]
+    F.poly(pts, stroke=_FIG_RED, w=1.4, close=False)
+    for i, name in enumerate(("a₁", "a₂", "a₃")):
+        F.xtick(xs[i], name)
+    F.text((top, top), "y = x", dx=-6, dy=14, anchor="end", italic=False, size=12, color=_FIG_AXIS)
+    F.text((4.2, f(4.2)), "y = (x + k/x)/2", dx=-4, dy=-14, anchor="start", italic=False, size=13, color=_FIG_BLUE)
+    return F.svg()
+
+
+def fig_g3_squares(levels=5):
+    """(답 2 후보) 그림: 변의 중점을 이어 안쪽으로 거듭 만든 정사각형. 각 단계에서 꼭짓점 A_n, C_n 쪽의 두 삼각형을 색칠한다."""
+    F = _Fig(-1.25, 1.25, -1.25, 1.25, width=320, equal=True, height=320, pad=(20, 20, 20, 20))
+    A, B, C, D = (-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)
+    mid = lambda p, q: ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+    outer = (A, B, C, D)
+    for n in range(levels):
+        a, b, c, d = outer
+        na, nb, nc, nd = mid(a, b), mid(b, c), mid(c, d), mid(d, a)
+        F.poly([a, b, c, d], fill=None, stroke=_FIG_INK, w=1.3)
+        F.poly([a, na, nd], fill=_FIG_BLUE, fo=0.32, stroke=_FIG_INK, w=1.3)
+        F.poly([c, nb, nc], fill=_FIG_BLUE, fo=0.32, stroke=_FIG_INK, w=1.3)
+        F.poly([na, nb, nc, nd], fill=None, stroke=_FIG_INK, w=1.3)
+        outer = (na, nb, nc, nd)
+    for name, p, dx, dy in (("A₁", A, -14, -6), ("B₁", B, 14, -6), ("C₁", C, 14, 16), ("D₁", D, -14, 16)):
+        F.text(p, name, dx=dx, dy=dy, italic=False, size=14)
+    return F.svg()
+
+
+def _g3_a_inverse():
+    """(답 15) 역함수의 미분과 정적분: 곡선 y=g(x), g 는 f(x)=e^x+ax 의 역함수."""
+    q_a = (
+        r"양수 $a$에 대하여 함수 $f(x)=e^{x}+ax$의 역함수를 $g(x)$라 하자. 곡선 $y=g(x)$ 위의 점 $(1,\ 0)$에서의 "
+        r"접선의 기울기가 $\dfrac{1}{29}$일 때, $\displaystyle\int_{f(0)}^{f(1)}g(x)\,dx$의 값을 구하시오. "
+        r"(단, 그림은 개략적인 모양이다.)"
+    ) + fig_md(fig_g3_inverse(2))                  # 그림은 개략도: a=28 로 그리면 f 가 거의 수직선이 되어 알아볼 수 없다.
+    e_a = (
+        r"*(미적분 · 역함수의 미분과 정적분)*" "\n\n"
+        r"$f'(x)=e^{x}+a>0$이므로 $f$는 증가함수이고 역함수 $g$가 있습니다. $f(0)=1$이므로 $g(1)=0$입니다." "\n\n"
+        r"역함수의 미분법에서 $g'(1)=\dfrac{1}{f'(g(1))}=\dfrac{1}{f'(0)}=\dfrac{1}{1+a}=\dfrac{1}{29}$이므로 $a=28$입니다." "\n\n"
+        r"$x=f(t)$로 놓으면 $dx=f'(t)\,dt$이고 $x$가 $f(0)$에서 $f(1)$까지 변할 때 $t$는 $0$에서 $1$까지 변하며 $g(x)=t$이므로" "\n\n"
+        r"$$\int_{f(0)}^{f(1)}g(x)\,dx=\int_{0}^{1}t\,f'(t)\,dt=\Big[\,t\,f(t)\Big]_{0}^{1}-\int_{0}^{1}f(t)\,dt$$" "\n\n"
+        r"$$=(e+28)-\Big[\,e^{t}+14t^{2}\Big]_{0}^{1}=(e+28)-(e+14-1)=15$$" "\n\n"
+        r"(그림에서 파란 띠와 빨간 띠의 넓이의 합이 가로 $1$, 세로 $f(1)$인 직사각형의 넓이 $f(1)$과 같다는 뜻입니다.)"
+    )
+    return q_a, e_a
+
+
+def _g3_a_riemann():
+    """(답 15) 구분구적법: 주기가 2 인 지그재그 함수의 제곱의 급수 = 정적분."""
+    q = (
+        r"모든 실수 $x$에서 연속인 함수 $f(x)$가 다음 조건을 만족시킨다." "\n\n"
+        r"(가) $0\le x\le1$에서 $f(x)=ax$, $1\le x\le2$에서 $f(x)=a(2-x)$이다. (단, $a$는 양수이다.)" "\n\n"
+        r"(나) 모든 실수 $x$에 대하여 $f(x+2)=f(x)$이다." "\n\n"
+        r"$f\left(\dfrac{1}{3}\right)=1$일 때, "
+        r"$\displaystyle\lim_{n\to\infty}\frac{1}{n}\sum_{k=1}^{5n}\left\{f\left(\frac{k}{n}\right)\right\}^{2}$의 값을 구하시오."
+    ) + fig_md(fig_g3_zigzag())
+    e = (
+        r"*(미적분 · 급수와 정적분, 주기함수)*" "\n\n"
+        r"$f\left(\dfrac{1}{3}\right)=\dfrac{a}{3}=1$이므로 $a=3$입니다." "\n\n"
+        r"구간 $[0,\ 5]$를 $5n$등분하면 $\Delta x=\dfrac{1}{n}$이고 $x_{k}=\dfrac{k}{n}$이므로" "\n\n"
+        r"$$\lim_{n\to\infty}\frac{1}{n}\sum_{k=1}^{5n}\left\{f\left(\frac{k}{n}\right)\right\}^{2}=\int_{0}^{5}\{f(x)\}^{2}\,dx$$" "\n\n"
+        r"$$\int_{0}^{2}\{f(x)\}^{2}\,dx=\int_{0}^{1}9x^{2}\,dx+\int_{1}^{2}9(2-x)^{2}\,dx=3+3=6$$" "\n\n"
+        r"주기가 $2$이므로 $\displaystyle\int_{0}^{4}\{f(x)\}^{2}dx=2\times6=12$이고, "
+        r"$\displaystyle\int_{4}^{5}\{f(x)\}^{2}dx=\int_{0}^{1}\{f(x)\}^{2}dx=3$입니다." "\n\n"
+        r"따라서 구하는 값은 $12+3=15$입니다."
+    )
+    return q, e
+
+
+def _g3_b_composite():
+    """(답 9) 합성함수 f(f(x))=t 의 실근의 개수가 불연속인 점."""
+    q_b = (
+        r"최고차항의 계수가 $1$인 삼차함수 $f(x)$가 $f(0)=f'(0)=0$, $f(2)=-4$를 만족시킨다. "
+        r"실수 $t$에 대하여 방정식 $f(f(x))=t$의 서로 다른 실근의 개수를 $g(t)$라 하자. "
+        r"함수 $g(t)$가 $t=\alpha$에서 불연속인 모든 실수 $\alpha$에 대하여 $g(\alpha)$의 값을 모두 더한 값을 구하시오."
+    ) + fig_md(fig_g3_cubic())
+    e_b = (
+        r"*(미적분 · 도함수의 활용, 합성함수)*" "\n\n"
+        r"$f(0)=f'(0)=0$이므로 $f(x)=x^{3}+ax^{2}$이고, $f(2)=8+4a=-4$에서 $a=-3$입니다. 즉 $f(x)=x^{3}-3x^{2}$이고 "
+        r"$f'(x)=3x(x-2)$이므로 극댓값은 $f(0)=0$, 극솟값은 $f(2)=-4$입니다." "\n\n"
+        r"방정식 $f(x)=y$의 서로 다른 실근의 개수를 $n(y)$라 하면 $n(y)=3$ $(-4<y<0)$, $n(y)=2$ $(y=-4,\ 0)$, "
+        r"$n(y)=1$ $(y<-4$ 또는 $y>0)$입니다. $f(f(x))=t$는 $f(x)=y$이고 $f(y)=t$이므로, "
+        r"$f(y)=t$의 서로 다른 실근을 $y_{1},\ y_{2},\ \cdots$라 하면 $g(t)=n(y_{1})+n(y_{2})+\cdots$입니다. "
+        r"한편 $f(-4)=-112$, $f(-1)=-4$, $f(3)=0$입니다." "\n\n"
+        r"• $t<-112$: $f(y)=t$의 실근은 $y<-4$ 하나뿐 → $g(t)=1$" "\n\n"
+        r"• $t=-112$: $f(y)+112=(y+4)(y^{2}-7y+28)=0$에서 $y=-4$ 하나 → $g(-112)=n(-4)=2$" "\n\n"
+        r"• $-112<t<-4$: 실근은 $-4<y<-1$ 하나 → $g(t)=3$" "\n\n"
+        r"• $t=-4$: $f(y)+4=(y+1)(y-2)^{2}=0$에서 $y=-1,\ 2$ → $g(-4)=n(-1)+n(2)=3+1=4$" "\n\n"
+        r"• $-4<t<0$: 서로 다른 세 실근 $y_{1}\in(-1,0)$, $y_{2}\in(0,2)$, $y_{3}\in(2,3)$ → $g(t)=3+1+1=5$" "\n\n"
+        r"• $t=0$: $f(y)=y^{2}(y-3)=0$에서 $y=0,\ 3$ → $g(0)=n(0)+n(3)=2+1=3$" "\n\n"
+        r"• $t>0$: 실근은 $y>3$ 하나 → $g(t)=1$" "\n\n"
+        r"따라서 $g(t)$는 $t=-112,\ -4,\ 0$에서 불연속이고 구하는 값은 $2+4+3=9$입니다."
+    )
+    return q_b, e_b
+
+
+def _g3_b_newton():
+    """(답 9) 점화식 a_{n+1}=(a_n+k/a_n)/2 의 극한과 수렴 속도 (거미줄 그림)."""
+    q = (
+        r"곡선 $y=\dfrac{1}{2}\left(x+\dfrac{k}{x}\right)$ ($x>0$)이 점 $(3,\ 15)$를 지난다. "
+        r"수열 $\{a_{n}\}$이 $a_{1}=20$, $a_{n+1}=\dfrac{1}{2}\left(a_{n}+\dfrac{k}{a_{n}}\right)$ ($n\ge1$)로 정의될 때, "
+        r"$\displaystyle\lim_{n\to\infty}a_{n}=L$, $\displaystyle\lim_{n\to\infty}\frac{a_{n+1}-L}{(a_{n}-L)^{2}}=M$이다. "
+        r"$\dfrac{1}{M}-L$의 값을 구하시오. (단, $k$는 양의 상수이다.)"
+    ) + fig_md(fig_g3_cobweb())
+    e = (
+        r"*(미적분 · 수열의 극한, 점화식)*" "\n\n"
+        r"점 $(3,\ 15)$를 지나므로 $\dfrac{1}{2}\left(3+\dfrac{k}{3}\right)=15$에서 $k=81$입니다." "\n\n"
+        r"$a_{1}=20>0$이므로 모든 $n$에 대하여 $a_{n}>0$이고, 산술·기하평균에서 $a_{n+1}\ge\sqrt{a_{n}\cdot\dfrac{81}{a_{n}}}=9$입니다. "
+        r"또 $a_{n+1}-a_{n}=\dfrac{81-a_{n}^{2}}{2a_{n}}\le0$ ($n\ge2$)이므로 $\{a_{n}\}$은 아래로 유계인 감소수열이어서 수렴합니다." "\n\n"
+        r"$L=\dfrac{1}{2}\left(L+\dfrac{81}{L}\right)$에서 $L^{2}=81$이고 $L>0$이므로 $L=9$입니다." "\n\n"
+        r"$$a_{n+1}-9=\frac{1}{2}\left(a_{n}+\frac{81}{a_{n}}\right)-9=\frac{a_{n}^{2}-18a_{n}+81}{2a_{n}}=\frac{(a_{n}-9)^{2}}{2a_{n}}$$" "\n\n"
+        r"이므로 $\dfrac{a_{n+1}-L}{(a_{n}-L)^{2}}=\dfrac{1}{2a_{n}}\to\dfrac{1}{18}$, 즉 $M=\dfrac{1}{18}$입니다." "\n\n"
+        r"따라서 $\dfrac{1}{M}-L=18-9=9$입니다."
+    )
+    return q, e
+
+
+def _g3_c_tangent():
+    """(답 2) 곡선 y=e^x 의 접선과 삼각형의 넓이, 극값, 극한."""
+    q_c = (
+        r"곡선 $y=e^{x}$ 위의 점 $\mathrm{P}(t,\ e^{t})$ ($t<1$)에서의 접선이 $x$축, $y$축과 만나는 점을 각각 "
+        r"$\mathrm{A}$, $\mathrm{B}$라 하고, 원점을 $\mathrm{O}$라 하자. 삼각형 $\mathrm{OAB}$의 넓이를 $S(t)$, "
+        r"$S(t)$의 극댓값을 $M$이라 할 때, $\displaystyle M\times\lim_{k\to\infty}\int_{-k}^{1}S(t)\,dt$의 값을 구하시오."
+    ) + fig_md(fig_g3_tangent())
+    e_c = (
+        r"*(미적분 · 접선, 극값, 부분적분과 극한)*" "\n\n"
+        r"점 $\mathrm{P}$에서의 접선의 기울기는 $e^{t}$이므로 접선의 방정식은 $y=e^{t}(x-t+1)$입니다. "
+        r"$y=0$이면 $x=t-1$, $x=0$이면 $y=e^{t}(1-t)$이므로 $\mathrm{A}(t-1,\ 0)$, $\mathrm{B}(0,\ e^{t}(1-t))$입니다." "\n\n"
+        r"$t<1$이므로 $$S(t)=\frac{1}{2}(1-t)\times e^{t}(1-t)=\frac{1}{2}(1-t)^{2}e^{t}$$" "\n\n"
+        r"$$S'(t)=\frac{1}{2}e^{t}\{(1-t)^{2}-2(1-t)\}=-\frac{1}{2}e^{t}(1-t)(1+t)$$" "\n\n"
+        r"$t<-1$에서 $S'(t)>0$, $-1<t<1$에서 $S'(t)<0$이므로 $t=-1$에서 극대이고 $M=S(-1)=\dfrac{2}{e}$입니다." "\n\n"
+        r"$\dfrac{d}{dt}\{e^{t}(t^{2}-4t+5)\}=e^{t}(t-1)^{2}$이므로" "\n\n"
+        r"$$\int_{-k}^{1}S(t)\,dt=\frac{1}{2}\Big[\,e^{t}(t^{2}-4t+5)\Big]_{-k}^{1}=e-\frac{1}{2}e^{-k}(k^{2}+4k+5)$$" "\n\n"
+        r"$k\to\infty$일 때 $e^{-k}(k^{2}+4k+5)\to0$이므로 극한값은 $e$입니다." "\n\n"
+        r"따라서 구하는 값은 $\dfrac{2}{e}\times e=2$입니다."
+    )
+    return q_c, e_c
+
+
+def _g3_c_squares():
+    """(답 2) 정사각형의 중점을 이어 만든 도형과 등비급수."""
+    q = (
+        r"그림과 같이 한 변의 길이가 $2$인 정사각형 $\mathrm{A_{1}B_{1}C_{1}D_{1}}$이 있다. "
+        r"정사각형 $\mathrm{A_{n}B_{n}C_{n}D_{n}}$의 네 변 $\mathrm{A_{n}B_{n}}$, $\mathrm{B_{n}C_{n}}$, "
+        r"$\mathrm{C_{n}D_{n}}$, $\mathrm{D_{n}A_{n}}$의 중점을 각각 $\mathrm{A_{n+1}}$, $\mathrm{B_{n+1}}$, "
+        r"$\mathrm{C_{n+1}}$, $\mathrm{D_{n+1}}$이라 하자. 정사각형 $\mathrm{A_{n}B_{n}C_{n}D_{n}}$에서 정사각형 "
+        r"$\mathrm{A_{n+1}B_{n+1}C_{n+1}D_{n+1}}$을 제외한 네 삼각형 중 꼭짓점 $\mathrm{A_{n}}$, $\mathrm{C_{n}}$을 "
+        r"포함한 두 삼각형을 색칠한다. 이 과정을 $n=1,\ 2,\ \cdots,\ N$까지 반복하여 얻은 그림에서 색칠한 부분의 "
+        r"넓이를 $S_{N}$이라 할 때, $\displaystyle\lim_{N\to\infty}S_{N}$의 값을 구하시오."
+    ) + fig_md(fig_g3_squares())
+    e = (
+        r"*(미적분 · 등비급수의 활용)*" "\n\n"
+        r"정사각형 $\mathrm{A_{n}B_{n}C_{n}D_{n}}$의 한 변의 길이를 $l_{n}$이라 하면 $l_{1}=2$이고, "
+        r"각 변의 중점을 이은 정사각형의 한 변의 길이는 $l_{n+1}=\dfrac{\sqrt{2}}{2}l_{n}$이므로 넓이는 매번 $\dfrac{1}{2}$배가 됩니다." "\n\n"
+        r"꼭짓점 $\mathrm{A_{n}}$을 포함한 삼각형은 두 변이 $\dfrac{l_{n}}{2}$인 직각이등변삼각형이므로 넓이가 $\dfrac{l_{n}^{2}}{8}$입니다. "
+        r"두 삼각형의 넓이의 합은 $\dfrac{l_{n}^{2}}{4}$이고, $n=1$일 때 $\dfrac{4}{4}=1$입니다." "\n\n"
+        r"따라서 $n$단계에서 새로 색칠하는 넓이는 첫째항이 $1$, 공비가 $\dfrac{1}{2}$인 등비수열을 이루므로" "\n\n"
+        r"$$\lim_{N\to\infty}S_{N}=\sum_{n=1}^{\infty}1\times\left(\frac{1}{2}\right)^{n-1}=\frac{1}{1-\frac{1}{2}}=2$$"
+    )
+    return q, e
+
+
+# 답(15, 9, 2)마다 후보 문제를 여러 가지 유형으로 두고, 문제를 만들 때마다 무작위로 하나씩 고른다.
+_G3_POOL = {
+    15: [_g3_a_inverse, _g3_a_riemann],
+    9: [_g3_b_composite, _g3_b_newton],
+    2: [_g3_c_tangent, _g3_c_squares],
+}
+
+
+def _g3_extreme_fast_pass():
+    """고3 '매우 어려움': (가)(나)(다) 세 문제의 답을 이어 쓴 수 = 1592. 반환: (제목, (문제, 풀이, 정답))
+    답이 15, 9, 2 인 후보들 중에서 하나씩 무작위로 골라 섞는다."""
+    parts = [random.choice(_G3_POOL[t])() for t in (15, 9, 2)]
+    labels = ("(가)", "(나)", "(다)")
+    question = (
+        "다음 세 문제 (가), (나), (다)의 답을 각각 구한 뒤, 차례로 이어 쓴 수를 구하시오.\n\n"
+        "(예: 세 문제의 답이 7, 12, 3이면 7123)\n\n"
+        + "\n\n".join(f"**{lab}**\n\n{_ea_aids(_tidy_math(_fix_josa(q)))}" for lab, (q, _) in zip(labels, parts))
+    )
+    explanation = "\n\n".join(f"**{lab}** {_tidy_math(_fix_josa(e))}" for lab, (_, e) in zip(labels, parts)) + (
+        "\n\n(가), (나), (다)의 답이 차례로 $15$, $9$, $2$이므로 이어 쓰면 $1592$입니다."
+    )
+    return "[ 고등학교 3학년 수학 · 매우 어려움 ]", (question, explanation, "1592")
+
+
 FAST_PASS_INDEX = 3
 # 학년 → (제목, (문제, 풀이, 정답))
 FAST_PASS_BY_GRADE = {
@@ -7201,21 +8047,6 @@ FAST_PASS_BY_GRADE = {
             "두 방정식에 공통인 근이 있다면 $x=-x$에서 $x=0$인데 $f(0)=-397\\ne0$이므로 공통인 근은 없습니다. "
             "따라서 서로 다른 실근은 모두 $4$개이고\n\n"
             "$$798+794=1592$$",
-            "1592",
-        ),
-    ),
-    3: (
-        "[ 고등학교 3학년 수학 · 미적분 ]",
-        (
-            "함수 $f(x)$가 모든 실수 $x$에 대하여 다음을 만족시킨다.\n\n"
-            "$$f'(x)=3e^{x}(e^{x}+1)^{2}$$\n\n"
-            "$f(0)=600$일 때, $f(\\ln 9)$의 값을 구하시오."
-            + fig_md(fig_area_curve(lambda x: 3 * math.exp(x) * (math.exp(x) + 1) ** 2, -0.6, 2.8, 0, math.log(9), ticks=[(math.log(9), "ln 9")], curve_text="y = f′(x)")),
-            "*(미적분 · 치환적분 단원)*\n\n"
-            "$t=e^{x}+1$로 놓으면 $dt=e^{x}dx$이므로\n\n"
-            "$$\\int 3e^{x}(e^{x}+1)^{2}dx=\\int 3t^{2}dt=t^{3}+C=(e^{x}+1)^{3}+C$$\n\n"
-            "$f(0)=8+C=600$이므로 $C=592$입니다.\n\n"
-            "따라서 $f(\\ln 9)=(9+1)^{3}+592=1000+592=1592$",
             "1592",
         ),
     ),
@@ -7291,6 +8122,8 @@ def make_fast_pass_from_units(grade):
 def make_fast_pass(grade):
     """'매우 어려움' 문제 하나: (제목, (문제, 풀이, 정답)). 여러 단원에서 뽑아 만들고, 가끔 손으로 만든 학년별 문제를 낸다."""
     grade = grade if grade in (1, 2, 3) else 3
+    if grade == 3:
+        return _g3_extreme_fast_pass()                # 고3 은 언제나 손으로 만든 어려운 문제를 낸다. (유형은 매번 섞는다.)
     if random.random() >= FAST_PASS_FIXED_CHANCE:
         try:
             return make_fast_pass_from_units(grade)
@@ -7794,7 +8627,9 @@ elif st.session_state.step == "prison_key":
     if "prison_key_html" not in st.session_state:
         started = st.session_state.get("stopwatch_start", time.monotonic())
         elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
-        grid_size = PIPE_PUZZLE_GRID_SIZE[st.session_state.get("difficulty", 1)]
+        # 화면에 보이는 스톱워치 합계에는 오답 벌칙 시간이 더해져 있으므로, 퍼즐 크기도 같은 값으로 정한다.
+        total_ms = elapsed_ms + st.session_state.get("wrong_answer_count", 0) * WRONG_ANSWER_PENALTY_SECONDS * 1000
+        grid_size = pipe_puzzle_grid_size(st.session_state.get("difficulty", 1), total_ms)
         st.session_state.prison_key_html = PRISON_KEY_PUZZLE_HTML.replace(
             "__ELAPSED_BEFORE_MS__", str(elapsed_ms)
         ).replace("__PRISON_CLUE__", html_escape(prison_clue_text())).replace("__GRID_SIZE__", str(grid_size))
@@ -8208,7 +9043,8 @@ else:
 
     # --- 화면 3: 문제 풀이 ---
     elif st.session_state.step == "solve":
-        current_q, current_exp, current_ans = st.session_state.current_problem
+        current_q, current_exp, current_ans = st.session_state.current_problem[:3]
+        choices = st.session_state.current_problem[3] if len(st.session_state.current_problem) > 3 else None   # 객관식이면 보기
 
         # 제목 · 구분선 · 문제(수식 포함)를 흰 상자 하나에 담는다.
         readable_markdown(
@@ -8216,14 +9052,19 @@ else:
         )
         st.write("")
 
-        # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
-        user_answer = st.text_input(
-            "정답을 입력하세요 (숫자만 입력):",
-            autocomplete="off",
-            key="user_answer",
-            label_visibility="collapsed",
-            placeholder="정답을 입력하세요 (숫자만 입력)",
-        )
+        if choices:
+            # 객관식: 둥근 단추 1~5 중 번호를 고르고 완료를 누른다.
+            picked = mc_choice_input(choices)
+            user_answer = choices[picked - 1] if picked else ""
+        else:
+            # 자동 완성을 꺼서 이전에 쓴 답이 키보드 위쪽에 뜨지 않게 한다. (나머지 설정은 disable_answer_autofill)
+            user_answer = st.text_input(
+                "정답을 입력하세요 (숫자만 입력):",
+                autocomplete="off",
+                key="user_answer",
+                label_visibility="collapsed",
+                placeholder="정답을 입력하세요 (숫자만 입력)",
+            )
         st.markdown("---")
 
         if st.session_state.is_dev_mode:
@@ -8239,8 +9080,9 @@ else:
                 )
                 if pw == "0805":
                     st.success("암호가 확인되었습니다.")
+                    ans_label = f"{current_ans} ({MC_CIRCLED[choices.index(current_ans)]})" if choices else current_ans
                     readable_markdown(
-                        f"▶ **정답:** {current_ans}\n\n▶ **풀이:**\n{current_exp}"
+                        f"▶ **정답:** {ans_label}\n\n▶ **풀이:**\n{current_exp}"
                     )
                 elif pw != "":
                     st.error("암호가 맞지 않아요. 다시 입력해 주세요.")
@@ -8262,7 +9104,9 @@ else:
             if lucky_button(
                 "완료 ❯", type="primary", use_container_width=True
             ):
-                if user_answer.strip() == current_ans:
+                if choices and not user_answer:
+                    st.warning("번호를 먼저 골라 주세요.")     # 아무것도 고르지 않았을 때는 벌점 없이 안내만 한다.
+                elif user_answer.strip() == current_ans:
                     if "pw_single" in st.session_state:
                         del st.session_state["pw_single"]
                     st.session_state.dev_panel_open = False

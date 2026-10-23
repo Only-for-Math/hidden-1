@@ -3005,12 +3005,8 @@ class _Fig:
         else:
             self.add(f'<circle cx="{_fn(x)}" cy="{_fn(y)}" r="{r}" fill="{color}"/>')
 
-    def text(self, p, s, dx=0, dy=0, size=15, anchor="middle", italic=None, color=_FIG_INK, bold=False, raw=False):
-        """글자. p 는 수학 좌표(raw=True 면 화면 좌표), dx, dy 는 화면 픽셀 어긋남. 글자 둘레에 흰 테두리를 둘러 선과 겹쳐도 읽힌다."""
-        x, y = (p if raw else self.P(p))
-        # 그림 속 글자는 수식 그림 글자처럼 두껍고 또렷하게 보이도록 굵게 쓰고 조금 키운다. (bold 인자와 상관없이 늘 굵게)
-        fs = round(size * FIG_TEXT_SCALE, 1)
-        # 글자가 그림 틀 밖으로 잘리지 않게 안쪽으로 밀어 넣는다. (글자 폭은 어림한다)
+    def _fit_text(self, x, y, s, dx, dy, fs, anchor):
+        """글자를 그림 틀 안으로 밀어 넣은 (dx, dy) 와 그 글자 상자 (왼쪽, 오른쪽, 위, 아래)를 돌려준다. (글자 폭은 어림한다)"""
         w = 0.6 * fs * len(s)
         left = x + dx - (w if anchor == "end" else w / 2 if anchor == "middle" else 0)
         if left < 2:
@@ -3018,6 +3014,32 @@ class _Fig:
         elif left + w > self.W - 2:
             dx -= left + w - (self.W - 2)
         dy = min(max(dy, fs - y + 1), self.H - 3 - y)
+        left = x + dx - (w if anchor == "end" else w / 2 if anchor == "middle" else 0)
+        base = y + dy
+        return dx, dy, (left, left + w, base - fs * 0.85, base + fs * 0.25)
+
+    def _hits(self, box):
+        """이 글자 상자가 이미 놓인 글자와 겹치는가."""
+        return any(box[0] < b[1] - 1 and box[1] > b[0] + 1 and box[2] < b[3] - 1 and box[3] > b[2] + 1
+                   for b in self.__dict__.setdefault("_boxes", []))
+
+    def text(self, p, s, dx=0, dy=0, size=15, anchor="middle", italic=None, color=_FIG_INK, bold=False, raw=False, nudge=True):
+        """글자. p 는 수학 좌표(raw=True 면 화면 좌표), dx, dy 는 화면 픽셀 어긋남. 글자 둘레에 흰 테두리를 둘러 선과 겹쳐도 읽힌다.
+        nudge=True 면 이미 놓인 글자와 겹칠 때 위아래·옆으로 조금 옮겨서 글자끼리 가리거나 붙어 보이지 않게 한다."""
+        x, y = (p if raw else self.P(p))
+        # 그림 속 글자는 수식 그림 글자처럼 두껍고 또렷하게 보이도록 굵게 쓰고 조금 키운다. (bold 인자와 상관없이 늘 굵게)
+        fs = round(size * FIG_TEXT_SCALE, 1)
+        dx0, dy0 = dx, dy
+        dx, dy, box = self._fit_text(x, y, s, dx0, dy0, fs, anchor)
+        if nudge and self._hits(box):
+            w = 0.6 * fs * len(s)
+            for ox, oy in ((0, -1), (0, 1), (1, 0), (-1, 0), (1, -1), (-1, -1), (1, 1), (-1, 1),
+                           (0, -2), (0, 2), (2, 0), (-2, 0), (2, -1), (-2, -1), (2, 1), (-2, 1)):
+                cdx, cdy, cbox = self._fit_text(x, y, s, dx0 + ox * (w * 0.5 + 8), dy0 + oy * (fs * 0.95 + 2), fs, anchor)
+                if not self._hits(cbox):
+                    dx, dy, box = cdx, cdy, cbox
+                    break
+        self.__dict__.setdefault("_boxes", []).append(box)
         if italic is None:
             italic = bool(re.fullmatch(r"[A-Za-z]{1,2}'?", s))
         st = ' font-style="italic"' if italic else ""
@@ -3195,7 +3217,16 @@ class _Fig:
         if abs(x) < 1e-9 and getattr(self, "_ax", None) == 0:   # 원점은 O 글자가 있으므로 0 은 쓰지 않는다
             return
         self.add(f'<line x1="{_fn(X)}" y1="{_fn(Y - 3.5)}" x2="{_fn(X)}" y2="{_fn(Y + 3.5)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
-        self.text((X, Y), label if label is not None else _fn(x).replace("-", "−"), raw=True, dy=17, size=size, italic=False)
+        label = label if label is not None else _fn(x).replace("-", "−")
+        # 눈금 숫자가 서로 가깝거나 다른 글자와 겹쳐 붙어 보이면(예: 101, 102 → 101102) 겹치는 글자를 아랫줄로 내린다.
+        fs = round(size * FIG_TEXT_SCALE, 1)
+        for row in range(4):
+            dy = 17 + row * (fs + 2)
+            if not self._hits(self._fit_text(X, Y, label, 0, dy, fs, "middle")[2]):
+                break
+        if row:
+            self.add(f'<line x1="{_fn(X)}" y1="{_fn(Y + 3.5)}" x2="{_fn(X)}" y2="{_fn(Y + dy - fs * 0.8)}" stroke="{_FIG_AXIS}" stroke-width="1"/>')
+        self.text((X, Y), label, raw=True, dy=dy, size=size, italic=False, nudge=False)
 
     def ytick(self, y, label=None, size=12):
         ax = getattr(self, "_ax", 0)
@@ -3205,7 +3236,14 @@ class _Fig:
         if abs(y) < 1e-9 and getattr(self, "_ay", None) == 0:
             return
         self.add(f'<line x1="{_fn(X - 3.5)}" y1="{_fn(Y)}" x2="{_fn(X + 3.5)}" y2="{_fn(Y)}" stroke="{_FIG_AXIS}" stroke-width="1.3"/>')
-        self.text((X, Y), label if label is not None else _fn(y).replace("-", "−"), raw=True, dx=-8, dy=size * 0.34, size=size, anchor="end", italic=False)
+        label = label if label is not None else _fn(y).replace("-", "−")
+        # 눈금 숫자가 위아래로 가깝거나 다른 글자(원점 O, x축 눈금 등)와 겹치면 축 오른쪽으로 옮기고, 그래도 겹치면 더 바깥으로 옮긴다.
+        fs = round(size * FIG_TEXT_SCALE, 1)
+        w = 0.6 * fs * len(label)
+        for dx, anchor in ((-8, "end"), (8, "start"), (-16 - w, "end"), (16 + w, "start")):
+            if not self._hits(self._fit_text(X, Y, label, dx, size * 0.34, fs, anchor)[2]):
+                break
+        self.text((X, Y), label, raw=True, dx=dx, dy=size * 0.34, size=size, anchor=anchor, italic=False, nudge=False)
 
     # ----- 함수 그래프 -----
     def curve(self, fn, x0, x1, n=320, color=_FIG_BLUE, w=2.3, dash=None, ylo=None, yhi=None):
@@ -3851,7 +3889,7 @@ def fig_normal(m, sigma, shades, ticks):
     xs = [t[0] for t in ticks] + [m - 3.2 * sigma, m + 3.2 * sigma]
     x0, x1 = min(xs) - 0.7 * sigma, max(xs) + 0.7 * sigma
     fn = lambda x: math.exp(-((x - m) ** 2) / (2 * sigma * sigma))
-    f = _Fig(x0, x1, -0.2, 1.25, width=350, equal=False, height=220, pad=(14, 22, 14, 34))
+    f = _Fig(x0, x1, -0.2, 1.25, width=350, equal=False, height=240, pad=(14, 22, 14, 58))   # 아랫줄로 내려간 눈금 글자 자리를 둔다
     for lo, hi in shades:
         a, b = max(lo, x0), min(hi, x1)
         if a < b:
@@ -7594,8 +7632,8 @@ def generate_grade_problems(grade, difficulty=1):
         explanation = _tidy_math(_fix_josa(explanation))
         problems.append((question, f"*({unit} 단원)*\n\n{explanation}", answer))
 
-    # 1~2문제는 객관식으로 섞는다. (나머지는 숫자를 직접 쓰는 주관식)
-    for i in random.sample(range(len(problems)), random.choice([1, 2])):
+    # 난이도 하·중에서는 1~2문제를 객관식으로 섞는다. (나머지와 난이도 '상'의 문제는 숫자를 직접 쓰는 주관식)
+    for i in (random.sample(range(len(problems)), random.choice([1, 2])) if difficulty in MC_DIFFICULTIES else []):
         question, explanation, answer = problems[i]
         choices = make_choices(answer)
         if choices:
@@ -7606,12 +7644,14 @@ def generate_grade_problems(grade, difficulty=1):
 
 # ==========================================
 # 객관식 문제 섞기
-#  - 문제 3개 중 1~2개는 보기 5개 중에서 번호를 고르는 객관식으로 낸다. 풀이 화면에서는 둥근 단추 1~5 중 하나를 고르고 완료를 누른다.
+#  - 난이도 하·중에서는 문제 3개 중 1~2개를 보기 5개 중에서 번호를 고르는 객관식으로 낸다. (난이도 상은 모두 주관식)
+#    풀이 화면에서는 둥근 단추 1~5 중 하나를 고르고 완료를 누른다.
 #  - 보기는 정답과 가까운 수 4개를 오답으로 섞어 작은 수부터 늘어놓는다. 그래서 정답 번호는 문제마다 달라진다.
 #  - 객관식 문제 묶음은 (문제, 풀이, 정답, 보기) 이다. 문제 상자에는 문제만 두고, 보기는 답란에 ① 5 ② 6 … (번호, 답 순서)로 보여 준다.
 #    정답은 번호가 아니라 값 그대로라서 '정답을 기억하세요' 화면과 푼 문제 칸에는 번호 없이 값만 나온다.
 # ==========================================
 MC_CHOICE_COUNT = 5
+MC_DIFFICULTIES = (1, 2)      # 객관식을 섞는 난이도: 하·중. 난이도 '상'(3)은 모두 주관식으로 낸다.
 
 
 def make_choices(answer):

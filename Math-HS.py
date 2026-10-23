@@ -878,23 +878,34 @@ MC_CHOICE_CSS = """
     background: rgba(255, 255, 255, 0.92);
     border-radius: 12px;
     padding: 12px 10px;
+    min-width: min(100%, 360px);     /* 보기 글자가 짧아도 눌리는 칸이 좁아지지 않게 한다. */
+    box-sizing: border-box;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
 .st-key-mc_choice [data-testid="stRadioGroup"] {
-    display: flex; flex-direction: column; flex-wrap: nowrap; align-items: flex-start; gap: 6px; width: 100%;
+    display: flex; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 4px; width: 100%;
 }
+/* 터치(갤럭시 탭 등)에서 잘 눌리도록 한 줄 전체를 누르는 칸으로 만든다. (가로는 상자 끝까지, 세로는 56px 이상)
+   touch-action: manipulation 은 두 번 탭 확대를 기다리지 않게 하고, user-select: none 은 길게 눌렀을 때 글자가 선택되는 것을 막는다. */
 .st-key-mc_choice [data-testid="stRadioOption"] {
-    display: flex; justify-content: flex-start; margin: 0; padding: 6px 12px; cursor: pointer;
+    display: flex; justify-content: flex-start; align-items: center; box-sizing: border-box;
+    width: 100%; min-height: 56px; margin: 0; padding: 10px 16px; border-radius: 10px; cursor: pointer;
+    touch-action: manipulation; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0.12);
 }
-.st-key-mc_choice [data-testid="stRadioOption"] > div > div { align-items: center; gap: 8px; }
+.st-key-mc_choice [data-testid="stRadioOption"]:active,
+.st-key-mc_choice [data-testid="stRadioOption"][data-selected="true"] {
+    background: rgba(0, 0, 0, 0.08);
+}
+.st-key-mc_choice [data-testid="stRadioOption"] > div > div { align-items: center; gap: 12px; }
 /* 둥근 칸: 흰 바탕에 검은 테두리, 고르면 가운데가 검게 찬다. */
 .st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child {
-    width: 22px !important; height: 22px !important; min-width: 22px;
+    width: 28px !important; height: 28px !important; min-width: 28px;
     border: 2px solid #000000 !important; background: #ffffff !important; border-radius: 50% !important;
     box-sizing: border-box; display: flex; align-items: center; justify-content: center;
 }
 .st-key-mc_choice [data-testid="stRadioOption"] > div > div > div:first-child > div {
-    width: 10px !important; height: 10px !important; border-radius: 50% !important; background: transparent !important;
+    width: 14px !important; height: 14px !important; border-radius: 50% !important; background: transparent !important;
 }
 .st-key-mc_choice [data-testid="stRadioOption"][data-selected="true"] > div > div > div:first-child > div {
     background: #000000 !important;

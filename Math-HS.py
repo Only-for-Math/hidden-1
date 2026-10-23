@@ -1901,7 +1901,7 @@ PRISON_KEY_PUZZLE_HTML = """
   /* ========================================================
      파이프 퍼즐 게임 (원본 로직)
   ======================================================== */
-  // 한 변의 칸 수: 파이썬이 난이도에 맞춰 채워 준다. (하=4, 중=5, 상=6 / PIPE_PUZZLE_GRID_SIZE)
+  // 한 변의 칸 수: 파이썬이 난이도에 맞춰 채워 준다. (하=4, 중=5, 상=6, 상에서 2분 이내 도착이면 10 / pipe_puzzle_grid_size)
   const PUZZLE_GRID_SIZE = Number('__GRID_SIZE__') || 4;
   let canvas, ctx;
   let boardGrid = [];
@@ -1970,6 +1970,24 @@ PRISON_KEY_PUZZLE_HTML = """
     let path = [];
     let visited = new Set();
 
+    // (r,c) 에서 아직 안 지나간 칸만 밟고 도착 칸까지 갈 수 있는지 본다.
+    // 갈 수 없는 쪽으로 들어가면 막다른 곳을 끝없이 되짚게 되어 10x10 처럼 큰 판에서는 화면이 멈추므로, 들어가기 전에 거른다.
+    function canReachEnd(r,c){
+      const seen = new Set([r*GRID_SIZE+c]);
+      const stack = [[r,c]];
+      while(stack.length){
+        const [cr,cc] = stack.pop();
+        if(cr===GRID_SIZE-1 && cc===GRID_SIZE-1) return true;
+        for(const [dr,dc] of [[0,1],[1,0],[-1,0],[0,-1]]){
+          const nr=cr+dr, nc=cc+dc, nidx=nr*GRID_SIZE+nc;
+          if(nr>=0 && nr<GRID_SIZE && nc>=0 && nc<GRID_SIZE && !visited.has(nidx) && !seen.has(nidx)){
+            seen.add(nidx); stack.push([nr,nc]);
+          }
+        }
+      }
+      return false;
+    }
+
     function findPath(r,c,currentPath){
       const idx = r*GRID_SIZE+c;
       currentPath.push({r,c,idx}); visited.add(idx);
@@ -1978,7 +1996,7 @@ PRISON_KEY_PUZZLE_HTML = """
       dirs.sort(()=>Math.random()-.5);
       for(const d of dirs){
         const nr=r+d.dr, nc=c+d.dc, nidx=nr*GRID_SIZE+nc;
-        if(nr>=0 && nr<GRID_SIZE && nc>=0 && nc<GRID_SIZE && !visited.has(nidx)){
+        if(nr>=0 && nr<GRID_SIZE && nc>=0 && nc<GRID_SIZE && !visited.has(nidx) && canReachEnd(nr,nc)){
           if(findPath(nr,nc,currentPath)) return true;
         }
       }
@@ -7625,6 +7643,16 @@ DIFFICULTY_LABELS = {1: "하", 2: "중", 3: "상"}
 DIFFICULTY_PLAYTIME_MIN = {1: 10, 2: 15, 3: 20}
 # 물길 연결(파이프) 퍼즐 한 변의 칸 수: 하=4x4, 중=5x5, 상=6x6. (감옥 열쇠 퍼즐 화면이 난이도에 맞춰 쓴다)
 PIPE_PUZZLE_GRID_SIZE = {1: 4, 2: 5, 3: 6}
+# 난이도 '상'에서 스톱워치 합계(오답 벌칙 시간 포함)가 이 시간 이하인 채로 퍼즐에 도착하면 퍼즐이 더 크게 나온다.
+PIPE_PUZZLE_FAST_SECONDS = 120
+PIPE_PUZZLE_FAST_GRID_SIZE = 10
+
+
+def pipe_puzzle_grid_size(difficulty, total_ms):
+    """물길 연결 퍼즐 한 변의 칸 수. 난이도 '상'이고 스톱워치 합계(total_ms, 밀리초)가 PIPE_PUZZLE_FAST_SECONDS 이하면 10x10."""
+    if difficulty == 3 and total_ms <= PIPE_PUZZLE_FAST_SECONDS * 1000:
+        return PIPE_PUZZLE_FAST_GRID_SIZE
+    return PIPE_PUZZLE_GRID_SIZE[difficulty]
 
 
 def generate_grade_problems(grade, difficulty=1):
@@ -8599,7 +8627,9 @@ elif st.session_state.step == "prison_key":
     if "prison_key_html" not in st.session_state:
         started = st.session_state.get("stopwatch_start", time.monotonic())
         elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
-        grid_size = PIPE_PUZZLE_GRID_SIZE[st.session_state.get("difficulty", 1)]
+        # 화면에 보이는 스톱워치 합계에는 오답 벌칙 시간이 더해져 있으므로, 퍼즐 크기도 같은 값으로 정한다.
+        total_ms = elapsed_ms + st.session_state.get("wrong_answer_count", 0) * WRONG_ANSWER_PENALTY_SECONDS * 1000
+        grid_size = pipe_puzzle_grid_size(st.session_state.get("difficulty", 1), total_ms)
         st.session_state.prison_key_html = PRISON_KEY_PUZZLE_HTML.replace(
             "__ELAPSED_BEFORE_MS__", str(elapsed_ms)
         ).replace("__PRISON_CLUE__", html_escape(prison_clue_text())).replace("__GRID_SIZE__", str(grid_size))

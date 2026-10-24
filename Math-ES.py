@@ -1,3 +1,4 @@
+import base64
 import json
 import math
 import os
@@ -2662,6 +2663,354 @@ def _dec(n, scale=10):
     return s.rstrip("0").rstrip(".")
 
 
+# ---------- 벡터(SVG) 그림 ----------
+#  - 그림은 SVG 글자를 base64 로 바꾸어 <img> 로 문제 글 끝에 붙인다. (fig_md)
+#  - 좌표는 그림 안의 픽셀이고 y 는 아래로 커진다. 글자는 굵게 쓰고, 구해야 하는 값은 빨간 '?' 로 쓴다.
+_FIG_INK = "#1f2937"
+_FIG_FILL = "#dbeafe"
+_FIG_BLUE = "#2563eb"
+_FIG_RED = "#dc2626"
+_FIG_GRAY = "#9ca3af"
+_FIG_FONT = "'Malgun Gothic','Noto Sans KR','Apple SD Gothic Neo',sans-serif"
+
+
+class _Fig:
+    """작은 SVG 그림판."""
+
+    def __init__(self, w, h):
+        self.w, self.h, self.parts = int(w), int(h), []
+
+    def line(self, x1, y1, x2, y2, color=_FIG_INK, w=2.4, dash=None):
+        extra = f' stroke-dasharray="{dash}"' if dash else ""
+        self.parts.append(
+            f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+            f'stroke="{color}" stroke-width="{w}" stroke-linecap="round"{extra}/>'
+        )
+
+    def poly(self, pts, fill=_FIG_FILL, color=_FIG_INK, w=2.4, dash=None, opacity=1.0):
+        extra = f' stroke-dasharray="{dash}"' if dash else ""
+        points = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        self.parts.append(
+            f'<polygon points="{points}" fill="{fill}" fill-opacity="{opacity}" '
+            f'stroke="{color}" stroke-width="{w}" stroke-linejoin="round"{extra}/>'
+        )
+
+    def circle(self, cx, cy, r, fill="none", color=_FIG_INK, w=2.4):
+        self.parts.append(
+            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{fill}" stroke="{color}" stroke-width="{w}"/>'
+        )
+
+    def ellipse(self, cx, cy, rx, ry, fill="none", color=_FIG_INK, w=2.4):
+        self.parts.append(
+            f'<ellipse cx="{cx:.1f}" cy="{cy:.1f}" rx="{rx:.1f}" ry="{ry:.1f}" '
+            f'fill="{fill}" stroke="{color}" stroke-width="{w}"/>'
+        )
+
+    def path(self, d, fill="none", color=_FIG_INK, w=2.4, dash=None):
+        extra = f' stroke-dasharray="{dash}"' if dash else ""
+        self.parts.append(
+            f'<path d="{d}" fill="{fill}" stroke="{color}" stroke-width="{w}" stroke-linejoin="round"{extra}/>'
+        )
+
+    def text(self, x, y, s, size=19, color=None, anchor="middle"):
+        color = color or (_FIG_RED if "?" in s else _FIG_INK)
+        self.parts.append(
+            f'<text x="{x:.1f}" y="{y:.1f}" font-family="{_FIG_FONT}" font-size="{size}" font-weight="bold" '
+            f'fill="{color}" text-anchor="{anchor}" dominant-baseline="central">{html_escape(s)}</text>'
+        )
+
+    def dim(self, x1, y1, x2, y2, tick=7):
+        """양 끝에 짧은 눈금이 달린 치수선 (가로선이나 세로선)."""
+        self.line(x1, y1, x2, y2, w=2)
+        if y1 == y2:
+            self.line(x1, y1 - tick, x1, y1 + tick, w=2)
+            self.line(x2, y2 - tick, x2, y2 + tick, w=2)
+        else:
+            self.line(x1 - tick, y1, x1 + tick, y1, w=2)
+            self.line(x2 - tick, y2, x2 + tick, y2, w=2)
+
+    def right_angle(self, x, y, ux, uy, vx, vy, size=11):
+        """(x, y) 꼭짓점에서 단위벡터 u, v 쪽으로 작은 직각 표시."""
+        pts = [(x + ux * size, y + uy * size), (x + (ux + vx) * size, y + (uy + vy) * size), (x + vx * size, y + vy * size)]
+        points = " ".join(f"{px:.1f},{py:.1f}" for px, py in pts)
+        self.parts.append(f'<polyline points="{points}" fill="none" stroke="{_FIG_INK}" stroke-width="2"/>')
+
+    def caption(self, s):
+        if s:
+            self.text(self.w / 2, self.h - 18, s)
+
+    def svg(self):
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{self.w}" height="{self.h}" '
+            f'viewBox="0 0 {self.w} {self.h}">' + "".join(self.parts) + "</svg>"
+        )
+
+
+def fig_md(fig, alt="문제 그림"):
+    """_Fig 그림을 문제 글 끝에 붙일 마크다운(HTML) 글자로 바꾼다."""
+    data = base64.b64encode(fig.svg().encode("utf-8")).decode("ascii")
+    return (
+        '\n\n<p style="text-align:center;margin:12px 0 4px">'
+        f'<img alt="{alt}" style="max-width:100%;height:auto" src="data:image/svg+xml;base64,{data}"></p>'
+    )
+
+
+def fig_rectangle(top, right, caption=""):
+    f = _Fig(360, 230)
+    f.poly([(60, 50), (290, 50), (290, 160), (60, 160)])
+    f.text(175, 30, top)
+    f.text(325, 105, right)
+    f.caption(caption)
+    return f
+
+
+def fig_parallelogram(base, height, caption=""):
+    f = _Fig(360, 240)
+    f.poly([(60, 170), (260, 170), (330, 60), (130, 60)])
+    f.line(130, 60, 130, 170, dash="6 5", w=2)
+    f.right_angle(130, 170, 1, 0, 0, -1)
+    f.text(160, 192, base)
+    f.text(142, 115, height, anchor="start")
+    f.caption(caption)
+    return f
+
+
+def fig_triangle(base, height, caption=""):
+    f = _Fig(360, 240)
+    f.poly([(60, 170), (300, 170), (130, 55)])
+    f.line(130, 55, 130, 170, dash="6 5", w=2)
+    f.right_angle(130, 170, 1, 0, 0, -1)
+    f.text(180, 192, base)
+    f.text(142, 112, height, anchor="start")
+    f.caption(caption)
+    return f
+
+
+def fig_rhombus(horizontal, vertical, caption=""):
+    f = _Fig(360, 250)
+    f.poly([(50, 115), (180, 35), (310, 115), (180, 195)])
+    f.line(50, 115, 310, 115, dash="6 5", w=2)
+    f.line(180, 35, 180, 195, dash="6 5", w=2)
+    f.right_angle(180, 115, 1, 0, 0, -1)
+    f.text(240, 134, horizontal)
+    f.text(190, 70, vertical, anchor="start")
+    f.caption(caption)
+    return f
+
+
+def fig_trapezoid(top, bottom, height, caption=""):
+    f = _Fig(360, 240)
+    f.poly([(50, 175), (310, 175), (250, 60), (110, 60)])
+    f.line(110, 60, 110, 175, dash="6 5", w=2)
+    f.right_angle(110, 175, 1, 0, 0, -1)
+    f.text(180, 40, top)
+    f.text(180, 198, bottom)
+    f.text(124, 117, height, anchor="start")
+    f.caption(caption)
+    return f
+
+
+def fig_cuboid(a="", b="", h="", caption="", cube=False, water=None, water_label=""):
+    """직육면체(또는 정육면체)와 수조. a: 가로(앞쪽 아래), b: 세로(오른쪽 깊이), h: 높이(왼쪽).
+    water 는 물이 찬 높이의 비율(0~1)이고, 물의 높이는 왼쪽에 치수선과 water_label 로 보여 준다."""
+    f = _Fig(360, 280)
+    x0, y0 = 80, 200
+    width, height = (125, 125) if cube else (150, 115)
+    dx, dy = (50, 36) if cube else (60, 40)
+    fbl, fbr = (x0, y0), (x0 + width, y0)
+    ftl, ftr = (x0, y0 - height), (x0 + width, y0 - height)
+    bbl, bbr = (x0 + dx, y0 - dy), (x0 + width + dx, y0 - dy)
+    btl, btr = (x0 + dx, y0 - height - dy), (x0 + width + dx, y0 - height - dy)
+    f.poly([fbl, fbr, ftr, ftl], opacity=0.6)
+    f.poly([ftl, btl, btr, ftr], opacity=0.6)
+    f.poly([fbr, bbr, btr, ftr], opacity=0.6)
+    if water:
+        hw = height * water
+        f.poly([fbl, fbr, (fbr[0], y0 - hw), (fbl[0], y0 - hw)], fill=_FIG_BLUE, color=_FIG_BLUE, w=1.5, opacity=0.35)
+        f.poly([fbr, bbr, (bbr[0], bbr[1] - hw), (fbr[0], fbr[1] - hw)], fill=_FIG_BLUE, color=_FIG_BLUE, w=1.5, opacity=0.35)
+        f.poly(
+            [(fbl[0], y0 - hw), (bbl[0], bbl[1] - hw), (bbr[0], bbr[1] - hw), (fbr[0], y0 - hw)],
+            fill=_FIG_BLUE, color=_FIG_BLUE, w=1.5, opacity=0.2,
+        )
+        f.dim(x0 - 18, y0, x0 - 18, y0 - hw)
+        f.text(x0 - 28, y0 - hw / 2, water_label, anchor="end")
+    f.line(*bbl, *btl, dash="6 5", w=2)
+    f.line(*bbl, *fbl, dash="6 5", w=2)
+    f.line(*bbl, *bbr, dash="6 5", w=2)
+    f.text(x0 + width / 2, y0 + 22, a)
+    f.text(x0 + width + dx / 2 + 26, y0 - dy / 2 + 12, b)
+    if h:
+        f.text(x0 - 35, y0 - height / 2, h)
+    f.caption(caption)
+    return f
+
+
+def fig_circle(kind, label, caption=""):
+    """kind: 'diameter'(지름) 또는 'radius'(반지름)."""
+    f = _Fig(360, 250)
+    cx, cy, r = 180, 110, 80
+    f.circle(cx, cy, r, fill=_FIG_FILL)
+    if kind == "diameter":
+        f.dim(cx - r, cy, cx + r, cy)
+        f.text(cx, cy - 18, label)
+    else:
+        f.line(cx, cy, cx + r, cy)
+        f.text(cx + r / 2, cy - 18, label)
+    f.circle(cx, cy, 4, fill=_FIG_INK)
+    f.caption(caption)
+    return f
+
+
+def fig_ring(big, small, caption=""):
+    """같은 중심의 두 원: 큰 원의 반지름 big 은 오른쪽에, 작은 원의 반지름 small 은 안쪽 왼쪽에 쓴다."""
+    f = _Fig(360, 250)
+    cx, cy = 140, 115
+    f.circle(cx, cy, 85, fill=_FIG_FILL)
+    f.circle(cx, cy, 45, fill="#ffffff")
+    f.line(cx, cy, cx + 85, cy)
+    f.line(cx, cy, cx - 45, cy)
+    f.circle(cx, cy, 4, fill=_FIG_INK)
+    f.text(cx - 22, cy - 18, small)
+    f.text(cx + 94, cy, big, anchor="start")
+    f.caption(caption)
+    return f
+
+
+def fig_cylinder(r, h, caption=""):
+    f = _Fig(380, 265)
+    cx, rx, ry, top, bottom = 140, 70, 22, 65, 195
+    f.path(f"M{cx - rx},{bottom} A{rx},{ry} 0 0 1 {cx + rx},{bottom}", dash="6 5", w=2)
+    f.path(
+        f"M{cx - rx},{top} L{cx - rx},{bottom} A{rx},{ry} 0 0 0 {cx + rx},{bottom} L{cx + rx},{top}",
+        fill=_FIG_FILL,
+    )
+    f.ellipse(cx, top, rx, ry, fill="#eff6ff")
+    f.line(cx, top, cx + rx, top)
+    f.circle(cx, top, 4, fill=_FIG_INK)
+    f.text(cx + rx + 12, top, r, anchor="start")
+    f.dim(295, top, 295, bottom)
+    f.text(307, (top + bottom) / 2, h, anchor="start")
+    f.caption(caption)
+    return f
+
+
+def fig_cylinder_net(width_label, diameter_label):
+    """원기둥의 전개도: 옆면(직사각형) 위아래에 밑면 두 개."""
+    f = _Fig(360, 250)
+    f.poly([(80, 85), (280, 85), (280, 165), (80, 165)])
+    f.circle(130, 55, 30, fill=_FIG_FILL)
+    f.circle(230, 195, 30, fill=_FIG_FILL)
+    f.dim(80, 135, 280, 135)
+    f.text(180, 112, width_label)
+    f.dim(100, 55, 160, 55, tick=5)
+    f.text(172, 55, diameter_label, anchor="start")
+    return f
+
+
+def fig_layers(parts):
+    """층별 쌓기나무 수를 아래층부터 쌓아 보여 준다. (부분 목록의 첫째가 1층)"""
+    s = min(34, 270 // max(parts))
+    f = _Fig(340, 40 + len(parts) * s)
+    base = 20 + len(parts) * s
+    for i, count in enumerate(parts):
+        y = base - (i + 1) * s
+        f.text(26, y + s / 2, f"{i + 1}층")
+        for k in range(count):
+            f.poly([(60 + k * s, y), (60 + (k + 1) * s, y), (60 + (k + 1) * s, y + s), (60 + k * s, y + s)], w=2)
+    return f
+
+
+def fig_blocks(a, b, c, painted=False):
+    """가로 a개, 세로 b개, 높이 c개로 쌓은 직육면체 쌓기나무. painted 면 겉면을 색칠한 모양."""
+    u, v = min(34, 190 // a), min(30, 130 // c)
+    dx = min(18, 80 // b)
+    dy = dx * 0.6
+    ox, oy = b * dx, b * dy
+    x0 = 50
+    yt = 30 + oy
+    yb = yt + c * v
+    xr = x0 + a * u
+    f = _Fig(x0 + a * u + ox + 55, yb + 50)
+    fills = ("#fecaca", "#fca5a5", "#fb7185") if painted else ("#e0f2fe", "#bae6fd", "#7dd3fc")
+    f.poly([(x0, yt), (xr, yt), (xr, yb), (x0, yb)], fill=fills[0])
+    f.poly([(x0, yt), (x0 + ox, yt - oy), (xr + ox, yt - oy), (xr, yt)], fill=fills[1])
+    f.poly([(xr, yt), (xr + ox, yt - oy), (xr + ox, yb - oy), (xr, yb)], fill=fills[2])
+    grid = dict(color=_FIG_GRAY, w=1.3)
+    for i in range(1, a):
+        f.line(x0 + i * u, yt, x0 + i * u, yb, **grid)
+        f.line(x0 + i * u, yt, x0 + i * u + ox, yt - oy, **grid)
+    for j in range(1, c):
+        f.line(x0, yt + j * v, xr, yt + j * v, **grid)
+        f.line(xr, yt + j * v, xr + ox, yt + j * v - oy, **grid)
+    for k in range(1, b):
+        f.line(x0 + k * dx, yt - k * dy, xr + k * dx, yt - k * dy, **grid)
+        f.line(xr + k * dx, yt - k * dy, xr + k * dx, yb - k * dy, **grid)
+    f.text(x0 + a * u / 2, yb + 22, f"{a}개")
+    f.text(x0 - 6, (yt + yb) / 2, f"{c}개", anchor="end")
+    f.text(xr + ox / 2 + 26, yb - oy / 2 + 14, f"{b}개", anchor="start")
+    return f
+
+
+def fig_pie(name, pct):
+    """원그래프: 강조할 한 부분(name, pct %)과 나머지."""
+    f = _Fig(360, 275)
+    cx, cy, r = 180, 140, 80
+
+    def at(deg, radius=r):
+        return cx + radius * math.sin(math.radians(deg)), cy - radius * math.cos(math.radians(deg))
+
+    a1 = 360 * pct / 100
+    x1, y1 = at(0)
+    x2, y2 = at(a1)
+    f.path(f"M{cx},{cy} L{x2:.1f},{y2:.1f} A{r},{r} 0 {1 if a1 < 180 else 0} 1 {x1:.1f},{y1:.1f} Z", fill="#e5e7eb")
+    f.path(f"M{cx},{cy} L{x1:.1f},{y1:.1f} A{r},{r} 0 {1 if a1 > 180 else 0} 1 {x2:.1f},{y2:.1f} Z", fill="#93c5fd")
+    lx, ly = at(a1 / 2, r + 32)
+    f.text(min(max(lx, 70), 290), ly, f"{name} {pct}%")
+    f.text(*at((a1 + 360) / 2, r * 0.55), "나머지")
+    return f
+
+
+def fig_band(segments, caption=""):
+    """띠그래프. segments: [(이름, 아래에 쓸 글자, 너비 비율(합 100), 색)]"""
+    f = _Fig(360, 205)
+    x, top, width, height = 30, 72, 300, 44
+    for i, (name, note, share, fill) in enumerate(segments):
+        w = width * share / 100
+        f.poly([(x, top), (x + w, top), (x + w, top + height), (x, top + height)], fill=fill)
+        f.text(x + w / 2, 50 - (16 if i % 2 else 0), name)
+        f.text(x + w / 2, top + height + 22 + (24 if i % 2 else 0), note)
+        x += w
+    f.caption(caption)
+    return f
+
+
+def fig_range(lo, hi, lo_closed, hi_closed):
+    """수직선 위에 두 끝을 보이는 수의 범위. 속이 찬 점은 그 수를 포함하고, 빈 점은 포함하지 않는다."""
+    f = _Fig(360, 115)
+    f.text(180, 16, "● 포함함   ○ 포함하지 않음", size=15)
+    f.line(20, 60, 340, 60)
+    f.poly([(340, 60), (328, 54), (328, 66)], fill=_FIG_INK, w=1)
+    f.poly([(20, 60), (32, 54), (32, 66)], fill=_FIG_INK, w=1)
+    f.line(100, 60, 260, 60, color=_FIG_BLUE, w=7)
+    for x, v, closed in ((100, lo, lo_closed), (260, hi, hi_closed)):
+        f.circle(x, 60, 9, fill=_FIG_BLUE if closed else "#ffffff", color=_FIG_BLUE, w=3)
+        f.text(x, 92, str(v))
+    return f
+
+
+def fig_dots(counts):
+    """규칙에 따라 놓은 바둑돌: 번째마다 한 줄(12개가 넘으면 줄을 바꾼다)."""
+    per_row, step, r = 12, 20, 7
+    f = _Fig(340, 20 + sum(-(-c // per_row) * step + 14 for c in counts))
+    y = 28
+    for i, count in enumerate(counts):
+        f.text(14, y, f"{i + 1}번째", anchor="start")
+        for k in range(count):
+            f.circle(84 + (k % per_row) * step + r, y + (k // per_row) * step, r, fill=_FIG_BLUE, color=_FIG_BLUE, w=1)
+        y += -(-count // per_row) * step + 14
+    return f
+
+
 # ---------- 초5 ----------
 def e5_calc(target, level):
     """자연수의 혼합 계산."""
@@ -2751,7 +3100,7 @@ def e5_rule(target, level):
     )
     if level < 3:
         m = a + d * (target - 1)
-        q = head + f"바둑돌을 {m}개 놓은 것은 몇 번째입니까?"
+        q = head + f"바둑돌을 {m}개 놓은 것은 몇 번째입니까?" + fig_md(fig_dots([a, a + d, a + 2 * d]), "바둑돌 모양")
         exp = (
             f"바둑돌이 {d}개씩 늘어납니다. 1번째보다 ${m}-{a}={m - a}$(개) 더 많고 "
             f"${m - a} {_D} {d}={target - 1}$이므로, 1번째에서 {target - 1}번 늘어난 {target}번째입니다."
@@ -2759,6 +3108,7 @@ def e5_rule(target, level):
         return q, exp, str(target)
     m = a + d * (target - 1) + random.randint(0, d - 1)
     q = head + f"바둑돌이 {m}개 있습니다. 이 바둑돌로 만들 수 있는 모양 중 가장 뒤의 것은 몇 번째 모양입니까? (모양은 하나씩 따로 만듭니다.)"
+    q += fig_md(fig_dots([a, a + d, a + 2 * d]), "바둑돌 모양")
     exp = (
         f"{d}개씩 늘어나므로 n번째 모양에는 ${a}+{d} {_X} (n-1)$개가 필요합니다. "
         f"${m}-{a}={m - a}$, ${m - a} {_D} {d}={target - 1}\\cdots{(m - a) % d}$이므로 "
@@ -2828,12 +3178,16 @@ def e5_area(target, level):
         if random.random() < 0.5:
             w = random.randint(3, 20)
             area = w * target
-            q = f"넓이가 {area} cm²이고 가로가 {w} cm인 직사각형의 세로는 몇 cm입니까?"
+            q = f"넓이가 {area} cm²이고 가로가 {w} cm인 직사각형의 세로는 몇 cm입니까?" + fig_md(
+                fig_rectangle(f"{w} cm", "? cm", f"넓이 {area} cm²"), "직사각형"
+            )
             exp = f"(직사각형의 넓이)=(가로)×(세로)이므로 (세로)$={area} {_D} {w}={target}$(cm)입니다."
         else:
             b = random.randint(3, 20)
             area = b * target
-            q = f"밑변의 길이가 {b} cm이고 넓이가 {area} cm²인 평행사변형의 높이는 몇 cm입니까?"
+            q = f"밑변의 길이가 {b} cm이고 넓이가 {area} cm²인 평행사변형의 높이는 몇 cm입니까?" + fig_md(
+                fig_parallelogram(f"{b} cm", "? cm", f"넓이 {area} cm²"), "평행사변형"
+            )
             exp = f"(평행사변형의 넓이)=(밑변)×(높이)이므로 (높이)$={area} {_D} {b}={target}$(cm)입니다."
         return q, exp, str(target)
     if level == 2:
@@ -2841,7 +3195,9 @@ def e5_area(target, level):
         if kind == "perimeter":
             w = random.randint(3, 20)
             perimeter = 2 * (w + target)
-            q = f"둘레가 {perimeter} cm이고 가로가 {w} cm인 직사각형의 세로는 몇 cm입니까?"
+            q = f"둘레가 {perimeter} cm이고 가로가 {w} cm인 직사각형의 세로는 몇 cm입니까?" + fig_md(
+                fig_rectangle(f"{w} cm", "? cm", f"둘레 {perimeter} cm"), "직사각형"
+            )
             exp = (
                 f"(가로)+(세로)는 둘레의 반이므로 ${perimeter} {_D} 2={perimeter // 2}$(cm)입니다. "
                 f"(세로)$={perimeter // 2}-{w}={target}$(cm)입니다."
@@ -2850,13 +3206,17 @@ def e5_area(target, level):
         side = random.choice([x for x in range(4, 21) if (x * target) % 2 == 0])
         area = side * target // 2
         if kind == "triangle":
-            q = f"밑변의 길이가 {side} cm이고 넓이가 {area} cm²인 삼각형의 높이는 몇 cm입니까?"
+            q = f"밑변의 길이가 {side} cm이고 넓이가 {area} cm²인 삼각형의 높이는 몇 cm입니까?" + fig_md(
+                fig_triangle(f"{side} cm", "? cm", f"넓이 {area} cm²"), "삼각형"
+            )
             exp = (
                 f"(삼각형의 넓이)=(밑변)×(높이)÷2이므로 (밑변)×(높이)$={area} {_X} 2={area * 2}$입니다. "
                 f"(높이)$={area * 2} {_D} {side}={target}$(cm)입니다."
             )
         else:
-            q = f"한 대각선의 길이가 {side} cm이고 넓이가 {area} cm²인 마름모의 다른 대각선의 길이는 몇 cm입니까?"
+            q = f"한 대각선의 길이가 {side} cm이고 넓이가 {area} cm²인 마름모의 다른 대각선의 길이는 몇 cm입니까?" + fig_md(
+                fig_rhombus(f"{side} cm", "? cm", f"넓이 {area} cm²"), "마름모"
+            )
             exp = (
                 f"(마름모의 넓이)=(한 대각선)×(다른 대각선)÷2이므로 두 대각선의 곱은 ${area} {_X} 2={area * 2}$입니다. "
                 f"(다른 대각선)$={area * 2} {_D} {side}={target}$(cm)입니다."
@@ -2866,7 +3226,9 @@ def e5_area(target, level):
         u = random.randint(3, 12)
         h = random.choice([4, 6, 8, 10, 12])
         area = (u + target) * h // 2
-        q = f"윗변이 {u} cm, 높이가 {h} cm이고 넓이가 {area} cm²인 사다리꼴의 아랫변의 길이는 몇 cm입니까?"
+        q = f"윗변이 {u} cm, 높이가 {h} cm이고 넓이가 {area} cm²인 사다리꼴의 아랫변의 길이는 몇 cm입니까?" + fig_md(
+            fig_trapezoid(f"{u} cm", "? cm", f"{h} cm", f"넓이 {area} cm²"), "사다리꼴"
+        )
         exp = (
             f"(사다리꼴의 넓이)=((윗변)+(아랫변))×(높이)÷2이므로 (윗변)+(아랫변)$={area} {_X} 2 {_D} {h}={(u + target)}$입니다. "
             f"(아랫변)$={u + target}-{u}={target}$(cm)입니다."
@@ -2877,7 +3239,9 @@ def e5_area(target, level):
             if (u + v) * target % 2 == 0:
                 break
         area = (u + v) * target // 2
-        q = f"윗변이 {u} cm, 아랫변이 {v} cm이고 넓이가 {area} cm²인 사다리꼴의 높이는 몇 cm입니까?"
+        q = f"윗변이 {u} cm, 아랫변이 {v} cm이고 넓이가 {area} cm²인 사다리꼴의 높이는 몇 cm입니까?" + fig_md(
+            fig_trapezoid(f"{u} cm", f"{v} cm", "? cm", f"넓이 {area} cm²"), "사다리꼴"
+        )
         exp = (
             f"(윗변)+(아랫변)$={u}+{v}={u + v}$이고 넓이가 {area} cm²이므로 "
             f"(높이)$={area} {_X} 2 {_D} {u + v}={target}$(cm)입니다."
@@ -2890,12 +3254,12 @@ def e5_range(target, level):
     n = random.randint(10, 60)
     if level == 1:
         m = n + target - 1
-        q = f"{n} 이상 {m} 이하인 자연수는 모두 몇 개입니까?"
+        q = f"{n} 이상 {m} 이하인 자연수는 모두 몇 개입니까?" + fig_md(fig_range(n, m, True, True), "수직선")
         exp = f"{n}부터 {m}까지이므로 ${m}-{n}+1={target}$(개)입니다."
         return q, exp, str(target)
     if level == 2:
         m = n + target + 1
-        q = f"{n} 초과 {m} 미만인 자연수는 모두 몇 개입니까?"
+        q = f"{n} 초과 {m} 미만인 자연수는 모두 몇 개입니까?" + fig_md(fig_range(n, m, False, False), "수직선")
         exp = f"{n}보다 크고 {m}보다 작으므로 {n + 1}부터 {m - 1}까지입니다. ${m - 1}-{n + 1}+1={target}$(개)입니다."
         return q, exp, str(target)
     k = random.randint(3, 9)
@@ -2903,7 +3267,7 @@ def e5_range(target, level):
     first = -(-n // k) * k
     last = first + (target - 1) * k
     m = last + 1 + random.randint(0, k - 1)
-    q = f"{n} 이상 {m} 미만인 자연수 중에서 {k}의 배수는 모두 몇 개입니까?"
+    q = f"{n} 이상 {m} 미만인 자연수 중에서 {k}의 배수는 모두 몇 개입니까?" + fig_md(fig_range(n, m, True, False), "수직선")
     exp = (
         f"{n} 이상 {m - 1} 이하인 수 중에서 {k}의 배수 중 가장 작은 수는 {first}, 가장 큰 수는 {last}입니다. "
         f"${last}-{first}={last - first}$, ${last - first} {_D} {k}={target - 1}$이므로 "
@@ -3014,13 +3378,17 @@ def e5_avg(target, level):
 def e5_cuboid(target, level):
     """직육면체."""
     if level == 1:
-        q = f"모서리 길이의 합이 {12 * target} cm인 정육면체의 한 모서리의 길이는 몇 cm입니까?"
+        q = f"모서리 길이의 합이 {12 * target} cm인 정육면체의 한 모서리의 길이는 몇 cm입니까?" + fig_md(
+            fig_cuboid("? cm", cube=True, caption=f"모서리 길이의 합 {12 * target} cm"), "정육면체"
+        )
         exp = f"정육면체는 길이가 같은 모서리가 12개이므로 ${12 * target} {_D} 12={target}$(cm)입니다."
         return q, exp, str(target)
     if level == 2:
         a, b = random.randint(2, 15), random.randint(2, 15)
         s = 4 * (a + b + target)
-        q = f"가로가 {a} cm, 세로가 {b} cm인 직육면체의 모서리 길이의 합이 {s} cm입니다. 이 직육면체의 높이는 몇 cm입니까?"
+        q = f"가로가 {a} cm, 세로가 {b} cm인 직육면체의 모서리 길이의 합이 {s} cm입니다. 이 직육면체의 높이는 몇 cm입니까?" + fig_md(
+            fig_cuboid(f"{a} cm", f"{b} cm", "? cm", f"모서리 길이의 합 {s} cm"), "직육면체"
+        )
         exp = (
             f"직육면체에는 가로, 세로, 높이 길이의 모서리가 각각 4개씩 있습니다. "
             f"(가로)+(세로)+(높이)$={s} {_D} 4={s // 4}$이므로 (높이)$={s // 4}-{a}-{b}={target}$(cm)입니다."
@@ -3031,7 +3399,7 @@ def e5_cuboid(target, level):
     q = (
         f"직육면체의 가로는 세로의 {k}배이고 높이는 {h} cm입니다. "
         f"모서리 길이의 합이 {s} cm일 때, 이 직육면체의 세로는 몇 cm입니까?"
-    )
+    ) + fig_md(fig_cuboid(f"세로의 {k}배", "? cm", f"{h} cm", f"모서리 길이의 합 {s} cm"), "직육면체")
     exp = (
         f"(가로)+(세로)+(높이)$={s} {_D} 4={s // 4}$이므로 (가로)+(세로)$={s // 4}-{h}={s // 4 - h}$입니다. "
         f"가로가 세로의 {k}배이므로 (세로)의 {k + 1}배가 {s // 4 - h}이고, (세로)$={s // 4 - h} {_D} {k + 1}={target}$(cm)입니다."
@@ -3210,12 +3578,16 @@ def e6_solid(target, level):
     if level == 1:
         a, b = random.randint(3, 12), random.randint(3, 12)
         v = a * b * target
-        q = f"가로가 {a} cm, 세로가 {b} cm이고 부피가 {v} cm³인 직육면체의 높이는 몇 cm입니까?"
+        q = f"가로가 {a} cm, 세로가 {b} cm이고 부피가 {v} cm³인 직육면체의 높이는 몇 cm입니까?" + fig_md(
+            fig_cuboid(f"{a} cm", f"{b} cm", "? cm", f"부피 {v} cm³"), "직육면체"
+        )
         exp = f"(부피)=(가로)×(세로)×(높이)이므로 (높이)$={v} {_D} ({a} {_X} {b})={v} {_D} {a * b}={target}$(cm)입니다."
         return q, exp, str(target)
     if level == 2:
         s = 6 * target * target
-        q = f"겉넓이가 {s} cm²인 정육면체의 한 모서리의 길이는 몇 cm입니까?"
+        q = f"겉넓이가 {s} cm²인 정육면체의 한 모서리의 길이는 몇 cm입니까?" + fig_md(
+            fig_cuboid("? cm", cube=True, caption=f"겉넓이 {s} cm²"), "정육면체"
+        )
         exp = (
             f"정육면체의 겉면은 합동인 정사각형 6개이므로 한 면의 넓이는 ${s} {_D} 6={target * target}$(cm²)입니다. "
             f"${target} {_X} {target}={target * target}$이므로 한 모서리의 길이는 ${target}$ cm입니다."
@@ -3231,6 +3603,8 @@ def e6_solid(target, level):
     q = (
         f"가로가 {a} cm, 세로가 {b} cm인 직육면체 모양의 빈 수조에 물을 {v} L 부었습니다. "
         f"물의 높이는 몇 cm입니까? (1 L = 1000 cm³)"
+    ) + fig_md(
+        fig_cuboid(f"{a} cm", f"{b} cm", caption=f"물 {v} L", water=0.55, water_label="? cm"), "물을 부은 수조"
     )
     exp = (
         f"물의 부피는 ${v} {_X} 1000={v * 1000}$(cm³)입니다. "
@@ -3243,12 +3617,16 @@ def e6_circle(target, level):
     """원의 넓이와 둘레 (원주율은 3으로 계산)."""
     if level == 1:
         c = 3 * target
-        q = f"원주가 {c} cm인 원의 지름은 몇 cm입니까? (원주율: 3)"
+        q = f"원주가 {c} cm인 원의 지름은 몇 cm입니까? (원주율: 3)" + fig_md(
+            fig_circle("diameter", "? cm", f"원주 {c} cm"), "원"
+        )
         exp = f"(원주)=(지름)×(원주율)이므로 (지름)$={c} {_D} 3={target}$(cm)입니다."
         return q, exp, str(target)
     if level == 2:
         area = 3 * target * target
-        q = f"넓이가 {area} cm²인 원의 반지름은 몇 cm입니까? (원주율: 3)"
+        q = f"넓이가 {area} cm²인 원의 반지름은 몇 cm입니까? (원주율: 3)" + fig_md(
+            fig_circle("radius", "? cm", f"넓이 {area} cm²"), "원"
+        )
         exp = (
             f"(원의 넓이)=(반지름)×(반지름)×(원주율)이므로 (반지름)×(반지름)$={area} {_D} 3={target * target}$입니다. "
             f"${target} {_X} {target}={target * target}$이므로 반지름은 ${target}$ cm입니다."
@@ -3259,7 +3637,7 @@ def e6_circle(target, level):
     q = (
         f"반지름이 {big} cm인 원 안에 크기가 다른 작은 원을 같은 중심으로 그렸더니, 두 원 사이 색칠한 부분의 넓이가 "
         f"{area} cm²였습니다. 작은 원의 반지름은 몇 cm입니까? (원주율: 3)"
-    )
+    ) + fig_md(fig_ring(f"{big} cm", "?", f"색칠한 부분의 넓이 {area} cm²"), "두 원")
     exp = (
         f"큰 원의 넓이는 ${big} {_X} {big} {_X} 3={3 * big * big}$(cm²)이므로 "
         f"작은 원의 넓이는 ${3 * big * big}-{area}={3 * target * target}$(cm²)입니다. "
@@ -3271,7 +3649,9 @@ def e6_circle(target, level):
 def e6_cylinder(target, level):
     """원기둥 (원주율은 3으로 계산)."""
     if level == 1:
-        q = f"원기둥의 전개도에서 옆면의 가로가 {3 * target} cm입니다. 이 원기둥의 밑면의 지름은 몇 cm입니까? (원주율: 3)"
+        q = f"원기둥의 전개도에서 옆면의 가로가 {3 * target} cm입니다. 이 원기둥의 밑면의 지름은 몇 cm입니까? (원주율: 3)" + fig_md(
+            fig_cylinder_net(f"{3 * target} cm", "지름 ?"), "원기둥의 전개도"
+        )
         exp = (
             f"옆면의 가로는 밑면의 둘레(원주)와 같으므로 (지름)$={3 * target} {_D} 3={target}$(cm)입니다."
         )
@@ -3279,7 +3659,9 @@ def e6_cylinder(target, level):
     r = random.randint(2, 10)
     if level == 2:
         v = 3 * r * r * target
-        q = f"밑면의 반지름이 {r} cm이고 부피가 {v} cm³인 원기둥의 높이는 몇 cm입니까? (원주율: 3)"
+        q = f"밑면의 반지름이 {r} cm이고 부피가 {v} cm³인 원기둥의 높이는 몇 cm입니까? (원주율: 3)" + fig_md(
+            fig_cylinder(f"{r} cm", "? cm", f"부피 {v} cm³"), "원기둥"
+        )
         exp = (
             f"(밑면의 넓이)$={r} {_X} {r} {_X} 3={3 * r * r}$(cm²)이고 (부피)=(밑면의 넓이)×(높이)이므로 "
             f"(높이)$={v} {_D} {3 * r * r}={target}$(cm)입니다."
@@ -3287,7 +3669,9 @@ def e6_cylinder(target, level):
         return q, exp, str(target)
     r = random.randint(2, 8)
     s = 6 * r * (r + target)
-    q = f"밑면의 반지름이 {r} cm이고 겉넓이가 {s} cm²인 원기둥의 높이는 몇 cm입니까? (원주율: 3)"
+    q = f"밑면의 반지름이 {r} cm이고 겉넓이가 {s} cm²인 원기둥의 높이는 몇 cm입니까? (원주율: 3)" + fig_md(
+        fig_cylinder(f"{r} cm", "? cm", f"겉넓이 {s} cm²"), "원기둥"
+    )
     exp = (
         f"밑면의 넓이는 ${r} {_X} {r} {_X} 3={3 * r * r}$(cm²)이므로 두 밑면의 넓이의 합은 ${3 * r * r * 2}$(cm²)입니다. "
         f"옆면의 넓이는 ${s}-{3 * r * r * 2}={s - 6 * r * r}$(cm²)이고, 옆면의 가로는 원주 ${2 * r} {_X} 3={6 * r}$(cm)이므로 "
@@ -3303,7 +3687,9 @@ def e6_blocks(target, level):
         cuts = sorted(random.sample(range(1, target), count - 1))
         parts = sorted([b - a for a, b in zip([0] + cuts, cuts + [target])], reverse=True)
         layers = ", ".join(f"{i + 1}층에 {v}개" for i, v in enumerate(parts))
-        q = f"쌓기나무로 만든 모양을 층별로 세었더니 {layers}가 있었습니다. 쌓기나무는 모두 몇 개입니까?"
+        q = f"쌓기나무로 만든 모양을 층별로 세었더니 {layers}가 있었습니다. 쌓기나무는 모두 몇 개입니까?" + fig_md(
+            fig_layers(parts), "층별 쌓기나무"
+        )
         exp = f"층마다 쌓기나무의 수를 더하면 ${'+'.join(str(v) for v in parts)}={target}$(개)입니다."
         return q, exp, str(target)
     triples = [
@@ -3318,7 +3704,7 @@ def e6_blocks(target, level):
         q = (
             f"쌓기나무를 가로에 {a}개, 세로에 {b}개씩 놓아 1층을 만들고, {c}층으로 쌓아 직육면체 모양을 만들었습니다. "
             f"사용한 쌓기나무는 모두 몇 개입니까?"
-        )
+        ) + fig_md(fig_blocks(a, b, c), "쌓기나무로 만든 직육면체")
         exp = f"한 층에 ${a} {_X} {b}={a * b}$(개)씩 {c}층이므로 ${a * b} {_X} {c}={target}$(개)입니다."
         return q, exp, str(target)
     a, b, c = random.choice(triples)
@@ -3326,7 +3712,7 @@ def e6_blocks(target, level):
     q = (
         f"한 모서리가 1 cm인 쌓기나무를 가로 {a}개, 세로 {b}개, 높이 {c}개로 쌓아 직육면체를 만든 뒤 겉면을 모두 색칠했습니다. "
         f"어느 면에도 색칠되지 않은 쌓기나무는 모두 몇 개입니까?"
-    )
+    ) + fig_md(fig_blocks(a, b, c, painted=True), "겉면을 색칠한 직육면체")
     exp = (
         f"겉면에 닿지 않은 쌓기나무는 가로, 세로, 높이가 각각 양쪽으로 1개씩 줄어든 부분입니다. "
         f"가로 {a - 2}개, 세로 {b - 2}개, 높이 {c - 2}개이므로 ${a - 2} {_X} {b - 2} {_X} {c - 2}={target}$(개)입니다."
@@ -3339,7 +3725,9 @@ def e6_graph(target, level):
     if level == 1:
         a = random.choice([a for a in (5, 10, 20, 25, 50, 60, 75) if (100 * target) % a == 0])
         n = 100 * target // a
-        q = f"학생 {n}명에게 좋아하는 운동을 조사했더니 축구를 고른 학생이 전체의 {a}%였습니다. 축구를 고른 학생은 몇 명입니까?"
+        q = f"학생 {n}명에게 좋아하는 운동을 조사했더니 축구를 고른 학생이 전체의 {a}%였습니다. 축구를 고른 학생은 몇 명입니까?" + fig_md(
+            fig_pie("축구", a), "원그래프"
+        )
         exp = f"${n} {_X} {_frac(a, 100)}={target}$(명)입니다."
         return q, exp, str(target)
     if level == 2:
@@ -3357,6 +3745,12 @@ def e6_graph(target, level):
         q = (
             f"좋아하는 과일을 조사하여 띠그래프로 나타냈습니다. 조사한 학생은 {n}명이고, 사과가 {a}%, 귤이 {b}%, 포도가 {c}%이고 "
             f"나머지는 바나나입니다. 바나나를 좋아하는 학생은 몇 명입니까?"
+        ) + fig_md(
+            fig_band(
+                [("사과", f"{a}%", a, "#fecaca"), ("귤", f"{b}%", b, "#fed7aa"), ("포도", f"{c}%", c, "#ddd6fe"), ("바나나", "?%", d, "#fef08a")],
+                f"조사한 학생 {n}명",
+            ),
+            "띠그래프",
         )
         exp = (
             f"바나나의 비율은 ${100}-{a}-{b}-{c}={d}$(%)입니다. "
@@ -3380,6 +3774,16 @@ def e6_graph(target, level):
     q = (
         f"마을 주민 {n}명에게 가장 좋아하는 계절을 조사했더니 봄을 고른 사람이 {a}%였고, "
         f"나머지 사람들은 여름과 가을을 ${p} : {q_}$의 비로 골랐습니다. 가을을 고른 사람은 몇 명입니까?"
+    ) + fig_md(
+        fig_band(
+            [
+                ("봄", f"{a}%", a, "#bbf7d0"),
+                ("여름", f"{p}", (100 - a) * p / (p + q_), "#fecaca"),
+                ("가을", f"{q_}", (100 - a) * q_ / (p + q_), "#fed7aa"),
+            ],
+            f"주민 {n}명 · 여름 : 가을 = {p} : {q_}",
+        ),
+        "띠그래프",
     )
     exp = (
         f"봄을 고르지 않은 사람은 전체의 ${100 - a}$%이므로 ${n} {_X} {_frac(100 - a, 100)}={rest}$(명)입니다. "

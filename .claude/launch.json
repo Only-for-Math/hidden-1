@@ -14,9 +14,9 @@
       "port": 8503
     },
     {
-      "name": "Math-MS-copy",
+      "name": "Math-ES",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "streamlit", "run", "Math-MS-copy.py", "--server.port", "8504", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
+      "runtimeArgs": ["-m", "streamlit", "run", "Math-ES.py", "--server.port", "8504", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
       "port": 8504
     }
   ]
